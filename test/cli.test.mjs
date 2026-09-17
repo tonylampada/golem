@@ -59,3 +59,13 @@ test('local command contract and HTTP lifecycle', { timeout: 30000 }, async (t) 
   const build = run('build');
   assert.equal(build.status, 0, build.stderr);
 });
+
+test('invalid UI source paths fail clearly', () => {
+  const result = spawnSync(wrapper, ['build'], {
+    encoding: 'utf8',
+    cwd: '/',
+    env: { ...process.env, GOLEM_UI_SOURCE: '/definitely/not-a-golem-ui-checkout' },
+  });
+  assert.equal(result.status, 1);
+  assert.match(result.stderr, /GOLEM_UI_SOURCE must point to a golem-ui checkout/);
+});
