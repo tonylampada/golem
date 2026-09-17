@@ -1,7 +1,27 @@
 {
   "name": "golem-kit",
   "version": "0.1.0",
+  "description": "Starter kit and local CLI for Golem applications.",
   "type": "module",
+  "files": [
+    "README.md",
+    "assets/golem-mascot.png",
+    "docs/local-cli.md",
+    "docs/source-development.md",
+    "golem.config.ts",
+    "index.html",
+    "src",
+    "tsconfig.json",
+    "vite.config.ts"
+  ],
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/tonylampada/golem.git"
+  },
+  "bugs": {
+    "url": "https://github.com/tonylampada/golem/issues"
+  },
+  "homepage": "https://github.com/tonylampada/golem#readme",
   "packageManager": "pnpm@10.28.2",
   "engines": {
     "node": ">=22.18.0",
