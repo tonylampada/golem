@@ -10,7 +10,7 @@ Golem is a framework for building applications with AI. **Your app is its own ID
 
 ## Getting Started
 
-Install Node.js and pnpm. Then:
+Install Node.js and pnpm. Then run:
 
 ```sh
 mkdir my-app
@@ -18,14 +18,13 @@ cd my-app
 npx golem-kit init
 ```
 
-Do this once to create the application. Then start it:
+Start the application:
 
 ```sh
-./golem help
 ./golem dev
 ```
 
-Open the browser address printed in the terminal and select **Enter build mode**. Tell the agent what you want to build.
+Open the browser address printed in the terminal and continue following the instructions in the browser.
 
 ## What You Get
 
