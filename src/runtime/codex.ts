@@ -17,7 +17,7 @@ export type SandboxMode = 'read-only' | 'danger-full-access'
  */
 export class CodexBackend implements SessionBackend {
   private emit!: (event: BackendEvent) => void
-  private threadId: string | undefined
+  private nativeThreadId: string | undefined
   private child: ChildProcess | undefined
   private request: Promise<void> | undefined
   private interrupted = false
@@ -27,19 +27,22 @@ export class CodexBackend implements SessionBackend {
   private readonly executable: string
   private readonly prefixArgs: string[]
 
-  constructor(cwd: string, mode: SandboxMode, executable = 'codex', prefixArgs: string[] = []) {
+  constructor(cwd: string, mode: SandboxMode, executable = 'codex', prefixArgs: string[] = [], threadId?: string) {
     this.cwd = cwd
     this.mode = mode
     this.executable = executable
     this.prefixArgs = prefixArgs
+    this.nativeThreadId = threadId
   }
 
   async start(emit: (event: BackendEvent) => void): Promise<void> { this.emit = emit }
 
+  threadId(): string | undefined { return this.nativeThreadId }
+
   send(text: string): Promise<void> {
     if (this.request) return Promise.reject(new Error('Codex is already handling a request'))
-    const args = this.threadId
-      ? [...this.prefixArgs, 'exec', 'resume', this.threadId, '--json', '-c', `sandbox_mode="${this.mode}"`, '--skip-git-repo-check', text]
+    const args = this.nativeThreadId
+      ? [...this.prefixArgs, 'exec', 'resume', this.nativeThreadId, '--json', '-c', `sandbox_mode="${this.mode}"`, '--skip-git-repo-check', text]
       : [...this.prefixArgs, 'exec', '--json', '-s', this.mode, '-C', this.cwd, '--skip-git-repo-check', text]
     this.request = new Promise((resolve, reject) => {
       this.interrupted = false
@@ -64,7 +67,7 @@ export class CodexBackend implements SessionBackend {
         for (const line of lines.filter(Boolean)) {
           let event: JsonEvent
           try { event = JSON.parse(line) } catch { continue }
-          if (event.type === 'thread.started' && event.thread_id) this.threadId = event.thread_id
+          if (event.type === 'thread.started' && event.thread_id) this.nativeThreadId = event.thread_id
           if (event.type === 'item.completed' && event.item?.type === 'agent_message' && event.item.text) {
             this.emit({ type: 'message', text: event.item.text })
           }

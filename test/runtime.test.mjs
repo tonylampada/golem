@@ -1,6 +1,11 @@
 import assert from 'node:assert/strict'
 import { test } from 'node:test'
 import { discoverAgents, probeExecutable, runtimeState, SessionManager } from '../src/runtime/index.ts'
+import { ConversationState } from '../src/runtime/state.ts'
+import { mkdtempSync } from 'node:fs'
+import { writeFile } from 'node:fs/promises'
+import { join } from 'node:path'
+import { tmpdir } from 'node:os'
 
 const available = (names) => async (executable) => ({ status: names.includes(executable) ? 'available' : 'missing' })
 
@@ -204,4 +209,13 @@ test('shutdown does not wait for send and runs backend shutdown once', async () 
   assert.equal(session.history.some(({ text }) => text === 'late'), false)
   backend.pending.resolve()
   await send
+})
+
+test('conversation state rejects corrupt and unwritable files without replacing them', async () => {
+  const directory = mkdtempSync(join(tmpdir(), 'golem-state-'))
+  await writeFile(join(directory, 'conversations.json'), '{not json')
+  await assert.rejects(new ConversationState(directory).load(), /Cannot load saved conversations/)
+  const blocked = join(directory, 'not-a-directory')
+  await writeFile(blocked, 'file')
+  await assert.rejects(new ConversationState(join(blocked, 'child')).save([]), /Cannot save conversations/)
 })

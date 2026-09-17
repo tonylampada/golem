@@ -1,9 +1,14 @@
 import assert from 'node:assert/strict'
 import { test } from 'node:test'
+import { mkdtempSync } from 'node:fs'
+import { join } from 'node:path'
+import { tmpdir } from 'node:os'
 import { startDevServer } from '../src/dev-server.ts'
 
+const start = (port, backend) => startDevServer(port, backend, mkdtempSync(join(tmpdir(), 'golem-state-')))
+
 test('HTTP transport validates mutations and isolates server-owned sessions', { timeout: 30000 }, async () => {
-  const server = await startDevServer(3218)
+  const server = await start(3218)
   try {
     const invalid = await fetch('http://127.0.0.1:3218/api/sessions', {
       method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ backend: 'claude' }),
@@ -34,7 +39,7 @@ test('HTTP transport validates mutations and isolates server-owned sessions', { 
 })
 
 class InstantBackend {
-  async start(emit) { this.emit = emit }
+  async start(emit) { this.started = true; this.emit = emit }
   async send(text) { this.emit({ type: 'message', text: `echo:${text}` }) }
   async shutdown() {}
 }
@@ -50,7 +55,7 @@ async function waitForHistory(port, id, predicate, timeout = 20_000) {
 }
 
 test('a successful build-mode turn triggers a rebuild and notifies the browser', { timeout: 30000 }, async () => {
-  const server = await startDevServer(3230, () => new InstantBackend())
+  const server = await start(3230, () => new InstantBackend())
   try {
     const created = await (await fetch('http://127.0.0.1:3230/api/sessions', {
       method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ backend: 'codex', intent: 'build' }),
@@ -67,7 +72,7 @@ test('a successful build-mode turn triggers a rebuild and notifies the browser',
 })
 
 test('back-to-back build-mode turns coalesce their rebuilds instead of racing', { timeout: 30000 }, async () => {
-  const server = await startDevServer(3231, () => new InstantBackend())
+  const server = await start(3231, () => new InstantBackend())
   try {
     const created = await (await fetch('http://127.0.0.1:3231/api/sessions', {
       method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ backend: 'codex', intent: 'build' }),
@@ -88,7 +93,7 @@ test('back-to-back build-mode turns coalesce their rebuilds instead of racing', 
 test('build intent is server-owned: omitted intent stays read-only and never rebuilds; explicit build intent is writable and rebuilds', { timeout: 30000 }, async () => {
   const modes = []
   const createBackend = (mode) => { modes.push(mode); return new InstantBackend() }
-  const server = await startDevServer(3232, createBackend)
+  const server = await start(3232, createBackend)
   try {
     const readOnly = await (await fetch('http://127.0.0.1:3232/api/sessions', {
       method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ backend: 'codex' }),
@@ -130,7 +135,7 @@ class DelayedBackend {
 
 test('SSE cursor replays a response after disconnecting during work', { timeout: 30000 }, async () => {
   const backend = new DelayedBackend()
-  const server = await startDevServer(3219, () => backend)
+  const server = await start(3219, () => backend)
   try {
     const created = await (await fetch('http://127.0.0.1:3219/api/sessions', {
       method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ backend: 'codex' }),
@@ -159,24 +164,35 @@ test('SSE cursor replays a response after disconnecting during work', { timeout:
   }
 })
 
-test('random session IDs make stale browser IDs safe across server restarts', { timeout: 30000 }, async () => {
-  const firstServer = await startDevServer(3225)
+test('saved sessions survive restart without starting a backend, and resume their saved thread', { timeout: 30000 }, async () => {
+  const state = mkdtempSync(join(tmpdir(), 'golem-state-'))
+  const backends = []
+  class ThreadBackend extends InstantBackend {
+    constructor(threadId) { super(); this.savedThread = threadId; this.currentThread = threadId }
+    async send(text) { this.currentThread ??= 'native-thread'; await super.send(`${this.currentThread}:${text}`) }
+    threadId() { return this.currentThread }
+  }
+  const makeBackend = (_mode, threadId) => { const backend = new ThreadBackend(threadId); backends.push(backend); return backend }
+  const firstServer = await startDevServer(3225, makeBackend, state)
   let stale
   try {
     stale = (await (await fetch('http://127.0.0.1:3225/api/sessions', {
-      method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ backend: 'codex' }),
+      method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ backend: 'codex', intent: 'build' }),
     })).json()).id
+    await fetch(`http://127.0.0.1:3225/api/sessions/${stale}`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ text: 'first' }) })
   } finally {
     await new Promise((resolve) => firstServer.close(resolve))
   }
-  const secondServer = await startDevServer(3225)
+  const secondServer = await startDevServer(3225, makeBackend, state)
   try {
-    const fresh = (await (await fetch('http://127.0.0.1:3225/api/sessions', {
-      method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ backend: 'codex' }),
-    })).json()).id
-    assert.notEqual(stale, fresh)
-    assert.equal((await fetch(`http://127.0.0.1:3225/api/sessions/${stale}/history`)).status, 404)
-    assert.equal((await fetch(`http://127.0.0.1:3225/api/sessions/${fresh}/history`)).status, 200)
+    assert.equal(backends.at(-1).started, undefined, 'recovery must not start an agent')
+    const history = await (await fetch(`http://127.0.0.1:3225/api/sessions/${stale}/history`)).json()
+    assert.equal(history.status, 'ready')
+    assert.deepEqual(history.events.filter((event) => event.type === 'user' || event.type === 'message').map((event) => event.text), ['first', 'echo:native-thread:first'])
+    const followup = await fetch(`http://127.0.0.1:3225/api/sessions/${stale}`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ text: 'followup' }) })
+    assert.equal(followup.status, 202)
+    assert.equal(backends.at(-1).savedThread, 'native-thread')
+    assert.equal(backends.at(-1).started, true)
   } finally {
     await new Promise((resolve) => secondServer.close(resolve))
   }
