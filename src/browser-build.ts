@@ -7,7 +7,12 @@ import { resolveUiSource } from '../vite.config.ts';
 
 const frameworkRoot = resolve(fileURLToPath(new URL('..', import.meta.url)));
 
-/** The one build boundary used by both `./golem build` and `./golem dev`. */
+/**
+ * The one build boundary used by both `./golem build` and `./golem dev`.
+ * Typecheck runs before the Vite build on purpose: Vite's own `dist/` write only happens once
+ * its build succeeds, so checking types first means a type-only failure never touches `dist/`
+ * either, matching the same previous-build-preserved-on-failure guarantee a parse failure gets.
+ */
 export async function buildBrowser(): Promise<void> {
   const ui = resolveUiSource();
   if (process.env.GOLEM_SOURCE) console.log(`Golem source: ${frameworkRoot} (${gitRevision(frameworkRoot)})`);
@@ -15,7 +20,6 @@ export async function buildBrowser(): Promise<void> {
     console.log(`Golem source: ${frameworkRoot} (${gitRevision(frameworkRoot)})`);
     console.log(`golem-ui source: ${ui.root} (${ui.revision})`);
   }
-  await build({ configFile: resolve(frameworkRoot, 'vite.config.ts') });
   const tsc = resolve(frameworkRoot, 'node_modules/.bin/tsc');
   const typeRoots = existsSync(resolve(frameworkRoot, 'node_modules/@types'))
     ? resolve(frameworkRoot, 'node_modules/@types')
@@ -30,6 +34,31 @@ export async function buildBrowser(): Promise<void> {
     '--typeRoots', typeRoots,
     resolve(process.cwd(), 'src/app.tsx'), resolve(process.cwd(), 'golem.config.ts'),
   ], { cwd: process.cwd(), stdio: 'inherit' });
+  await build({ configFile: resolve(frameworkRoot, 'vite.config.ts') });
+}
+
+let buildInFlight: Promise<void> | undefined
+let queued = false
+
+/**
+ * Server-owned rebuild trigger for after a build-mode turn. Coalesces overlapping calls into
+ * one rerun instead of racing concurrent `buildBrowser()` invocations.
+ */
+export function rebuild(): Promise<void> {
+  if (buildInFlight) { queued = true; return buildInFlight }
+  buildInFlight = runQueuedBuilds()
+  return buildInFlight
+}
+
+async function runQueuedBuilds(): Promise<void> {
+  try {
+    do {
+      queued = false
+      await buildBrowser()
+    } while (queued)
+  } finally {
+    buildInFlight = undefined
+  }
 }
 
 function gitRevision(root: string): string {

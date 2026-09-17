@@ -64,8 +64,9 @@ function fromEvents(events: Array<{ type: string; sequence: number; text?: strin
   })
 }
 
+/** The only session-starting call in the UI — declares build intent explicitly; the server decides permission from it. */
 export async function startBrowserSession(): Promise<{ id: string; backend: string }> {
-  const response = await fetch('/api/sessions', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ backend: 'codex' }) })
+  const response = await fetch('/api/sessions', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ backend: 'codex', intent: 'build' }) })
   const result = await response.json() as { id?: string; backend?: string; error?: string }
   if (!response.ok || !result.id) throw new Error(result.error ?? 'Unable to start session')
   source?.close()
@@ -115,6 +116,8 @@ function applyEvent(event: { sessionId?: string; sequence: number; type: string;
   if (event.sequence <= cursor) return
   cursor = event.sequence
   if (event.status) setStatus(event.status)
+  // Live-only: a replayed 'rebuilt' from history/reload restoration must never re-trigger this.
+  if (event.type === 'rebuilt') { window.location.reload(); return }
   mergeEvents([event])
   emit()
 }

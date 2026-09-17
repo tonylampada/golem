@@ -28,6 +28,45 @@ test('adapter merges live events that arrive before the delayed history snapshot
   assert.equal(statuses.at(-1), 'interrupted')
 })
 
+test('a live rebuilt event reloads the canvas', async () => {
+  const sources = []
+  const reloads = []
+  globalThis.window = { sessionStorage: { getItem: () => null, setItem() {}, removeItem() {} }, location: { reload: () => reloads.push(true) } }
+  globalThis.EventSource = class {
+    constructor() { sources.push(this) }
+    close() {}
+  }
+  globalThis.fetch = async (url, options = {}) => {
+    if (url === '/api/sessions' && options.method === 'POST') return { ok: true, json: async () => ({ id: 'reload-session', backend: 'codex' }) }
+    throw new Error(`unexpected fetch ${url}`)
+  }
+  const { chat, startBrowserSession } = await import('../src/browser/adapters.ts')
+  await startBrowserSession()
+  chat.subscribe(() => {})
+  sources.at(-1).onmessage({ data: JSON.stringify({ sessionId: 'reload-session', sequence: 0, type: 'rebuilt' }) })
+  assert.deepEqual(reloads, [true])
+})
+
+test('a rebuilt event replayed from history/reload restoration never reloads', async () => {
+  const reloads = []
+  globalThis.window = { sessionStorage: { getItem: () => 'reload-session', setItem() {}, removeItem() {} }, location: { reload: () => reloads.push(true) } }
+  globalThis.EventSource = class {
+    constructor() {}
+    close() {}
+  }
+  globalThis.fetch = async (url) => {
+    if (url === '/api/sessions/reload-session/history') {
+      return { ok: true, json: async () => ({ events: [{ sequence: 0, type: 'status', status: 'ready' }, { sequence: 1, type: 'rebuilt' }], status: 'ready' }) }
+    }
+    throw new Error(`unexpected fetch ${url}`)
+  }
+  // This is the same restoration path a page reload takes: bulk history merge, never through applyEvent.
+  const { restoreBrowserSession } = await import('../src/browser/adapters.ts')
+  const restored = await restoreBrowserSession()
+  assert.equal(restored, true)
+  assert.deepEqual(reloads, [])
+})
+
 test('session replacement rejects stale events and old cleanup preserves the new stream', async () => {
   const sources = []
   let starts = 0

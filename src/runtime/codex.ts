@@ -2,8 +2,19 @@ import { spawn, type ChildProcess } from 'node:child_process'
 import type { BackendEvent, SessionBackend } from './session.ts'
 
 type JsonEvent = { type?: string; thread_id?: string; item?: { type?: string; text?: string }; error?: string; message?: string }
+export type SandboxMode = 'read-only' | 'danger-full-access'
 
-/** One native `codex exec --json` process per turn; the thread id preserves continuity. */
+/**
+ * One native `codex exec --json` process per turn; the thread id preserves continuity.
+ * `mode` is chosen by the caller (the dev server, from the session's explicit build intent),
+ * never defaulted here: an explicit build intent selects `danger-full-access`, a supported
+ * `-s`/`--sandbox` value (`codex exec --help`) that runs with the account's own ordinary
+ * filesystem permissions — not the `--dangerously-bypass-approvals-and-sandbox` omnibus flag,
+ * which is never used here; every other session stays `read-only`.
+ *
+ * `cwd`/`-C` are pinned to the resolved app root so Codex resolves relative paths correctly —
+ * not as a security boundary. A build-mode session can write anywhere this account can.
+ */
 export class CodexBackend implements SessionBackend {
   private emit!: (event: BackendEvent) => void
   private threadId: string | undefined
@@ -11,10 +22,14 @@ export class CodexBackend implements SessionBackend {
   private request: Promise<void> | undefined
   private interrupted = false
   private childClosed: Promise<void> | undefined
+  private readonly cwd: string
+  private readonly mode: SandboxMode
   private readonly executable: string
   private readonly prefixArgs: string[]
 
-  constructor(executable = 'codex', prefixArgs: string[] = []) {
+  constructor(cwd: string, mode: SandboxMode, executable = 'codex', prefixArgs: string[] = []) {
+    this.cwd = cwd
+    this.mode = mode
     this.executable = executable
     this.prefixArgs = prefixArgs
   }
@@ -24,11 +39,11 @@ export class CodexBackend implements SessionBackend {
   send(text: string): Promise<void> {
     if (this.request) return Promise.reject(new Error('Codex is already handling a request'))
     const args = this.threadId
-      ? [...this.prefixArgs, 'exec', 'resume', this.threadId, '--json', '-c', 'sandbox_mode="read-only"', '--skip-git-repo-check', text]
-      : [...this.prefixArgs, 'exec', '--json', '-s', 'read-only', '--skip-git-repo-check', text]
+      ? [...this.prefixArgs, 'exec', 'resume', this.threadId, '--json', '-c', `sandbox_mode="${this.mode}"`, '--skip-git-repo-check', text]
+      : [...this.prefixArgs, 'exec', '--json', '-s', this.mode, '-C', this.cwd, '--skip-git-repo-check', text]
     this.request = new Promise((resolve, reject) => {
       this.interrupted = false
-      const child = spawn(this.executable, args, { stdio: ['ignore', 'pipe', 'pipe'], windowsHide: true, detached: process.platform !== 'win32' })
+      const child = spawn(this.executable, args, { cwd: this.cwd, stdio: ['ignore', 'pipe', 'pipe'], windowsHide: true, detached: process.platform !== 'win32' })
       this.child = child
       this.childClosed = new Promise((resolve) => child.once('close', () => resolve()))
       let stderr = ''

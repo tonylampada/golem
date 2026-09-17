@@ -33,6 +33,90 @@ test('HTTP transport validates mutations and isolates server-owned sessions', { 
   }
 })
 
+class InstantBackend {
+  async start(emit) { this.emit = emit }
+  async send(text) { this.emit({ type: 'message', text: `echo:${text}` }) }
+  async shutdown() {}
+}
+
+async function waitForHistory(port, id, predicate, timeout = 20_000) {
+  const until = Date.now() + timeout
+  while (Date.now() < until) {
+    const history = await (await fetch(`http://127.0.0.1:${port}/api/sessions/${id}/history`)).json()
+    if (predicate(history.events)) return history
+    await new Promise((resolve) => setTimeout(resolve, 50))
+  }
+  throw new Error('timed out waiting for history')
+}
+
+test('a successful build-mode turn triggers a rebuild and notifies the browser', { timeout: 30000 }, async () => {
+  const server = await startDevServer(3230, () => new InstantBackend())
+  try {
+    const created = await (await fetch('http://127.0.0.1:3230/api/sessions', {
+      method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ backend: 'codex', intent: 'build' }),
+    })).json()
+    const send = await fetch(`http://127.0.0.1:3230/api/sessions/${created.id}`, {
+      method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ text: 'edit it' }),
+    })
+    assert.equal(send.status, 202)
+    const history = await waitForHistory(3230, created.id, (events) => events.some((event) => event.type === 'rebuilt'))
+    assert.deepEqual(history.events.map((event) => event.type), ['status', 'user', 'message', 'rebuilt'])
+  } finally {
+    await new Promise((resolve) => server.close(resolve))
+  }
+})
+
+test('back-to-back build-mode turns coalesce their rebuilds instead of racing', { timeout: 30000 }, async () => {
+  const server = await startDevServer(3231, () => new InstantBackend())
+  try {
+    const created = await (await fetch('http://127.0.0.1:3231/api/sessions', {
+      method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ backend: 'codex', intent: 'build' }),
+    })).json()
+    const send = (text) => fetch(`http://127.0.0.1:3231/api/sessions/${created.id}`, {
+      method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ text }),
+    })
+    const [first, second] = await Promise.all([send('one'), send('two')])
+    assert.equal(first.status, 202)
+    assert.equal(second.status, 202)
+    const history = await waitForHistory(3231, created.id, (events) => events.filter((event) => event.type === 'rebuilt').length >= 1 && events.filter((event) => event.type === 'user').length === 2)
+    assert.ok(!history.events.some((event) => event.type === 'error'))
+  } finally {
+    await new Promise((resolve) => server.close(resolve))
+  }
+})
+
+test('build intent is server-owned: omitted intent stays read-only and never rebuilds; explicit build intent is writable and rebuilds', { timeout: 30000 }, async () => {
+  const modes = []
+  const createBackend = (mode) => { modes.push(mode); return new InstantBackend() }
+  const server = await startDevServer(3232, createBackend)
+  try {
+    const readOnly = await (await fetch('http://127.0.0.1:3232/api/sessions', {
+      method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ backend: 'codex' }),
+    })).json()
+    const build = await (await fetch('http://127.0.0.1:3232/api/sessions', {
+      method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ backend: 'codex', intent: 'build' }),
+    })).json()
+    assert.deepEqual(modes, ['read-only', 'danger-full-access'])
+
+    await fetch(`http://127.0.0.1:3232/api/sessions/${readOnly.id}`, {
+      method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ text: 'hi' }),
+    })
+    await fetch(`http://127.0.0.1:3232/api/sessions/${build.id}`, {
+      method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ text: 'hi' }),
+    })
+
+    const buildHistory = await waitForHistory(3232, build.id, (events) => events.some((event) => event.type === 'rebuilt'))
+    assert.ok(buildHistory.events.some((event) => event.type === 'rebuilt'))
+
+    // Give a stray rebuild a chance to land on the read-only session if the server-side gate were missing.
+    await new Promise((resolve) => setTimeout(resolve, 500))
+    const readOnlyHistory = await (await fetch(`http://127.0.0.1:3232/api/sessions/${readOnly.id}/history`)).json()
+    assert.ok(!readOnlyHistory.events.some((event) => event.type === 'rebuilt'))
+  } finally {
+    await new Promise((resolve) => server.close(resolve))
+  }
+})
+
 class DelayedBackend {
   async start(emit) { this.emit = emit }
   async send(text) {
