@@ -38,8 +38,8 @@ composition boundary: anonymous identity and browser navigation are explicit hos
 the chat adapter connects explicit browser build-mode sessions to the local Codex runtime.
 
 Check types with `pnpm exec tsc --noEmit`; run the CLI/HTTP smoke check with
-`pnpm test` (the script runs the CLI test first, then the runtime/transport tests serially because
-the CLI test intentionally removes and rebuilds the shared `dist/` directory; requires port 3000).
+`node --test --test-concurrency=1 test/*.mjs` (serial because the CLI test intentionally removes
+and rebuilds the shared `dist/` directory; requires port 3000).
 
 ## Future generated projects
 

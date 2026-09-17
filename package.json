@@ -4,9 +4,6 @@
   "private": true,
   "type": "module",
   "packageManager": "pnpm@10.28.2",
-  "scripts": {
-    "test": "node --test test/cli.test.mjs && node --test test/browser-adapter.test.mjs test/codex.test.mjs test/runtime.test.mjs test/transport.test.mjs"
-  },
   "engines": {
     "node": ">=22.18.0",
     "pnpm": "10.28.2"

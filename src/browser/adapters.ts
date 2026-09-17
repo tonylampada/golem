@@ -45,11 +45,12 @@ const statusListeners = new Set<(status: string) => void>()
 const emit = () => listeners.forEach((listener) => listener([...messages]))
 const setStatus = (next: string) => { status = next; statusListeners.forEach((listener) => listener(status)) }
 
-function mergeEvents(events: Array<{ sequence: number; type: string; text?: string; status?: string; reason?: string }>): void {
+function mergeEvents(events: Array<{ sequence: number; type: string; text?: string; status?: string; reason?: string }>): string | undefined {
   for (const event of events) if (!eventLog.has(event.sequence)) eventLog.set(event.sequence, event)
   const ordered = [...eventLog.values()].sort((left, right) => left.sequence - right.sequence)
   cursor = Math.max(cursor, ...ordered.map((event) => event.sequence))
   messages = fromEvents(ordered)
+  return ordered.findLast((event) => event.type === 'status')?.status
 }
 
 function fromEvents(events: Array<{ type: string; sequence: number; text?: string; status?: string; reason?: string }>): ChatMessage[] {
@@ -90,8 +91,7 @@ export async function restoreBrowserSession(): Promise<boolean> {
   if (!response.ok) throw new Error((await response.json()).error ?? 'Unable to restore session')
   const result = await response.json() as { events: Array<{ sequence: number; type: string; text?: string; reason?: string }>; status: string }
   eventLog = new Map()
-  mergeEvents(result.events)
-  setStatus(result.status)
+  setStatus(mergeEvents(result.events) ?? result.status)
   emit()
   return true
 }
@@ -122,8 +122,7 @@ export const chat: ChatAdapter = {
     const response = await fetch(`/api/sessions/${sessionId}/history`)
     if (!response.ok) throw new Error((await response.json()).error ?? 'Unable to load session history')
     const result = await response.json() as { events: Array<{ sequence: number; type: string; text?: string; reason?: string }>; status: string }
-    mergeEvents(result.events)
-    setStatus(result.status)
+  setStatus(mergeEvents(result.events) ?? result.status)
     emit()
     return [...messages]
   },
