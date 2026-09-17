@@ -19,6 +19,7 @@ test('init creates the editable boundary and refuses repeat overwrite', { timeou
     for (const file of ['package.json', 'golem.config.ts', 'src/app.tsx', 'docs/domain.md', 'golem']) {
       assert.ok(readFileSync(join(root, file)))
     }
+    assert.match(readFileSync(join(root, '.gitignore'), 'utf8'), /^\.golem\/$/m)
     writeFileSync(join(root, 'sentinel.txt'), 'keep')
     const repeat = spawnSync(process.execPath, [cli, 'init'], { cwd: root, encoding: 'utf8' })
     assert.equal(repeat.status, 1)
