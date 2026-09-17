@@ -55,7 +55,8 @@ test('invalid configuration fails before localhost fallback', () => {
     for (const source of [
       "export default { title: 'Golem', host: '' }\n",
       "export default { title: 'Golem', port: 3000.5 }\n",
-      "export default { title: 'Golem', host: '0.0.0.0' }\n",
+      "export default { title: 'Golem', host: null }\n",
+      "export default { title: 'Golem', port: null }\n",
       'export default {\n',
     ]) {
       writeFileSync(join(root, 'golem.config.ts'), source)

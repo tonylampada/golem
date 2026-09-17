@@ -38,6 +38,28 @@ test('HTTP transport validates mutations and isolates server-owned sessions', { 
   }
 })
 
+test('a configured non-default host accepts its own origin and rejects others', { timeout: 30000 }, async () => {
+  const port = 3217
+  const host = '127.0.0.2'
+  const server = await startDevServer(port, () => { throw new Error('backend must not start') }, mkdtempSync(join(tmpdir(), 'golem-state-')), host)
+  try {
+    const accepted = await fetch(`http://${host}:${port}/api/sessions`, {
+      method: 'POST',
+      headers: { origin: `http://${host}:${port}`, 'content-type': 'application/json' },
+      body: JSON.stringify({ backend: 'invalid' }),
+    })
+    assert.equal(accepted.status, 400)
+    const rejected = await fetch(`http://${host}:${port}/api/sessions`, {
+      method: 'POST',
+      headers: { origin: 'https://example.invalid', 'content-type': 'application/json' },
+      body: JSON.stringify({ backend: 'invalid' }),
+    })
+    assert.equal(rejected.status, 403)
+  } finally {
+    await new Promise((resolve) => server.close(resolve))
+  }
+})
+
 class InstantBackend {
   async start(emit) { this.started = true; this.emit = emit }
   async send(text) { this.emit({ type: 'message', text: `echo:${text}` }) }

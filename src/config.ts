@@ -15,13 +15,10 @@ export async function loadAppConfig(): Promise<AppConfig> {
     throw new Error('golem.config.ts must default-export an object')
   }
   const configured = value as { host?: unknown; port?: unknown }
-  const host: unknown = configured.host ?? '127.0.0.1'
-  const port: unknown = configured.port ?? 3000
+  const host: unknown = configured.host === undefined ? '127.0.0.1' : configured.host
+  const port: unknown = configured.port === undefined ? 3000 : configured.port
   if (typeof host !== 'string' || !host.trim()) {
     throw new Error('golem.config.ts host must be a nonempty string')
-  }
-  if (host === '0.0.0.0') {
-    throw new Error('golem.config.ts host must not be 0.0.0.0')
   }
   if (typeof port !== 'number' || !Number.isInteger(port) || port < 1 || port > 65_535) {
     throw new Error('golem.config.ts port must be an integer from 1 to 65535')

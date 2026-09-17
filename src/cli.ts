@@ -46,7 +46,7 @@ if (args.length || !['help', 'init', 'dev', 'build', 'doctor'].includes(command)
 Ready: local CLI, HTTP shell, golem-ui browser build and Codex session seam.
 Claude integration: not yet connected.
 Not implemented: Claude integration.
-No network exposure is enabled; the dev server binds to loopback.`);
+The dev server defaults to 127.0.0.1:3000 and uses optional host/port from golem.config.ts.`);
       break;
     case 'build':
       try {

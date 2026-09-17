@@ -33,12 +33,12 @@ default server binds to loopback on port 3000. To use another local port or a
 specific tailnet address, export optional root settings from `golem.config.ts`:
 
 ```ts
-export default { title: 'Golem', host: '100.114.197.65', port: 3000 }
+export default { title: 'Golem', host: '100.64.0.10', port: 3000 }
 ```
 
-`host` must be a nonempty string and `port` an integer from 1 through 65535;
-`0.0.0.0` is not accepted. Configuration, build, and bind failures are printed
-by `./golem dev`. Restart the server after changing these settings.
+`host` must be a nonempty string and `port` an integer from 1 through 65535.
+Configuration, build, and bind failures are printed by `./golem dev`. Restart
+the server after changing these settings.
 `doctor` succeeding means its report ran, not that the full product is ready.
 
 `src/dev-server.ts` exports `startDevServer(port = 3000, backend, stateDirectory, host = '127.0.0.1')`, resolving to a listening
