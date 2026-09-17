@@ -111,6 +111,28 @@ test('interruption rejects queued sends and only a fresh action resumes', async 
   assert.equal(session.status, 'ready')
 })
 
+test('shutdown cancels a same-stack send before backend dispatch', async () => {
+  const backend = new FakeBackend()
+  const session = await new SessionManager().start('claude', backend)
+  const send = session.send('not dispatched')
+  await session.shutdown()
+  await assert.rejects(send, /stopped/)
+  assert.deepEqual(backend.events, [])
+})
+
+test('interruption before dispatch cancels old work before fresh resumption', async () => {
+  const backend = new PendingBackend()
+  const session = await new SessionManager().start('claude', backend)
+  const old = session.send('old')
+  backend.interrupt('cancelled')
+  await assert.rejects(old, /interrupted/)
+  const fresh = session.send('fresh')
+  await new Promise((resolve) => setImmediate(resolve))
+  backend.pending.resolve()
+  await fresh
+  assert.deepEqual(backend.events, ['send:fresh'])
+})
+
 test('startup failure remains terminal and shuts the backend down', async () => {
   const backend = new FakeBackend()
   const originalStart = backend.start
@@ -123,6 +145,7 @@ test('shutdown does not wait for send and runs backend shutdown once', async () 
   const backend = new PendingBackend()
   const session = await new SessionManager().start('claude', backend)
   const send = session.send('pending')
+  await new Promise((resolve) => setImmediate(resolve))
   const shutdowns = await Promise.all([session.shutdown(), session.shutdown()])
   assert.equal(shutdowns.length, 2)
   assert.equal(backend.stopped, 1)

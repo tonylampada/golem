@@ -30,6 +30,7 @@ export class Session {
   private sequence = 0
   private readonly pending: Array<{ text: string; resolve: () => void; reject: (error: Error) => void }> = []
   private active = false
+  private dispatchScheduled = false
   private closed = false
   private shutdownPromise: Promise<void> | undefined
   private workerShutdownPromise: Promise<void> | undefined
@@ -106,17 +107,27 @@ export class Session {
   }
 
   private pump(): void {
-    if (this.active || this.closed || this.status !== 'ready') return
-    const next = this.pending.shift()
+    if (this.active || this.dispatchScheduled || this.closed || this.status !== 'ready') return
+    const next = this.pending[0]
     if (!next) return
-    this.active = true
-    this.record({ type: 'user', text: next.text })
+    this.dispatchScheduled = true
     Promise.resolve()
-      .then(() => this.worker.send(next.text))
-      .then(next.resolve, next.reject)
-      .finally(() => {
-        this.active = false
-        this.pump()
+      .then(() => {
+        this.dispatchScheduled = false
+        if (this.closed || this.status !== 'ready' || this.pending[0] !== next) {
+          this.pump()
+          return
+        }
+        this.pending.shift()
+        this.active = true
+        this.record({ type: 'user', text: next.text })
+        Promise.resolve()
+          .then(() => this.worker.send(next.text))
+          .then(next.resolve, next.reject)
+          .finally(() => {
+            this.active = false
+            this.pump()
+          })
       })
   }
 
