@@ -18,14 +18,14 @@ cd my-app
 npx golem-kit init
 ```
 
-Do this once to create the application. It does not launch it. The generated project includes an executable `golem` wrapper at its root, so you can discover and run its commands without writing package scripts:
+Do this once to create the application. Then start it:
 
 ```sh
 ./golem help
 ./golem dev
 ```
 
-The running Golem shell checks whether Claude Code or Codex is available and starts a usable one automatically. If it finds neither, it shows the instructions needed to install one. Open the browser address printed in the terminal and select **Enter build mode**. The agent takes over onboarding: tell it what you want and start building together.
+Open the browser address printed in the terminal and select **Enter build mode**. Tell the agent what you want to build.
 
 ## What You Get
 
