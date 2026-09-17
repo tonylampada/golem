@@ -7,7 +7,7 @@ import { test } from 'node:test'
 import { CodexBackend } from '../src/runtime/codex.ts'
 
 const appRoot = realpathSync(mkdtempSync(join(tmpdir(), 'golem-codex-test-')))
-const fake = (code) => new CodexBackend(appRoot, process.execPath, ['-e', code])
+const fake = (code, mode = 'workspace-write') => new CodexBackend(appRoot, mode, process.execPath, ['-e', code])
 
 async function waitFor(check, timeout = 1_000) {
   const until = Date.now() + timeout
@@ -44,6 +44,20 @@ test('Codex backend parses native JSONL, pins workspace-write to the app root, a
   assert.deepEqual(events, [{ type: 'message', text: 'REAL_REPLY' }])
   await backend.send('followup')
   assert.deepEqual(events, [{ type: 'message', text: 'REAL_REPLY' }, { type: 'message', text: 'RESUMED_REPLY' }])
+  await backend.shutdown()
+})
+
+test('Codex backend defaults to whatever sandbox mode the caller passes, never upgrading it', async () => {
+  const backend = fake(`
+    const a = process.argv.slice(1)
+    if (!a.includes('-s') || !a.includes('read-only') || a.includes('workspace-write')) process.exit(4)
+    console.log(JSON.stringify({type:'thread.started',thread_id:'fake-thread'}))
+    console.log(JSON.stringify({type:'item.completed',item:{type:'agent_message',text:'RO_REPLY'}}))
+  `, 'read-only')
+  const events = []
+  await backend.start((event) => events.push(event))
+  await backend.send('hello')
+  assert.deepEqual(events, [{ type: 'message', text: 'RO_REPLY' }])
   await backend.shutdown()
 })
 

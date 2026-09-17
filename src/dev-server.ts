@@ -4,7 +4,7 @@ import { extname, join, normalize, resolve } from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { buildBrowser, rebuild } from './browser-build.ts';
 import { discoverAgents, runtimeState } from './runtime/discovery.ts';
-import { CodexBackend } from './runtime/codex.ts';
+import { CodexBackend, type SandboxMode } from './runtime/codex.ts';
 import { SessionManager, type Session, type SessionBackend } from './runtime/session.ts';
 
 const appRoot = resolve(process.cwd());
@@ -17,7 +17,10 @@ const types: Record<string, string> = {
 };
 
 // The CLI owns logging and signals; this server only serves the built browser shell.
-export async function startDevServer(port = 3000, createBackend: () => SessionBackend = () => new CodexBackend(appRoot)): Promise<Server> {
+export async function startDevServer(
+  port = 3000,
+  createBackend: (mode: SandboxMode) => SessionBackend = (mode) => new CodexBackend(appRoot, mode),
+): Promise<Server> {
   await buildBrowser();
   const sessions = new SessionManager();
   const server = createServer((request, response) => {
@@ -38,7 +41,7 @@ async function handleRequest(
   response: import('node:http').ServerResponse,
   sessions: SessionManager,
   port: number,
-  createBackend: () => SessionBackend,
+  createBackend: (mode: SandboxMode) => SessionBackend,
 ): Promise<void> {
     const url = new URL(request.url ?? '/', 'http://127.0.0.1');
     decodeURIComponent(url.pathname);
@@ -116,7 +119,7 @@ async function handleApi(
   url: URL,
   sessions: SessionManager,
   port: number,
-  createBackend: () => SessionBackend,
+  createBackend: (mode: SandboxMode) => SessionBackend,
 ): Promise<void> {
   if (request.method === 'GET' && url.pathname === '/api/runtime') {
     const discoveries = await discoverAgents();
@@ -126,9 +129,11 @@ async function handleApi(
   if (request.method === 'POST' && url.pathname === '/api/sessions') {
     if (!mutationAllowed(request, port)) return json(response, 403, { error: 'Cross-origin mutations are not allowed' });
     try {
-      const input = await body(request) as { backend?: string };
+      const input = await body(request) as { backend?: string; intent?: string };
       if (input.backend !== 'codex') return json(response, 400, { error: 'Only the connected Codex backend can start a session' });
-      const session = await sessions.start('codex', createBackend());
+      // Server-owned: only an explicit build intent grants workspace-write. Omitted intent stays read-only.
+      const buildMode = input.intent === 'build';
+      const session = await sessions.start('codex', createBackend(buildMode ? 'workspace-write' : 'read-only'), buildMode);
       json(response, 201, { id: session.id, backend: session.backend, status: session.status });
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
@@ -161,7 +166,7 @@ async function handleApi(
       if (typeof input.text !== 'string' || !input.text.trim()) return json(response, 400, { error: 'text must be a non-empty string' });
       await session.send(input.text);
       json(response, 202, { status: session.status });
-      triggerRebuild(session);
+      if (session.buildMode) triggerRebuild(session);
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
       json(response, message.startsWith('Request body') ? 400 : 409, { error: message, status: session.status });

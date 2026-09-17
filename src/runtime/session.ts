@@ -39,16 +39,20 @@ export class Session {
   private activeReject: ((error: Error) => void) | undefined
   readonly id: string
   readonly backend: AgentName
+  /** Server-owned: set once at creation from the request's explicit build intent, never inferred. */
+  readonly buildMode: boolean
   private readonly worker: SessionBackend
 
   constructor(
     backend: AgentName,
     worker: SessionBackend,
     id: string,
+    buildMode = false,
   ) {
     this.id = id
     this.backend = backend
     this.worker = worker
+    this.buildMode = buildMode
   }
 
   async start(): Promise<void> {
@@ -198,8 +202,8 @@ export class Session {
 export class SessionManager {
   private readonly sessions = new Map<string, Session>()
 
-  async start(backend: AgentName, worker: SessionBackend): Promise<Session> {
-    const session = new Session(backend, worker, randomUUID())
+  async start(backend: AgentName, worker: SessionBackend, buildMode = false): Promise<Session> {
+    const session = new Session(backend, worker, randomUUID(), buildMode)
     this.sessions.set(session.id, session)
     try {
       await session.start()

@@ -2,11 +2,12 @@ import { spawn, type ChildProcess } from 'node:child_process'
 import type { BackendEvent, SessionBackend } from './session.ts'
 
 type JsonEvent = { type?: string; thread_id?: string; item?: { type?: string; text?: string }; error?: string; message?: string }
+export type SandboxMode = 'read-only' | 'workspace-write'
 
 /**
  * One native `codex exec --json` process per turn; the thread id preserves continuity.
- * Every turn is workspace-write, confined to `cwd` (the resolved app root) — this backend
- * is only ever reached through the explicit "Enter build mode" session, never a default.
+ * `mode` is chosen by the caller (the dev server, from the session's explicit build intent),
+ * never defaulted here, and every turn is confined to `cwd` (the resolved app root).
  * `exec resume` has no `-C`/`--add-dir` flag, so confinement on resumed turns relies solely
  * on the child process's own `cwd`, not a Codex-level flag.
  */
@@ -18,11 +19,13 @@ export class CodexBackend implements SessionBackend {
   private interrupted = false
   private childClosed: Promise<void> | undefined
   private readonly cwd: string
+  private readonly mode: SandboxMode
   private readonly executable: string
   private readonly prefixArgs: string[]
 
-  constructor(cwd: string, executable = 'codex', prefixArgs: string[] = []) {
+  constructor(cwd: string, mode: SandboxMode, executable = 'codex', prefixArgs: string[] = []) {
     this.cwd = cwd
+    this.mode = mode
     this.executable = executable
     this.prefixArgs = prefixArgs
   }
@@ -32,8 +35,8 @@ export class CodexBackend implements SessionBackend {
   send(text: string): Promise<void> {
     if (this.request) return Promise.reject(new Error('Codex is already handling a request'))
     const args = this.threadId
-      ? [...this.prefixArgs, 'exec', 'resume', this.threadId, '--json', '-c', 'sandbox_mode="workspace-write"', '--skip-git-repo-check', text]
-      : [...this.prefixArgs, 'exec', '--json', '-s', 'workspace-write', '-C', this.cwd, '--skip-git-repo-check', text]
+      ? [...this.prefixArgs, 'exec', 'resume', this.threadId, '--json', '-c', `sandbox_mode="${this.mode}"`, '--skip-git-repo-check', text]
+      : [...this.prefixArgs, 'exec', '--json', '-s', this.mode, '-C', this.cwd, '--skip-git-repo-check', text]
     this.request = new Promise((resolve, reject) => {
       this.interrupted = false
       const child = spawn(this.executable, args, { cwd: this.cwd, stdio: ['ignore', 'pipe', 'pipe'], windowsHide: true, detached: process.platform !== 'win32' })
