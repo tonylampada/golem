@@ -1,5 +1,5 @@
 import { startDevServer } from './dev-server.ts';
-import { execFileSync } from 'node:child_process';
+import { buildBrowser } from './browser-build.ts';
 
 const help = `Golem — local project CLI
 
@@ -8,7 +8,7 @@ Usage: ./golem <command>
   help    Show every command (also the default).
   dev     Serve the browser shell at http://127.0.0.1:3000/.
           Stop with Ctrl+C. No agent runtime is connected.
-  build   Build the browser shell into dist/ (via pnpm build).
+  build   Build the browser shell into dist/.
   doctor  Report local shell readiness without agents or network access.
 
 Requires Node.js >=22.18.0. Commands accept no additional arguments.
@@ -33,7 +33,7 @@ No agent executables or network access are required for this check.`);
       break;
     case 'build':
       try {
-        execFileSync('pnpm', ['build'], { stdio: 'inherit' });
+        await buildBrowser();
       } catch {
         process.exitCode = 1;
       }

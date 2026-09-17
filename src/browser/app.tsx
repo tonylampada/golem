@@ -18,7 +18,7 @@ export function App() {
           </div>
         </section>
       }
-      account={<span className="shrink-0 text-sm text-neutral-500">Anonymous · no authorization</span>}
+      account={<span className="shrink-0 text-sm text-neutral-500">Guest</span>}
     />
   )
 }

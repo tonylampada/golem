@@ -31,12 +31,19 @@ export const navigation: NavigationAdapter = {
   },
 }
 
-/** MNC-137 replaces this seam with the session worker. It never claims to have run a request. */
+/** MNC-137 replaces this seam with the session worker. This response never claims work ran. */
+const messages: ChatMessage[] = []
+const listeners = new Set<(messages: ChatMessage[]) => void>()
+const emit = () => listeners.forEach((listener) => listener([...messages]))
+
 export const chat: ChatAdapter = {
-  history: async () => [],
-  subscribe: () => () => {},
-  async send(_text: string, _attachments?: ChatAttachment[]) {
-    throw new Error('No agent is connected; this development shell did not execute the request.')
+  history: async () => [...messages],
+  subscribe(listener) { listeners.add(listener); return () => listeners.delete(listener) },
+  async send(text, attachments) {
+    const at = new Date().toISOString()
+    messages.push({ id: `dev-user-${messages.length}`, role: 'user', text, at, attachments })
+    messages.push({ id: `dev-agent-${messages.length}`, role: 'agent', at, text: 'No agent is connected. No work was executed.' })
+    emit()
   },
 }
 

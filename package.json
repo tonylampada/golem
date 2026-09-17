@@ -4,10 +4,6 @@
   "private": true,
   "type": "module",
   "packageManager": "pnpm@10.28.2",
-  "scripts": {
-    "build": "vite build && tsc --noEmit",
-    "typecheck": "tsc --noEmit"
-  },
   "engines": {
     "node": ">=22.18.0",
     "pnpm": "10.28.2"
