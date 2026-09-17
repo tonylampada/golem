@@ -13,10 +13,16 @@ Install Node.js and tmux, and sign in to Claude Code or Codex. Then:
 ```sh
 mkdir my-app
 cd my-app
-npx @tonylampada/golem init
+npx golem-kit init
 ```
 
-Golem sets up and starts your application. Open the browser address printed in the terminal and select **Enter build mode**. The agent takes over onboarding: tell it what you want and start building together.
+Do this once to create the application. Then start it whenever you want to work on it:
+
+```sh
+npm run dev
+```
+
+Open the browser address printed in the terminal and select **Enter build mode**. The agent takes over onboarding: tell it what you want and start building together.
 
 ## What You Get
 
