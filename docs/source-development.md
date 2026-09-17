@@ -35,18 +35,26 @@ To return to the published dependency, omit the variable:
 ./golem dev
 ```
 
-With the server running, these direct browser assertions check the marker, computed font/display,
-and desktop/mobile chat/canvas geometry. The Playwright module path below is the local fallback used
-by the acceptance check:
+With the server running, these direct browser assertions check the expected placeholder, computed
+font/display, and desktop/mobile chat/canvas geometry. Install Playwright and its managed Chromium
+in a temporary directory. Set GOLEM_BROWSER_EXECUTABLE only when using another browser binary:
 
 ```sh
-export PLAYWRIGHT_MODULE=/home/ai/.npm/_npx/9833c18b2d85bc59/node_modules/playwright/index.mjs
-GOLEM_UI_SOURCE=../golem-ui GOLEM_BROWSER_SCREENSHOT=.artifacts/source \
+browser_tools=$(mktemp -d)
+npm --prefix "$browser_tools" install --no-save playwright
+"$browser_tools/node_modules/.bin/playwright" install chromium
+export PLAYWRIGHT_MODULE="$browser_tools/node_modules/playwright/index.mjs"
+GOLEM_UI_SOURCE=../golem-ui GOLEM_EXPECTED_PLACEHOLDER='Message the agent…' GOLEM_BROWSER_SCREENSHOT=.artifacts/source \
   node scripts/browser-assertions.mjs
-unset GOLEM_UI_SOURCE
+unset GOLEM_UI_SOURCE GOLEM_EXPECTED_PLACEHOLDER
 GOLEM_BROWSER_SCREENSHOT=.artifacts/published node scripts/browser-assertions.mjs
+rm -rf "$browser_tools"
 ```
 
+For example, an explicit browser binary can be selected with `GOLEM_BROWSER_EXECUTABLE=/path/to/chrome`.
+
+For a temporary source marker experiment, set GOLEM_EXPECTED_PLACEHOLDER to the marker after
+editing the isolated UI checkout. Ordinary source mode expects the normal Message the agent… placeholder.
 No package scripts or lockfiles need to change when switching modes. `golem-ui` itself uses Vite
 and its package build is `pnpm build`; source mode consumes its TypeScript entry point directly.
 

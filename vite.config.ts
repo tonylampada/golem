@@ -43,8 +43,9 @@ export default defineConfig(async (): Promise<UserConfig> => {
       name: 'golem-ui-source-path',
       enforce: 'pre',
       transform(code: string, id: string) {
+        const sourcePath = JSON.stringify(ui.root.replaceAll('\\', '/'))
         return id.split('?')[0] === styles
-          ? { code: `@source "${ui.root.replaceAll('\\\\', '/')}";\n${code}`, map: null }
+          ? { code: `@source ${sourcePath};\n${code}`, map: null }
           : undefined
       },
     })
