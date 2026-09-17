@@ -7,18 +7,13 @@ export type SandboxMode = 'read-only' | 'danger-full-access'
 /**
  * One native `codex exec --json` process per turn; the thread id preserves continuity.
  * `mode` is chosen by the caller (the dev server, from the session's explicit build intent),
- * never defaulted here.
+ * never defaulted here: an explicit build intent selects `danger-full-access`, a supported
+ * `-s`/`--sandbox` value (`codex exec --help`) that runs with the account's own ordinary
+ * filesystem permissions — not the `--dangerously-bypass-approvals-and-sandbox` omnibus flag,
+ * which is never used here; every other session stays `read-only`.
  *
- * `danger-full-access` is a supported `-s`/`--sandbox` value (`codex exec --help`), not the
- * `--dangerously-bypass-approvals-and-sandbox` omnibus flag — that flag is never used here.
- * It runs with the account's own ordinary filesystem permissions: `workspace-write`'s
- * app-root confinement needs Codex's own Linux sandbox (bubblewrap), which this host cannot
- * run (`bwrap: setting up uid map: Permission denied`, traced to
- * `kernel.apparmor_restrict_unprivileged_userns=1`); the captain explicitly deferred
- * folder-level write confinement rather than have that host limitation block the actual-edit
- * demo. `cwd`/`-C` are still pinned to the resolved app root here, but only so Codex resolves
- * relative paths correctly — not as a security boundary. A build-mode session can write
- * anywhere this account can.
+ * `cwd`/`-C` are pinned to the resolved app root so Codex resolves relative paths correctly —
+ * not as a security boundary. A build-mode session can write anywhere this account can.
  */
 export class CodexBackend implements SessionBackend {
   private emit!: (event: BackendEvent) => void
