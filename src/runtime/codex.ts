@@ -10,6 +10,7 @@ export class CodexBackend implements SessionBackend {
   private child: ChildProcess | undefined
   private request: Promise<void> | undefined
   private interrupted = false
+  private childClosed: Promise<void> | undefined
   private readonly executable: string
   private readonly prefixArgs: string[]
 
@@ -23,12 +24,13 @@ export class CodexBackend implements SessionBackend {
   send(text: string): Promise<void> {
     if (this.request) return Promise.reject(new Error('Codex is already handling a request'))
     const args = this.threadId
-      ? [...this.prefixArgs, 'exec', 'resume', this.threadId, '--json', '--skip-git-repo-check', text]
+      ? [...this.prefixArgs, 'exec', 'resume', this.threadId, '--json', '-c', 'sandbox_mode="read-only"', '--skip-git-repo-check', text]
       : [...this.prefixArgs, 'exec', '--json', '-s', 'read-only', '--skip-git-repo-check', text]
     this.request = new Promise((resolve, reject) => {
       this.interrupted = false
       const child = spawn(this.executable, args, { stdio: ['ignore', 'pipe', 'pipe'], windowsHide: true })
       this.child = child
+      this.childClosed = new Promise((resolve) => child.once('close', () => resolve()))
       let stderr = ''
       let output = ''
       let settled = false
@@ -37,6 +39,7 @@ export class CodexBackend implements SessionBackend {
         settled = true
         this.emit({ type: 'error', message })
         reject(new Error(message))
+        void this.stopChild(child)
       }
       child.stderr.setEncoding('utf8').on('data', (chunk) => { stderr += chunk })
       child.stdout.setEncoding('utf8').on('data', (chunk) => {
@@ -56,6 +59,7 @@ export class CodexBackend implements SessionBackend {
       child.once('error', (error) => fail(error.message))
       child.once('close', (code, signal) => {
         this.child = undefined
+        this.childClosed = undefined
         this.request = undefined
         if (settled) return
         if (code === 0 || this.interrupted) { settled = true; resolve(); return }
@@ -68,12 +72,21 @@ export class CodexBackend implements SessionBackend {
   async interrupt(): Promise<void> {
     if (!this.child) return
     this.interrupted = true
-    this.child.kill('SIGTERM')
+    await this.stopChild(this.child)
   }
 
   async shutdown(): Promise<void> {
-    if (this.child) this.child.kill('SIGTERM')
+    if (this.child) await this.stopChild(this.child)
     if (this.request) await this.request.catch(() => {})
     this.child = undefined
+  }
+
+  private async stopChild(child: ChildProcess): Promise<void> {
+    if (child.exitCode !== null || child.signalCode !== null) return
+    const closed = this.childClosed ?? new Promise<void>((resolve) => child.once('close', () => resolve()))
+    child.kill('SIGTERM')
+    const escalation = setTimeout(() => { if (child.exitCode === null) child.kill('SIGKILL') }, 250)
+    await Promise.race([closed, new Promise<void>((resolve) => setTimeout(resolve, 1_000))])
+    clearTimeout(escalation)
   }
 }

@@ -84,6 +84,11 @@ export class Session {
     return () => this.listeners.delete(listener)
   }
 
+  subscribeFrom(sequence: number, listener: (event: SessionEvent) => void): () => void {
+    for (const event of this.history) if (event.sequence > sequence) listener(event)
+    return this.subscribe(listener)
+  }
+
   async shutdown(): Promise<void> {
     if (this.shutdownPromise) return this.shutdownPromise
     this.closed = true
@@ -97,6 +102,7 @@ export class Session {
     if (this.closed || this.status === 'stopped') return
     if (this.status !== 'ready') return
     this.setStatus('interrupted')
+    this.record({ type: 'interrupted', reason: 'interrupted by user' })
     this.activeReject?.(new Error('Session interrupted'))
     this.rejectPending(new Error('Session interrupted'))
     await this.worker.interrupt?.()
@@ -106,9 +112,10 @@ export class Session {
     if (this.closed) return
     if (event.type === 'message') this.record({ type: 'message', text: event.text })
     if (event.type === 'interrupted') {
-      this.setStatus('interrupted')
+      const alreadyInterrupted = this.status === 'interrupted'
+      if (!alreadyInterrupted) this.setStatus('interrupted')
       this.rejectPending(new Error('Session interrupted'))
-      this.record({ type: 'interrupted', reason: event.reason })
+      if (!alreadyInterrupted) this.record({ type: 'interrupted', reason: event.reason })
     }
     if (event.type === 'error') {
       this.setStatus('failed')
