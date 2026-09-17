@@ -96,7 +96,7 @@ test('build intent is server-owned: omitted intent stays read-only and never reb
     const build = await (await fetch('http://127.0.0.1:3232/api/sessions', {
       method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ backend: 'codex', intent: 'build' }),
     })).json()
-    assert.deepEqual(modes, ['read-only', 'workspace-write'])
+    assert.deepEqual(modes, ['read-only', 'danger-full-access'])
 
     await fetch(`http://127.0.0.1:3232/api/sessions/${readOnly.id}`, {
       method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ text: 'hi' }),

@@ -131,9 +131,10 @@ async function handleApi(
     try {
       const input = await body(request) as { backend?: string; intent?: string };
       if (input.backend !== 'codex') return json(response, 400, { error: 'Only the connected Codex backend can start a session' });
-      // Server-owned: only an explicit build intent grants workspace-write. Omitted intent stays read-only.
+      // Server-owned: only an explicit build intent grants filesystem access. Omitted intent stays read-only.
+      // danger-full-access, not app-root-confined — see CodexBackend's doc comment for why.
       const buildMode = input.intent === 'build';
-      const session = await sessions.start('codex', createBackend(buildMode ? 'workspace-write' : 'read-only'), buildMode);
+      const session = await sessions.start('codex', createBackend(buildMode ? 'danger-full-access' : 'read-only'), buildMode);
       json(response, 201, { id: session.id, backend: session.backend, status: session.status });
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);

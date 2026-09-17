@@ -7,7 +7,7 @@ import { test } from 'node:test'
 import { CodexBackend } from '../src/runtime/codex.ts'
 
 const appRoot = realpathSync(mkdtempSync(join(tmpdir(), 'golem-codex-test-')))
-const fake = (code, mode = 'workspace-write') => new CodexBackend(appRoot, mode, process.execPath, ['-e', code])
+const fake = (code, mode = 'danger-full-access') => new CodexBackend(appRoot, mode, process.execPath, ['-e', code])
 
 async function waitFor(check, timeout = 1_000) {
   const until = Date.now() + timeout
@@ -27,13 +27,13 @@ async function waitForExit(pid) {
   })
 }
 
-test('Codex backend parses native JSONL, pins workspace-write to the app root, and shuts down a child process', async () => {
+test('Codex backend parses native JSONL, pins the requested sandbox mode and cwd to the app root, and shuts down a child process', async () => {
   const backend = fake(`
     const a = process.argv.slice(1)
     const resume = a.includes('resume')
     const sandboxOk = resume
-      ? (a.includes('-c') && a.includes('sandbox_mode="workspace-write"'))
-      : (a.includes('-s') && a.includes('workspace-write') && a.includes('-C') && a[a.indexOf('-C') + 1] === ${JSON.stringify(appRoot)})
+      ? (a.includes('-c') && a.includes('sandbox_mode="danger-full-access"'))
+      : (a.includes('-s') && a.includes('danger-full-access') && a.includes('-C') && a[a.indexOf('-C') + 1] === ${JSON.stringify(appRoot)})
     if (!sandboxOk || process.cwd() !== ${JSON.stringify(appRoot)}) process.exit(4)
     console.log(JSON.stringify({type:'thread.started',thread_id:'fake-thread'}))
     console.log(JSON.stringify({type:'item.completed',item:{type:'agent_message',text:resume?'RESUMED_REPLY':'REAL_REPLY'}}))
@@ -50,7 +50,7 @@ test('Codex backend parses native JSONL, pins workspace-write to the app root, a
 test('Codex backend defaults to whatever sandbox mode the caller passes, never upgrading it', async () => {
   const backend = fake(`
     const a = process.argv.slice(1)
-    if (!a.includes('-s') || !a.includes('read-only') || a.includes('workspace-write')) process.exit(4)
+    if (!a.includes('-s') || !a.includes('read-only') || a.includes('danger-full-access')) process.exit(4)
     console.log(JSON.stringify({type:'thread.started',thread_id:'fake-thread'}))
     console.log(JSON.stringify({type:'item.completed',item:{type:'agent_message',text:'RO_REPLY'}}))
   `, 'read-only')
