@@ -4,12 +4,25 @@
   "private": true,
   "type": "module",
   "packageManager": "pnpm@10.28.2",
+  "scripts": {
+    "build": "vite build && tsc --noEmit",
+    "typecheck": "tsc --noEmit"
+  },
   "engines": {
     "node": ">=22.18.0",
     "pnpm": "10.28.2"
   },
   "devDependencies": {
     "@types/node": "22.20.3",
-    "typescript": "7.0.2"
+    "@types/react": "19.2.2",
+    "@types/react-dom": "19.2.1",
+    "@vitejs/plugin-react": "5.0.4",
+    "typescript": "7.0.2",
+    "vite": "7.1.9"
+  },
+  "dependencies": {
+    "golem-ui": "0.1.1",
+    "react": "19.2.0",
+    "react-dom": "19.2.0"
   }
 }

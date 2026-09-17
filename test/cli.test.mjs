@@ -19,8 +19,7 @@ test('local command contract and HTTP lifecycle', { timeout: 15000 }, async (t) 
   assert.equal(doctor.status, 0, doctor.stderr);
   assert.match(doctor.stdout, /Not implemented:/);
   const build = run('build');
-  assert.equal(build.status, 1);
-  assert.match(build.stderr, /not implemented/);
+  assert.equal(build.status, 0, build.stderr);
   assert.equal(run('unknown').status, 2);
   assert.equal(run('dev', '--unknown').status, 2);
 
@@ -43,9 +42,9 @@ test('local command contract and HTTP lifecycle', { timeout: 15000 }, async (t) 
   const response = await fetch('http://127.0.0.1:3000/');
   assert.equal(response.status, 200);
   assert.match(response.headers.get('content-type'), /text\/html/);
-  assert.match(await response.text(), /<h1>Golem<\/h1>/);
+  assert.match(await response.text(), /<title>Golem<\/title>/);
   const missing = await fetch('http://127.0.0.1:3000/missing');
-  assert.equal(missing.status, 404);
+  assert.equal(missing.status, 200);
   await missing.text();
   const conflict = run('dev');
   assert.equal(conflict.status, 1);

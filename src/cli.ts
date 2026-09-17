@@ -1,14 +1,15 @@
 import { startDevServer } from './dev-server.ts';
+import { execFileSync } from 'node:child_process';
 
 const help = `Golem — local project CLI
 
 Usage: ./golem <command>
 
   help    Show every command (also the default).
-  dev     Serve the shell placeholder at http://127.0.0.1:3000/.
+  dev     Serve the browser shell at http://127.0.0.1:3000/.
           Stop with Ctrl+C. No agent runtime is connected.
-  build   Not implemented yet; explains the limitation and exits 1.
-  doctor  Report local scaffold readiness without agents or network access.
+  build   Build the browser shell into dist/ (via pnpm build).
+  doctor  Report local shell readiness without agents or network access.
 
 Requires Node.js >=22.18.0. Commands accept no additional arguments.
 Exit codes: 0 success/clean shutdown, 1 unavailable or failed, 2 invalid usage.
@@ -25,14 +26,17 @@ if (args.length || !['help', 'dev', 'build', 'doctor'].includes(command)) {
       console.log(help);
       break;
     case 'doctor':
-      console.log(`Golem scaffold readiness (Node ${process.version})
-Ready: local CLI and HTTP shell placeholder.
-Not implemented: production build, real shell, agent runtime, golem-kit init.
+      console.log(`Golem shell readiness (Node ${process.version})
+Ready: local CLI, HTTP shell and golem-ui browser build.
+Not implemented: agent runtime and golem-kit init.
 No agent executables or network access are required for this check.`);
       break;
     case 'build':
-      console.error('Production build is not implemented in this scaffold. Use ./golem dev to preview the placeholder.');
-      process.exitCode = 1;
+      try {
+        execFileSync('pnpm', ['build'], { stdio: 'inherit' });
+      } catch {
+        process.exitCode = 1;
+      }
       break;
     case 'dev':
       try {
@@ -52,7 +56,7 @@ No agent executables or network access are required for this check.`);
         };
         process.once('SIGINT', stop);
         process.once('SIGTERM', stop);
-        console.log('Golem shell placeholder: http://127.0.0.1:3000/ (Ctrl+C to stop)');
+        console.log('Golem shell: http://127.0.0.1:3000/ (Ctrl+C to stop)');
       } catch (error) {
         console.error(`Cannot start Golem dev server: ${error instanceof Error ? error.message : String(error)}`);
         process.exitCode = 1;
