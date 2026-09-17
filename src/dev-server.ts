@@ -6,6 +6,7 @@ import { buildBrowser, rebuild } from './browser-build.ts';
 import { discoverAgents, runtimeState } from './runtime/discovery.ts';
 import { CodexBackend, type SandboxMode } from './runtime/codex.ts';
 import { SessionManager, type Session, type SessionBackend } from './runtime/session.ts';
+import { ConversationState } from './runtime/state.ts';
 
 const appRoot = resolve(process.cwd());
 const root = pathToFileURL(`${process.cwd()}/dist/`);
@@ -19,17 +20,20 @@ const types: Record<string, string> = {
 // The CLI owns logging and signals; this server only serves the built browser shell.
 export async function startDevServer(
   port = 3000,
-  createBackend: (mode: SandboxMode) => SessionBackend = (mode) => new CodexBackend(appRoot, mode),
+  createBackend: (mode: SandboxMode, threadId?: string) => SessionBackend = (mode, threadId) => new CodexBackend(appRoot, mode, 'codex', [], threadId),
+  stateDirectory = join(appRoot, '.golem'),
 ): Promise<Server> {
   await buildBrowser();
-  const sessions = new SessionManager();
+  const state = new ConversationState(stateDirectory);
+  const sessions = new SessionManager((snapshots) => state.save(snapshots));
+  sessions.restore(await state.load(), (snapshot) => createBackend(snapshot.buildMode ? 'danger-full-access' : 'read-only', snapshot.threadId));
   const server = createServer((request, response) => {
     void handleRequest(request, response, sessions, port, createBackend).catch((error) => {
       if (!response.headersSent) json(response, 400, { error: error instanceof Error ? error.message : 'Malformed request' });
       else response.destroy();
     });
   });
-  server.once('close', () => { void sessions.shutdownAll() });
+  server.once('close', () => { void sessions.disposeAll().then(() => sessions.flushAll()) });
   return new Promise((resolve, reject) => {
     server.once('error', reject);
     server.listen(port, '127.0.0.1', () => resolve(server));
@@ -41,7 +45,7 @@ async function handleRequest(
   response: import('node:http').ServerResponse,
   sessions: SessionManager,
   port: number,
-  createBackend: (mode: SandboxMode) => SessionBackend,
+  createBackend: (mode: SandboxMode, threadId?: string) => SessionBackend,
 ): Promise<void> {
     const url = new URL(request.url ?? '/', 'http://127.0.0.1');
     decodeURIComponent(url.pathname);
@@ -166,6 +170,7 @@ async function handleApi(
       const input = await body(request) as { text?: unknown };
       if (typeof input.text !== 'string' || !input.text.trim()) return json(response, 400, { error: 'text must be a non-empty string' });
       await session.send(input.text);
+      await session.flush();
       json(response, 202, { status: session.status });
       if (session.buildMode) triggerRebuild(session);
     } catch (error) {
@@ -177,6 +182,7 @@ async function handleApi(
   if (request.method === 'POST' && match[2] === 'interrupt') {
     if (!mutationAllowed(request, port)) return json(response, 403, { error: 'Cross-origin mutations are not allowed' });
     await session.interrupt();
+    await session.flush();
     json(response, 200, { status: session.status });
     return;
   }

@@ -116,6 +116,9 @@ function initProject(): void {
 }
 `);
   writeFileSync(resolve(root, 'docs/domain.md'), '# Golem app\n\nA minimal editable app entrypoint.\n');
+  const ignorePath = resolve(root, '.gitignore');
+  const ignore = existsSync(ignorePath) ? readFileSync(ignorePath, 'utf8') : '';
+  if (!ignore.split(/\r?\n/).includes('.golem/')) writeFileSync(ignorePath, `${ignore}${ignore && !ignore.endsWith('\n') ? '\n' : ''}.golem/\n`);
   if (!packageExisted) {
     const packageSpec = process.env.GOLEM_KIT_TARBALL ?? `golem-kit@${framework.version}`;
     execFileSync('pnpm', ['add', '--save-exact', packageSpec], { cwd: root, stdio: 'inherit' });
