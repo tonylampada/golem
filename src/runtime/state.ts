@@ -7,6 +7,7 @@ type State = { version: 1; sessions: SessionSnapshot[] }
 
 export class ConversationState {
   private readonly file: string
+  private writes = Promise.resolve()
 
   constructor(directory: string) { this.file = join(directory, 'conversations.json') }
 
@@ -22,10 +23,16 @@ export class ConversationState {
   }
 
   async save(sessions: SessionSnapshot[]): Promise<void> {
+    const contents = JSON.stringify({ version: 1, sessions }) + '\n'
+    this.writes = this.writes.catch(() => {}).then(() => this.replace(contents))
+    return this.writes
+  }
+
+  private async replace(contents: string): Promise<void> {
     const temporary = `${this.file}.${randomUUID()}.tmp`
     try {
       await mkdir(dirname(this.file), { recursive: true })
-      await writeFile(temporary, JSON.stringify({ version: 1, sessions }) + '\n', 'utf8')
+      await writeFile(temporary, contents, 'utf8')
       await rename(temporary, this.file)
     } catch (error) {
       try { await import('node:fs/promises').then(({ unlink }) => unlink(temporary)) } catch {}

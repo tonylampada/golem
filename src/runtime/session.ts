@@ -200,6 +200,12 @@ export class Session {
         }
         try {
           await this.startWorker()
+          if (this.closed || this.status !== 'ready') {
+            this.active = false
+            next.reject(new Error(`Session ${this.status}`))
+            this.pump()
+            return
+          }
           this.activeReject = next.reject
           Promise.resolve(this.worker.send(next.text)).then(next.resolve, next.reject).finally(() => {
             this.activeReject = undefined
@@ -224,10 +230,11 @@ export class Session {
     return this.workerShutdownPromise
   }
 
-  private async startWorker(): Promise<void> {
-    if (this.workerStarted) return
+  private async startWorker(): Promise<boolean> {
+    if (this.workerStarted) return false
     await this.worker.start((event) => this.receive(event))
     this.workerStarted = true
+    return true
   }
 
   private recoverInterrupted(): void {

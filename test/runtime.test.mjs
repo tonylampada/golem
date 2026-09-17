@@ -1,9 +1,11 @@
 import assert from 'node:assert/strict'
 import { test } from 'node:test'
-import { discoverAgents, probeExecutable, runtimeState, SessionManager } from '../src/runtime/index.ts'
+import { discoverAgents, probeExecutable, runtimeState, Session, SessionManager } from '../src/runtime/index.ts'
 import { ConversationState } from '../src/runtime/state.ts'
 import { mkdtempSync } from 'node:fs'
 import { writeFile } from 'node:fs/promises'
+import fsPromises from 'node:fs/promises'
+import { syncBuiltinESMExports } from 'node:module'
 import { join } from 'node:path'
 import { tmpdir } from 'node:os'
 
@@ -125,14 +127,15 @@ test('shutdown cancels a same-stack send before backend dispatch', async () => {
   assert.deepEqual(backend.events, [])
 })
 
-test('dispatch is atomic across a microtask boundary', async () => {
+test('shutdown across startup yields cancels before backend dispatch', async () => {
   const backend = new FakeBackend()
   const session = await new SessionManager().start('claude', backend)
   const send = session.send('x')
   await Promise.resolve()
   const shutdown = session.shutdown()
-  await Promise.all([send, shutdown])
-  assert.deepEqual(backend.events, ['send:x'])
+  await assert.rejects(send, /stopped/)
+  await shutdown
+  assert.deepEqual(backend.events, [])
   assert.equal(backend.stopped, 1)
 })
 
@@ -211,6 +214,17 @@ test('shutdown does not wait for send and runs backend shutdown once', async () 
   await send
 })
 
+test('cancellation while worker startup yields never dispatches the old send', async () => {
+  for (const action of ['interrupt', 'shutdown']) {
+    const calls = []
+    const worker = { async start() { calls.push('start') }, async send() { calls.push('SEND') }, async interrupt() { calls.push('interrupt') }, async shutdown() { calls.push('shutdown') } }
+    const session = Session.restore({ id: 'restored', backend: 'codex', buildMode: false, status: 'ready', active: false, history: [] }, worker)
+    session.subscribe((event) => { if (event.type === 'user') queueMicrotask(() => { void session[action]() }) })
+    await assert.rejects(session.send('must not execute'), /interrupted|stopped/)
+    assert.ok(!calls.includes('SEND'), action)
+  }
+})
+
 test('conversation state rejects corrupt and unwritable files without replacing them', async () => {
   const directory = mkdtempSync(join(tmpdir(), 'golem-state-'))
   await writeFile(join(directory, 'conversations.json'), '{not json')
@@ -218,4 +232,26 @@ test('conversation state rejects corrupt and unwritable files without replacing 
   const blocked = join(directory, 'not-a-directory')
   await writeFile(blocked, 'file')
   await assert.rejects(new ConversationState(join(blocked, 'child')).save([]), /Cannot save conversations/)
+})
+
+test('conversation state serializes snapshots from independent sessions', async () => {
+  const directory = mkdtempSync(join(tmpdir(), 'golem-state-'))
+  const state = new ConversationState(directory)
+  const originalRename = fsPromises.rename
+  let release
+  const blocked = new Promise((resolve) => { release = resolve })
+  let first = true
+  fsPromises.rename = async (...args) => { if (first) { first = false; await blocked } return originalRename(...args) }
+  syncBuiltinESMExports()
+  try {
+    const one = state.save([{ id: 'one', history: [] }])
+    await new Promise((resolve) => setImmediate(resolve))
+    const two = state.save([{ id: 'one', history: [{ sequence: 1 }] }, { id: 'two', history: [] }])
+    release()
+    await Promise.all([one, two])
+    assert.deepEqual((await state.load()).map(({ id, history }) => [id, history.length]), [['one', 1], ['two', 0]])
+  } finally {
+    fsPromises.rename = originalRename
+    syncBuiltinESMExports()
+  }
 })
