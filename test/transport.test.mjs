@@ -74,3 +74,26 @@ test('SSE cursor replays a response after disconnecting during work', { timeout:
     await new Promise((resolve) => server.close(resolve))
   }
 })
+
+test('random session IDs make stale browser IDs safe across server restarts', { timeout: 30000 }, async () => {
+  const firstServer = await startDevServer(3225)
+  let stale
+  try {
+    stale = (await (await fetch('http://127.0.0.1:3225/api/sessions', {
+      method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ backend: 'codex' }),
+    })).json()).id
+  } finally {
+    await new Promise((resolve) => firstServer.close(resolve))
+  }
+  const secondServer = await startDevServer(3225)
+  try {
+    const fresh = (await (await fetch('http://127.0.0.1:3225/api/sessions', {
+      method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ backend: 'codex' }),
+    })).json()).id
+    assert.notEqual(stale, fresh)
+    assert.equal((await fetch(`http://127.0.0.1:3225/api/sessions/${stale}/history`)).status, 404)
+    assert.equal((await fetch(`http://127.0.0.1:3225/api/sessions/${fresh}/history`)).status, 200)
+  } finally {
+    await new Promise((resolve) => secondServer.close(resolve))
+  }
+})

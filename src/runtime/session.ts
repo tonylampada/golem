@@ -1,3 +1,4 @@
+import { randomUUID } from 'node:crypto'
 import type { AgentName } from './discovery.ts'
 
 export type BackendEvent =
@@ -182,11 +183,10 @@ export class Session {
 }
 
 export class SessionManager {
-  private nextId = 1
   private readonly sessions = new Map<string, Session>()
 
   async start(backend: AgentName, worker: SessionBackend): Promise<Session> {
-    const session = new Session(backend, worker, `session-${this.nextId++}`)
+    const session = new Session(backend, worker, randomUUID())
     this.sessions.set(session.id, session)
     try {
       await session.start()

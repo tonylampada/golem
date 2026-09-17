@@ -37,12 +37,20 @@ let sessionId: string | undefined = (() => {
 })()
 let messages: ChatMessage[] = []
 let cursor = -1
+let eventLog = new Map<number, { sequence: number; type: string; text?: string; status?: string; reason?: string }>()
 let status = 'starting'
 let source: EventSource | undefined
 const listeners = new Set<(messages: ChatMessage[]) => void>()
 const statusListeners = new Set<(status: string) => void>()
 const emit = () => listeners.forEach((listener) => listener([...messages]))
 const setStatus = (next: string) => { status = next; statusListeners.forEach((listener) => listener(status)) }
+
+function mergeEvents(events: Array<{ sequence: number; type: string; text?: string; status?: string; reason?: string }>): void {
+  for (const event of events) if (!eventLog.has(event.sequence)) eventLog.set(event.sequence, event)
+  const ordered = [...eventLog.values()].sort((left, right) => left.sequence - right.sequence)
+  cursor = Math.max(cursor, ...ordered.map((event) => event.sequence))
+  messages = fromEvents(ordered)
+}
 
 function fromEvents(events: Array<{ type: string; sequence: number; text?: string; status?: string; reason?: string }>): ChatMessage[] {
   return events.flatMap((event) => {
@@ -62,6 +70,7 @@ export async function startBrowserSession(): Promise<{ id: string; backend: stri
   sessionId = result.id
   window.sessionStorage.setItem(storageKey, sessionId)
   cursor = -1
+  eventLog = new Map()
   setStatus('ready')
   messages = []
   emit()
@@ -80,8 +89,8 @@ export async function restoreBrowserSession(): Promise<boolean> {
   }
   if (!response.ok) throw new Error((await response.json()).error ?? 'Unable to restore session')
   const result = await response.json() as { events: Array<{ sequence: number; type: string; text?: string; reason?: string }>; status: string }
-  messages = fromEvents(result.events)
-  cursor = Math.max(-1, ...result.events.map((event) => event.sequence))
+  eventLog = new Map()
+  mergeEvents(result.events)
   setStatus(result.status)
   emit()
   return true
@@ -103,7 +112,7 @@ function applyEvent(event: { sequence: number; type: string; text?: string; stat
   if (event.sequence <= cursor) return
   cursor = event.sequence
   if (event.status) setStatus(event.status)
-  messages = [...messages, ...fromEvents([event])]
+  mergeEvents([event])
   emit()
 }
 
@@ -113,9 +122,9 @@ export const chat: ChatAdapter = {
     const response = await fetch(`/api/sessions/${sessionId}/history`)
     if (!response.ok) throw new Error((await response.json()).error ?? 'Unable to load session history')
     const result = await response.json() as { events: Array<{ sequence: number; type: string; text?: string; reason?: string }>; status: string }
-    messages = fromEvents(result.events)
-    cursor = Math.max(-1, ...result.events.map((event) => event.sequence))
+    mergeEvents(result.events)
     setStatus(result.status)
+    emit()
     return [...messages]
   },
   subscribe(listener) {
