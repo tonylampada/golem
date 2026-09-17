@@ -1,16 +1,14 @@
 # Golem
 
-*Design preview: the commands and capabilities below describe the intended product.*
-
 ![Golem mascot](assets/golem-mascot.png)
 
 ## What is Golem?
 
-Golem is a framework for building applications with AI. **Your app is its own IDE:** talk to an agent inside the application to build and evolve it while you use it, all in the same environment.
+Golem is an early local application shell for building applications with AI. **Your app is its own IDE:** enter build mode, ask a locally authenticated Codex to edit the app, and keep using it in the same browser shell.
 
 ## Getting Started
 
-Install Node.js and pnpm. Then run:
+Install Node.js >=22.18.0 and pnpm 10.28.2. Then run:
 
 ```sh
 mkdir my-app
@@ -24,15 +22,20 @@ Start the application:
 ./golem dev
 ```
 
-Open the browser address printed in the terminal and continue following the instructions in the browser.
+Open the browser address printed in the terminal, enter build mode, and start a conversation. Build chat requires the Codex CLI installed and authenticated on the same machine. After a successful build-mode change, the browser shell rebuilds and refreshes; conversations are saved in `.golem/` and restored when the server restarts.
 
-## What You Get
+`./golem build` writes the browser shell to `dist/`. `./golem dev` binds only to `127.0.0.1:3000`.
 
-- 💬 **Build through conversation.** Use the app and change it from the same screen.
-- 🧬 **Readable DNA.** Your app's concepts and rules in Markdown, kept in sync with its code.
-- 🧩 **Shared building blocks.** UI components, libraries, skills and prompts supplied by the framework.
-- 🔌 **One application API.** Documented operations shared by the UI and agents.
-- 🤖 **Your choice of agent.** Claude Code, Codex or API-backed chat, with permissions suited to the task.
-- 🔐 **Access that fits.** Optional login, groups and record-level permissions for users and their agents.
-- 💾 **Pragmatic storage.** JSONL, databases or Markdown knowledge folders, according to your needs.
-- 🏗️ **Room to grow.** TypeScript, shared types, loosely coupled modules and architectural lint defaults you can adapt.
+## Local source development
+
+Use an installed package by default, or opt into a durable checkout while developing Golem:
+
+```sh
+GOLEM_SOURCE=/path/to/golem ./golem dev
+```
+
+See [the local CLI guide](docs/local-cli.md) for the complete command contract.
+
+## Current scope
+
+Claude integration, domain storage, accounts, and permissions are planned, not part of this release.
