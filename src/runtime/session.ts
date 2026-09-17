@@ -121,13 +121,22 @@ export class Session {
         this.pending.shift()
         this.active = true
         this.record({ type: 'user', text: next.text })
-        Promise.resolve()
-          .then(() => this.worker.send(next.text))
-          .then(next.resolve, next.reject)
-          .finally(() => {
+        if (this.closed || this.status !== 'ready') {
+          this.active = false
+          next.reject(new Error(`Session ${this.status}`))
+          this.pump()
+          return
+        }
+        try {
+          Promise.resolve(this.worker.send(next.text)).then(next.resolve, next.reject).finally(() => {
             this.active = false
             this.pump()
           })
+        } catch (error) {
+          this.active = false
+          next.reject(error instanceof Error ? error : new Error(String(error)))
+          this.pump()
+        }
       })
   }
 

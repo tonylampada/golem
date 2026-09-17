@@ -120,6 +120,26 @@ test('shutdown cancels a same-stack send before backend dispatch', async () => {
   assert.deepEqual(backend.events, [])
 })
 
+test('dispatch is atomic across a microtask boundary', async () => {
+  const backend = new FakeBackend()
+  const session = await new SessionManager().start('claude', backend)
+  const send = session.send('x')
+  await Promise.resolve()
+  const shutdown = session.shutdown()
+  await Promise.all([send, shutdown])
+  assert.deepEqual(backend.events, ['send:x'])
+  assert.equal(backend.stopped, 1)
+})
+
+test('subscriber shutdown cancels before backend dispatch', async () => {
+  const backend = new FakeBackend()
+  const session = await new SessionManager().start('claude', backend)
+  session.subscribe((event) => { if (event.type === 'user') void session.shutdown() })
+  await assert.rejects(session.send('subscriber-cancelled'), /stopped/)
+  assert.deepEqual(backend.events, [])
+  assert.equal(backend.stopped, 1)
+})
+
 test('interruption before dispatch cancels old work before fresh resumption', async () => {
   const backend = new PendingBackend()
   const session = await new SessionManager().start('claude', backend)
