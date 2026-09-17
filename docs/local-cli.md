@@ -25,7 +25,7 @@ boundary so a hot-source workflow can select the CLI without changing HTTP start
 | `./golem help` (or `./golem`) | List all commands | 0 |
 | `./golem dev` | Refresh the browser build, then serve it at `http://127.0.0.1:3000/` until SIGINT/SIGTERM | 0 on clean shutdown; 1 on startup failure |
 | `./golem build` | Build the browser shell into `dist/` | 0 |
-| `./golem doctor` | Report local shell readiness; no network or agent checks | 0 |
+| `./golem doctor` | Report local shell and backend readiness | 0 |
 
 Unknown commands and extra arguments exit 2. Built assets are served directly; extensionless browser
 routes fall back to `index.html`, while missing assets return 404. Malformed URLs return 400. The
@@ -35,10 +35,11 @@ server binds to loopback only. Port 3000 must be free.
 `src/dev-server.ts` exports `startDevServer(port = 3000)`, resolving to a listening
 Node HTTP server. It refreshes the browser build before listening; the CLI owns signal handling and output. `src/browser/app.tsx` is the
 composition boundary: anonymous identity and browser navigation are explicit host adapters, while
-the chat adapter is a temporary no-agent seam for MNC-137.
+the chat adapter connects explicit browser build-mode sessions to the local Codex runtime.
 
 Check types with `pnpm exec tsc --noEmit`; run the CLI/HTTP smoke check with
-`node --test test/cli.test.mjs` (requires port 3000).
+`node --test --test-concurrency=1 test/*.mjs` (serial because the CLI test intentionally removes
+and rebuilds the shared `dist/` directory; requires port 3000).
 
 ## Future generated projects
 

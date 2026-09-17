@@ -1,3 +1,4 @@
+import { randomUUID } from 'node:crypto'
 import type { AgentName } from './discovery.ts'
 
 export type BackendEvent =
@@ -10,6 +11,7 @@ export type SessionBackend = {
   start(emit: (event: BackendEvent) => void): Promise<void>
   send(text: string): Promise<void>
   shutdown(): Promise<void>
+  interrupt?(): Promise<void>
 }
 
 export type SessionStatus = 'starting' | 'ready' | 'interrupted' | 'stopped' | 'failed'
@@ -34,6 +36,7 @@ export class Session {
   private closed = false
   private shutdownPromise: Promise<void> | undefined
   private workerShutdownPromise: Promise<void> | undefined
+  private activeReject: ((error: Error) => void) | undefined
   readonly id: string
   readonly backend: AgentName
   private readonly worker: SessionBackend
@@ -67,10 +70,10 @@ export class Session {
   }
 
   send(text: string): Promise<void> {
-    if (this.closed || (this.status !== 'ready' && this.status !== 'interrupted')) {
+    if (this.closed || (this.status !== 'ready' && this.status !== 'interrupted' && this.status !== 'failed')) {
       return Promise.reject(new Error(`Session ${this.status}`))
     }
-    if (this.status === 'interrupted') this.setStatus('ready')
+    if (this.status === 'interrupted' || this.status === 'failed') this.setStatus('ready')
     return new Promise((resolve, reject) => {
       this.pending.push({ text, resolve, reject })
       this.pump()
@@ -82,6 +85,11 @@ export class Session {
     return () => this.listeners.delete(listener)
   }
 
+  subscribeFrom(sequence: number, listener: (event: SessionEvent) => void): () => void {
+    for (const event of this.history) if (event.sequence > sequence) listener(event)
+    return this.subscribe(listener)
+  }
+
   async shutdown(): Promise<void> {
     if (this.shutdownPromise) return this.shutdownPromise
     this.closed = true
@@ -91,13 +99,24 @@ export class Session {
     return this.shutdownPromise
   }
 
+  async interrupt(): Promise<void> {
+    if (this.closed || this.status === 'stopped') return
+    if (this.status !== 'ready') return
+    this.setStatus('interrupted')
+    this.record({ type: 'interrupted', reason: 'interrupted by user' })
+    this.activeReject?.(new Error('Session interrupted'))
+    this.rejectPending(new Error('Session interrupted'))
+    await this.worker.interrupt?.()
+  }
+
   private receive(event: BackendEvent): void {
     if (this.closed) return
     if (event.type === 'message') this.record({ type: 'message', text: event.text })
     if (event.type === 'interrupted') {
-      this.setStatus('interrupted')
+      const alreadyInterrupted = this.status === 'interrupted'
+      if (!alreadyInterrupted) this.setStatus('interrupted')
       this.rejectPending(new Error('Session interrupted'))
-      this.record({ type: 'interrupted', reason: event.reason })
+      if (!alreadyInterrupted) this.record({ type: 'interrupted', reason: event.reason })
     }
     if (event.type === 'error') {
       this.setStatus('failed')
@@ -128,7 +147,9 @@ export class Session {
           return
         }
         try {
+          this.activeReject = next.reject
           Promise.resolve(this.worker.send(next.text)).then(next.resolve, next.reject).finally(() => {
+            this.activeReject = undefined
             this.active = false
             this.pump()
           })
@@ -162,11 +183,10 @@ export class Session {
 }
 
 export class SessionManager {
-  private nextId = 1
   private readonly sessions = new Map<string, Session>()
 
   async start(backend: AgentName, worker: SessionBackend): Promise<Session> {
-    const session = new Session(backend, worker, `session-${this.nextId++}`)
+    const session = new Session(backend, worker, randomUUID())
     this.sessions.set(session.id, session)
     try {
       await session.start()
@@ -178,6 +198,10 @@ export class SessionManager {
   }
 
   get(id: string): Session | undefined { return this.sessions.get(id) }
+
+  async shutdownAll(): Promise<void> {
+    await Promise.all([...this.sessions.values()].map((session) => session.shutdown()))
+  }
 
   async shutdown(id: string): Promise<void> {
     const session = this.sessions.get(id)

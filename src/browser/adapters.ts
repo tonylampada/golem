@@ -31,19 +31,121 @@ export const navigation: NavigationAdapter = {
   },
 }
 
-/** MNC-137 replaces this seam with the session worker. This response never claims work ran. */
-const messages: ChatMessage[] = []
+const storageKey = 'golem.browser.session'
+let sessionId: string | undefined = (() => {
+  try { return window.sessionStorage.getItem(storageKey) ?? undefined } catch { return undefined }
+})()
+let messages: ChatMessage[] = []
+let cursor = -1
+let eventLog = new Map<number, { sequence: number; type: string; text?: string; status?: string; reason?: string }>()
+let status = 'starting'
+let source: EventSource | undefined
 const listeners = new Set<(messages: ChatMessage[]) => void>()
+const statusListeners = new Set<(status: string) => void>()
 const emit = () => listeners.forEach((listener) => listener([...messages]))
+const setStatus = (next: string) => { status = next; statusListeners.forEach((listener) => listener(status)) }
+
+function mergeEvents(events: Array<{ sequence: number; type: string; text?: string; status?: string; reason?: string }>): string | undefined {
+  for (const event of events) if (!eventLog.has(event.sequence)) eventLog.set(event.sequence, event)
+  const ordered = [...eventLog.values()].sort((left, right) => left.sequence - right.sequence)
+  cursor = Math.max(cursor, ...ordered.map((event) => event.sequence))
+  messages = fromEvents(ordered)
+  return ordered.findLast((event) => event.type === 'status')?.status
+}
+
+function fromEvents(events: Array<{ type: string; sequence: number; text?: string; status?: string; reason?: string }>): ChatMessage[] {
+  return events.flatMap((event) => {
+    if ((event.type === 'user' || event.type === 'message') && event.text) {
+      return [{ id: `${event.sequence}`, role: event.type === 'user' ? 'user' : 'agent', text: event.text, at: new Date().toISOString() }]
+    }
+    if (event.type === 'error') return [{ id: `${event.sequence}`, role: 'agent', text: `Error: ${event.text ?? 'Agent failed.'}`, at: new Date().toISOString() }]
+    if (event.type === 'interrupted') return [{ id: `${event.sequence}`, role: 'agent', text: `Interrupted${event.reason ? `: ${event.reason}` : '.'}`, at: new Date().toISOString() }]
+    return []
+  })
+}
+
+export async function startBrowserSession(): Promise<{ id: string; backend: string }> {
+  const response = await fetch('/api/sessions', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ backend: 'codex' }) })
+  const result = await response.json() as { id?: string; backend?: string; error?: string }
+  if (!response.ok || !result.id) throw new Error(result.error ?? 'Unable to start session')
+  sessionId = result.id
+  window.sessionStorage.setItem(storageKey, sessionId)
+  cursor = -1
+  eventLog = new Map()
+  setStatus('ready')
+  messages = []
+  emit()
+  return { id: result.id, backend: result.backend ?? 'codex' }
+}
+
+export function currentBrowserSession(): string | undefined { return sessionId }
+
+export async function restoreBrowserSession(): Promise<boolean> {
+  if (!sessionId) return false
+  const response = await fetch(`/api/sessions/${sessionId}/history`)
+  if (response.status === 404) {
+    sessionId = undefined
+    window.sessionStorage.removeItem(storageKey)
+    return false
+  }
+  if (!response.ok) throw new Error((await response.json()).error ?? 'Unable to restore session')
+  const result = await response.json() as { events: Array<{ sequence: number; type: string; text?: string; reason?: string }>; status: string }
+  eventLog = new Map()
+  setStatus(mergeEvents(result.events) ?? result.status)
+  emit()
+  return true
+}
+
+export function subscribeBrowserStatus(listener: (status: string) => void): () => void {
+  statusListeners.add(listener)
+  listener(status)
+  return () => statusListeners.delete(listener)
+}
+
+export async function interruptBrowserSession(): Promise<void> {
+  if (!sessionId) return
+  const response = await fetch(`/api/sessions/${sessionId}/interrupt`, { method: 'POST', headers: { 'Content-Type': 'application/json' } })
+  if (!response.ok) throw new Error((await response.json()).error ?? 'Unable to interrupt session')
+}
+
+function applyEvent(event: { sequence: number; type: string; text?: string; status?: string; reason?: string }): void {
+  if (event.sequence <= cursor) return
+  cursor = event.sequence
+  if (event.status) setStatus(event.status)
+  mergeEvents([event])
+  emit()
+}
 
 export const chat: ChatAdapter = {
-  history: async () => [...messages],
-  subscribe(listener) { listeners.add(listener); return () => listeners.delete(listener) },
-  async send(text, attachments) {
-    const at = new Date().toISOString()
-    messages.push({ id: `dev-user-${messages.length}`, role: 'user', text, at, attachments })
-    messages.push({ id: `dev-agent-${messages.length}`, role: 'agent', at, text: 'No agent is connected. No work was executed.' })
+  history: async () => {
+    if (!sessionId) return []
+    const response = await fetch(`/api/sessions/${sessionId}/history`)
+    if (!response.ok) throw new Error((await response.json()).error ?? 'Unable to load session history')
+    const result = await response.json() as { events: Array<{ sequence: number; type: string; text?: string; reason?: string }>; status: string }
+  setStatus(mergeEvents(result.events) ?? result.status)
     emit()
+    return [...messages]
+  },
+  subscribe(listener) {
+    listeners.add(listener)
+    if (sessionId) {
+      source?.close()
+      source = new EventSource(`/api/sessions/${sessionId}/events?after=${cursor}`)
+      source.onmessage = (event) => applyEvent(JSON.parse(event.data))
+      source.onerror = () => {
+        if (source?.readyState === EventSource.CLOSED && sessionId) {
+          source = new EventSource(`/api/sessions/${sessionId}/events?after=${cursor}`)
+          source.onmessage = (event) => applyEvent(JSON.parse(event.data))
+        }
+      }
+      return () => { source?.close(); source = undefined; listeners.delete(listener) }
+    }
+    return () => listeners.delete(listener)
+  },
+  async send(text, attachments) {
+    if (!sessionId) throw new Error('Enter build mode before sending a message')
+    const response = await fetch(`/api/sessions/${sessionId}`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ text, attachments }) })
+    if (!response.ok) throw new Error((await response.json()).error ?? 'Agent request failed')
   },
 }
 

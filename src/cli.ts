@@ -7,9 +7,9 @@ Usage: ./golem <command>
 
   help    Show every command (also the default).
   dev     Serve the browser shell at http://127.0.0.1:3000/.
-          Stop with Ctrl+C. No agent runtime is connected.
+          Stop with Ctrl+C. Uses the local Codex runtime from the browser.
   build   Build the browser shell into dist/.
-  doctor  Report local shell readiness without agents or network access.
+  doctor  Report local shell and backend readiness.
 
 Requires Node.js >=22.18.0. Commands accept no additional arguments.
 Exit codes: 0 success/clean shutdown, 1 unavailable or failed, 2 invalid usage.
@@ -27,9 +27,10 @@ if (args.length || !['help', 'dev', 'build', 'doctor'].includes(command)) {
       break;
     case 'doctor':
       console.log(`Golem shell readiness (Node ${process.version})
-Ready: local CLI, HTTP shell and golem-ui browser build.
-Not implemented: agent runtime and golem-kit init.
-No agent executables or network access are required for this check.`);
+Ready: local CLI, HTTP shell, golem-ui browser build and Codex session seam.
+Claude integration: not yet connected.
+Not implemented: Claude integration and golem-kit init.
+No network exposure is enabled; the dev server binds to loopback.`);
       break;
     case 'build':
       try {
