@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import { Chat, Shell } from 'golem-ui'
 import UserApp from '@golem/app'
 import projectConfig from '@golem/config'
@@ -11,6 +11,8 @@ export function App() {
   const [mode, setMode] = useState(false)
   const [session, setSession] = useState<string>()
   const [sessionStatus, setSessionStatus] = useState('starting')
+  const [enteringBuildMode, setEnteringBuildMode] = useState(false)
+  const enteringBuildModeRef = useRef(false)
   const [runtime, setRuntime] = useState<{ codex: boolean; claude: boolean }>({ codex: false, claude: false })
   const [error, setError] = useState<string>()
   useEffect(() => {
@@ -27,9 +29,13 @@ export function App() {
     return unsubscribe
   }, [])
   const enterBuildMode = async () => {
+    if (enteringBuildModeRef.current) return
+    enteringBuildModeRef.current = true
+    setEnteringBuildMode(true)
     setError(undefined)
     try { const started = await startBrowserSession(); setSession(started.id); setMode(true) }
     catch (cause) { setError(cause instanceof Error ? cause.message : String(cause)) }
+    finally { enteringBuildModeRef.current = false; setEnteringBuildMode(false) }
   }
   const interrupt = async () => {
     try { await interruptBrowserSession() } catch (cause) { setError(cause instanceof Error ? cause.message : String(cause)) }
@@ -45,7 +51,7 @@ export function App() {
             <span className={mode ? 'text-green-700' : 'text-neutral-500'}>{mode ? `${sessionStatus} · ${session}` : 'Not connected'}</span>
             {mode && (sessionStatus === 'ready' || sessionStatus === 'starting') && <button className="rounded border border-red-300 px-2 py-1 text-red-700" onClick={interrupt}>Interrupt</button>}
           </div>
-          {!mode ? <div className="p-4 text-sm"><p className="text-neutral-600">Codex: {runtime.codex ? 'available' : 'unavailable'} · Claude: not yet connected</p><button className="mt-4 rounded bg-neutral-900 px-3 py-2 text-white disabled:opacity-40" disabled={!runtime.codex} onClick={enterBuildMode}>Enter build mode</button>{error && <p className="mt-3 text-red-700">{error}</p>}</div> : <Chat key={session} config={{ agentName: 'Golem Codex', emptyState: 'Ask Codex to inspect or explain this workspace.' }} adapters={chatAdapters} />}
+          {!mode ? <div className="p-4 text-sm"><p className="text-neutral-600">Codex: {runtime.codex ? 'available' : 'unavailable'} · Claude: not yet connected</p><button className="mt-4 rounded bg-neutral-900 px-3 py-2 text-white disabled:opacity-40" disabled={!runtime.codex || enteringBuildMode} onClick={enterBuildMode}>Enter build mode</button>{error && <p className="mt-3 text-red-700">{error}</p>}</div> : <Chat key={session} config={{ agentName: 'Golem Codex', emptyState: 'Ask Codex to inspect or explain this workspace.' }} adapters={chatAdapters} />}
         </div>
       }
       canvas={
