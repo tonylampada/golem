@@ -60,11 +60,14 @@ export default defineConfig(async (): Promise<UserConfig> => {
   return {
     plugins,
     resolve: {
-      alias: ui ? [
-        { find: /^golem-ui$/, replacement: resolve(ui.root, 'src/index.ts') },
-        { find: /^golem-ui\/styles\.css$/, replacement: resolve(ui.root, 'src/styles.css') },
+      alias: [
+        ...(ui ? [
+          { find: /^golem-ui$/, replacement: resolve(ui.root, 'src/index.ts') },
+          { find: /^golem-ui\/styles\.css$/, replacement: resolve(ui.root, 'src/styles.css') },
+        ] : []),
         { find: /^@golem\/app$/, replacement: resolve(appRoot, 'src/app.tsx') },
-      ] : [{ find: /^@golem\/app$/, replacement: resolve(appRoot, 'src/app.tsx') }],
+        { find: /^@golem\/config$/, replacement: resolve(appRoot, 'golem.config.ts') },
+      ],
       dedupe: ['react', 'react-dom'],
     },
     root: frameworkRoot,

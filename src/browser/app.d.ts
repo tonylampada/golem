@@ -3,3 +3,7 @@ declare module '@golem/app' {
   const App: ComponentType
   export default App
 }
+declare module '@golem/config' {
+  const config: { title: string }
+  export default config
+}

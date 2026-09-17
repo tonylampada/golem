@@ -10,7 +10,7 @@
     "erasableSyntaxOnly": true,
     "skipLibCheck": true,
     "types": ["node"],
-    "paths": { "@golem/app": ["./src/app.tsx"] }
+    "paths": { "@golem/app": ["./src/app.tsx"], "@golem/config": ["./golem.config.ts"] }
   },
   "include": ["src/**/*.ts", "src/**/*.tsx", "vite.config.ts"]
 }

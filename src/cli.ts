@@ -87,20 +87,22 @@ function initProject(): void {
   const existing = files.filter((file) => existsSync(resolve(root, file)));
   if (existing.length) throw new Error(`refusing to overwrite existing files: ${existing.join(', ')}`);
   const packagePath = resolve(root, 'package.json');
+  const packageExisted = existsSync(packagePath);
   if (existsSync(packagePath)) {
     const current = JSON.parse(readFileSync(packagePath, 'utf8')) as { dependencies?: Record<string, string> };
     if (!current.dependencies?.['golem-kit']) throw new Error('refusing to overwrite existing package.json');
   }
   const frameworkRoot = resolve(dirname(fileURLToPath(import.meta.url)), '..');
-  const framework = JSON.parse(readFileSync(resolve(frameworkRoot, 'package.json'), 'utf8')) as { dependencies: Record<string, string> };
+  const framework = JSON.parse(readFileSync(resolve(frameworkRoot, 'package.json'), 'utf8')) as { version: string };
   mkdirSync(resolve(root, 'src'), { recursive: true });
   mkdirSync(resolve(root, 'docs'), { recursive: true });
-  const packageJson = existsSync(packagePath) ? JSON.parse(readFileSync(packagePath, 'utf8')) as Record<string, unknown> : {
-    name: 'golem-app', private: true, type: 'module', packageManager: 'pnpm@10.28.2',
-    engines: { node: '>=22.18.0', pnpm: '10.28.2' },
-  };
-  packageJson.dependencies = { ...framework.dependencies, ...(packageJson.dependencies as Record<string, string> | undefined) };
-  writeFileSync(packagePath, JSON.stringify(packageJson, null, 2) + '\n');
+  if (!existsSync(packagePath)) {
+    writeFileSync(packagePath, JSON.stringify({
+      name: 'golem-app', private: true, type: 'module', packageManager: 'pnpm@10.28.2',
+      engines: { node: '>=22.18.0', pnpm: '10.28.2' },
+      ...(process.env.GOLEM_KIT_TARBALL ? {} : { dependencies: { 'golem-kit': framework.version } }),
+    }, null, 2) + '\n');
+  }
   writeFileSync(resolve(root, 'golem.config.ts'), "export default { title: 'Golem' }\n");
   writeFileSync(resolve(root, 'src/app.tsx'), `export default function App() {
   return (
@@ -114,6 +116,9 @@ function initProject(): void {
 }
 `);
   writeFileSync(resolve(root, 'docs/domain.md'), '# Golem app\n\nA minimal editable app entrypoint.\n');
-  execFileSync('pnpm', ['add', '--save-exact', frameworkRoot], { cwd: root, stdio: 'inherit' });
-  writeFileSync(resolve(root, 'golem'), '#!/bin/sh\nset -eu\nexec "$(dirname -- "$0")/node_modules/.bin/golem-kit" "$@"\n', { mode: 0o755 });
+  if (!packageExisted) {
+    const packageSpec = process.env.GOLEM_KIT_TARBALL ?? `golem-kit@${framework.version}`;
+    execFileSync('pnpm', ['add', '--save-exact', packageSpec], { cwd: root, stdio: 'inherit' });
+  }
+  writeFileSync(resolve(root, 'golem'), '#!/bin/sh\nset -eu\ncd -- "$(dirname -- "$0")"\nif [ -n "${GOLEM_SOURCE:-}" ]; then\n  exec node "$GOLEM_SOURCE/src/cli.ts" "$@"\nfi\nexec node_modules/.bin/golem-kit "$@"\n', { mode: 0o755 });
 }
