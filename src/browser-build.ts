@@ -32,6 +32,30 @@ export async function buildBrowser(): Promise<void> {
   ], { cwd: process.cwd(), stdio: 'inherit' });
 }
 
+let buildInFlight: Promise<void> | undefined
+let queued = false
+
+/**
+ * Server-owned rebuild trigger for after a build-mode turn. Coalesces overlapping calls into
+ * one rerun instead of racing concurrent `buildBrowser()` invocations.
+ */
+export function rebuild(): Promise<void> {
+  if (buildInFlight) { queued = true; return buildInFlight }
+  buildInFlight = runQueuedBuilds()
+  return buildInFlight
+}
+
+async function runQueuedBuilds(): Promise<void> {
+  try {
+    do {
+      queued = false
+      await buildBrowser()
+    } while (queued)
+  } finally {
+    buildInFlight = undefined
+  }
+}
+
 function gitRevision(root: string): string {
   try {
     return execFileSync('git', ['-C', root, 'rev-parse', '--short', 'HEAD'], { encoding: 'utf8' }).trim();

@@ -115,6 +115,8 @@ function applyEvent(event: { sessionId?: string; sequence: number; type: string;
   if (event.sequence <= cursor) return
   cursor = event.sequence
   if (event.status) setStatus(event.status)
+  // Live-only: a replayed 'rebuilt' from history/reload restoration must never re-trigger this.
+  if (event.type === 'rebuilt') { window.location.reload(); return }
   mergeEvents([event])
   emit()
 }

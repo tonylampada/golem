@@ -19,7 +19,7 @@ export type SessionStatus = 'starting' | 'ready' | 'interrupted' | 'stopped' | '
 export type SessionEvent = {
   sequence: number
   sessionId: string
-  type: 'status' | 'user' | 'message' | 'interrupted' | 'error'
+  type: 'status' | 'user' | 'message' | 'interrupted' | 'error' | 'rebuilt'
   status?: SessionStatus
   text?: string
   reason?: string
@@ -107,6 +107,19 @@ export class Session {
     this.activeReject?.(new Error('Session interrupted'))
     this.rejectPending(new Error('Session interrupted'))
     await this.worker.interrupt?.()
+  }
+
+  /** Server-owned rebuild-then-refresh signal; fired once after a successful build-mode turn. */
+  notifyRebuilt(): void {
+    if (this.closed) return
+    this.record({ type: 'rebuilt' })
+  }
+
+  /** Routed through the existing error surface: visible in chat, session stays recoverable. */
+  notifyBuildFailed(message: string): void {
+    if (this.closed) return
+    this.setStatus('failed')
+    this.record({ type: 'error', text: message })
   }
 
   private receive(event: BackendEvent): void {

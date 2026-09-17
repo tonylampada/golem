@@ -1,9 +1,13 @@
 import assert from 'node:assert/strict'
+import { mkdtempSync, realpathSync } from 'node:fs'
 import { readFile, rm } from 'node:fs/promises'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
 import { test } from 'node:test'
 import { CodexBackend } from '../src/runtime/codex.ts'
 
-const fake = (code) => new CodexBackend(process.execPath, ['-e', code])
+const appRoot = realpathSync(mkdtempSync(join(tmpdir(), 'golem-codex-test-')))
+const fake = (code) => new CodexBackend(appRoot, process.execPath, ['-e', code])
 
 async function waitFor(check, timeout = 1_000) {
   const until = Date.now() + timeout
@@ -23,8 +27,17 @@ async function waitForExit(pid) {
   })
 }
 
-test('Codex backend parses native JSONL and shuts down a child process', async () => {
-  const backend = fake("const a=process.argv.slice(1); const resume=a.includes('resume'); if ((!resume && (!a.includes('-s') || !a.includes('read-only'))) || (resume && (!a.includes('-c') || !a.includes('sandbox_mode=\\\"read-only\\\"')))) process.exit(4); console.log(JSON.stringify({type:'thread.started',thread_id:'fake-thread'})); console.log(JSON.stringify({type:'item.completed',item:{type:'agent_message',text:resume?'RESUMED_REPLY':'REAL_REPLY'}}))")
+test('Codex backend parses native JSONL, pins workspace-write to the app root, and shuts down a child process', async () => {
+  const backend = fake(`
+    const a = process.argv.slice(1)
+    const resume = a.includes('resume')
+    const sandboxOk = resume
+      ? (a.includes('-c') && a.includes('sandbox_mode="workspace-write"'))
+      : (a.includes('-s') && a.includes('workspace-write') && a.includes('-C') && a[a.indexOf('-C') + 1] === ${JSON.stringify(appRoot)})
+    if (!sandboxOk || process.cwd() !== ${JSON.stringify(appRoot)}) process.exit(4)
+    console.log(JSON.stringify({type:'thread.started',thread_id:'fake-thread'}))
+    console.log(JSON.stringify({type:'item.completed',item:{type:'agent_message',text:resume?'RESUMED_REPLY':'REAL_REPLY'}}))
+  `)
   const events = []
   await backend.start((event) => events.push(event))
   await backend.send('hello')

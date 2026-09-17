@@ -161,6 +161,36 @@ test('startup failure remains terminal and shuts the backend down', async () => 
   assert.equal(backend.stopped, 1)
 })
 
+test('notifyRebuilt records a rebuilt event without disturbing status', async () => {
+  const session = await new SessionManager().start('codex', new FakeBackend())
+  session.notifyRebuilt()
+  assert.deepEqual(session.history.map(({ type }) => type), ['status', 'rebuilt'])
+  assert.equal(session.status, 'ready')
+})
+
+test('notifyBuildFailed routes through the existing error surface and stays recoverable', async () => {
+  const backend = new FakeBackend()
+  const session = await new SessionManager().start('codex', backend)
+  session.notifyBuildFailed('syntax error in src/app.tsx')
+  assert.equal(session.status, 'failed')
+  assert.deepEqual(session.history.map(({ type, text }) => ({ type, text })), [
+    { type: 'status', text: undefined },
+    { type: 'status', text: undefined },
+    { type: 'error', text: 'syntax error in src/app.tsx' },
+  ])
+  await session.send('repair it')
+  assert.equal(session.status, 'ready')
+  assert.deepEqual(backend.events, ['send:repair it'])
+})
+
+test('rebuild notifications after shutdown are dropped, not replayed', async () => {
+  const session = await new SessionManager().start('codex', new FakeBackend())
+  await session.shutdown()
+  session.notifyRebuilt()
+  session.notifyBuildFailed('too late')
+  assert.deepEqual(session.history.map(({ type }) => type), ['status', 'status'])
+})
+
 test('shutdown does not wait for send and runs backend shutdown once', async () => {
   const backend = new PendingBackend()
   const session = await new SessionManager().start('claude', backend)
