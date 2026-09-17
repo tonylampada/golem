@@ -1,12 +1,13 @@
 import { createServer, type Server } from 'node:http';
 import { readFile } from 'node:fs/promises';
 import { extname, join, normalize } from 'node:path';
+import { pathToFileURL } from 'node:url';
 import { buildBrowser } from './browser-build.ts';
 import { discoverAgents, runtimeState } from './runtime/discovery.ts';
 import { CodexBackend } from './runtime/codex.ts';
 import { SessionManager, type SessionBackend } from './runtime/session.ts';
 
-const root = new URL('../dist/', import.meta.url);
+const root = pathToFileURL(`${process.cwd()}/dist/`);
 const types: Record<string, string> = {
   '.html': 'text/html; charset=utf-8',
   '.js': 'text/javascript; charset=utf-8',

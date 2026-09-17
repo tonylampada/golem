@@ -1,5 +1,7 @@
 import { useEffect, useRef, useState } from 'react'
 import { Chat, Shell } from 'golem-ui'
+import UserApp from '@golem/app'
+import projectConfig from '@golem/config'
 import { anonymousIdentity, chat, interruptBrowserSession, navigation, restoreBrowserSession, startBrowserSession, subscribeBrowserStatus } from './adapters'
 
 const shellAdapters = { identity: anonymousIdentity, navigation }
@@ -40,7 +42,7 @@ export function App() {
   }
   return (
     <Shell
-      config={{ title: 'Golem', chatSide: 'left', breakpoint: 768 }}
+      config={{ title: projectConfig.title, chatSide: 'left', breakpoint: 768 }}
       adapters={shellAdapters}
       chat={
         <div className="flex h-full min-h-0 flex-col">
@@ -53,12 +55,7 @@ export function App() {
         </div>
       }
       canvas={
-        <section className="flex h-full min-h-64 items-center justify-center bg-neutral-50 p-6 text-center">
-          <div>
-            <h1 className="text-lg font-semibold">Canvas</h1>
-            <p className="mt-2 text-sm text-neutral-500">The agent workspace will appear here.</p>
-          </div>
-        </section>
+        <UserApp />
       }
       account={<span className="shrink-0 text-sm text-neutral-500">Guest</span>}
     />

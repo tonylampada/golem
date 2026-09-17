@@ -5,7 +5,7 @@ import { pathToFileURL } from 'node:url'
 import { defineConfig, type UserConfig } from 'vite'
 import react from '@vitejs/plugin-react'
 
-const projectRoot = import.meta.dirname
+const frameworkRoot = import.meta.dirname
 
 export type UiSource = {
   root: string
@@ -36,6 +36,7 @@ export function resolveUiSource(): UiSource | undefined {
 
 export default defineConfig(async (): Promise<UserConfig> => {
   const ui = resolveUiSource()
+  const appRoot = resolve(process.cwd())
   const plugins: NonNullable<UserConfig['plugins']> = [react()]
   if (ui) {
     const styles = resolve(ui.root, 'src/styles.css')
@@ -59,11 +60,17 @@ export default defineConfig(async (): Promise<UserConfig> => {
   return {
     plugins,
     resolve: {
-      alias: ui ? [
-        { find: /^golem-ui$/, replacement: resolve(ui.root, 'src/index.ts') },
-        { find: /^golem-ui\/styles\.css$/, replacement: resolve(ui.root, 'src/styles.css') },
-      ] : undefined,
+      alias: [
+        ...(ui ? [
+          { find: /^golem-ui$/, replacement: resolve(ui.root, 'src/index.ts') },
+          { find: /^golem-ui\/styles\.css$/, replacement: resolve(ui.root, 'src/styles.css') },
+        ] : []),
+        { find: /^@golem\/app$/, replacement: resolve(appRoot, 'src/app.tsx') },
+        { find: /^@golem\/config$/, replacement: resolve(appRoot, 'golem.config.ts') },
+      ],
       dedupe: ['react', 'react-dom'],
     },
+    root: frameworkRoot,
+    build: { outDir: resolve(appRoot, 'dist'), emptyOutDir: true },
   }
 })

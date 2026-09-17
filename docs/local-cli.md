@@ -9,9 +9,9 @@ The browser shell uses the local Vite build and the published `golem-ui` package
 
 The root wrapper explicitly selects `src/cli.ts` relative to the wrapper's own
 directory. This is the sole CLI entrypoint resolution point today; there is no
-package-name lookup, published npm path, environment override or resolution
-configuration yet. The next card can add source-mode configuration and selection
-at this point, retaining checkout-local source as the default.
+package-name lookup or resolution configuration. Generated app wrappers add an
+explicit `GOLEM_SOURCE=/path/to/golem` opt-in for running a framework checkout
+while keeping the app cwd. Unset it to use the installed pinned package.
 
 The CLI imports `./dev-server.ts` relative to the wrapper. The server serves built `dist/`
 files and does not resolve packages or depend on
@@ -41,12 +41,24 @@ Check types with `pnpm exec tsc --noEmit`; run the CLI/HTTP smoke check with
 `node --test --test-concurrency=1 test/*.mjs` (serial because the CLI test intentionally removes
 and rebuilds the shared `dist/` directory; requires port 3000).
 
-## Future generated projects
+## Generated projects
 
-`npx golem-kit init` is a proposed generator, not an implemented or published
-package in this scaffold. Its intended output is a self-contained project with
-an executable `./golem`, project-local CLI and shell sources, a pinned pnpm
-`packageManager`, lockfile and TypeScript configuration. After `pnpm install`,
-users run `./golem dev` from that project without installing Golem globally.
-This repository demonstrates that local command contract only; generation,
-production packaging and agent integration are future work.
+`golem-kit init` creates `package.json`, `golem.config.ts`, `src/app.tsx`,
+`docs/domain.md`, and an executable `./golem`. Normal initialization writes the
+pinned npm dependency `golem-kit@<framework version>` and installs it with pnpm.
+For local packed-tarball acceptance only, set `GOLEM_KIT_TARBALL=/path/to/golem-kit.tgz`.
+An existing package is supported only when it already declares `golem-kit`; its
+metadata is preserved. Other nonempty destinations are refused.
+
+Two-checkout development:
+
+```sh
+GOLEM_SOURCE=/path/to/golem /path/to/app/golem build
+GOLEM_SOURCE=/path/to/golem /path/to/app/golem dev
+```
+
+The wrapper changes into the app first, so `src/` and `dist/` remain app-owned.
+The framework checkout uses its own installed dependencies. Source-mode builds
+print framework path and short git revision, plus the same fields for
+`GOLEM_UI_SOURCE` when that override is set. Omit both overrides to return to the
+installed pinned package.

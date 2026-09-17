@@ -58,5 +58,8 @@ editing the isolated UI checkout. Ordinary source mode expects the normal Messag
 No package scripts or lockfiles need to change when switching modes. `golem-ui` itself uses Vite
 and its package build is `pnpm build`; source mode consumes its TypeScript entry point directly.
 
-Generated app initialization is not implemented yet. `golem-kit init` is not a working command or
-published package, and this workflow does not claim to provide generated-app packaging.
+For generated apps, `GOLEM_SOURCE=/path/to/golem /path/to/app/golem dev` opts into
+the framework checkout while preserving the app cwd and lockfile. Omit
+`GOLEM_SOURCE` to use the installed pinned `golem-kit`; combine it with
+`GOLEM_UI_SOURCE=/path/to/golem-ui` when developing both checkouts. Source-mode
+builds print each source path and short git revision.

@@ -1,23 +1,35 @@
 import { execFileSync } from 'node:child_process';
+import { existsSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { resolve } from 'node:path';
 import { build } from 'vite';
 import { resolveUiSource } from '../vite.config.ts';
 
-const projectRoot = resolve(fileURLToPath(new URL('..', import.meta.url)));
+const frameworkRoot = resolve(fileURLToPath(new URL('..', import.meta.url)));
 
 /** The one build boundary used by both `./golem build` and `./golem dev`. */
 export async function buildBrowser(): Promise<void> {
   const ui = resolveUiSource();
+  if (process.env.GOLEM_SOURCE) console.log(`Golem source: ${frameworkRoot} (${gitRevision(frameworkRoot)})`);
   if (ui) {
-    console.log(`Golem source: ${projectRoot} (${gitRevision(projectRoot)})`);
+    console.log(`Golem source: ${frameworkRoot} (${gitRevision(frameworkRoot)})`);
     console.log(`golem-ui source: ${ui.root} (${ui.revision})`);
   }
-  await build({ configFile: resolve(projectRoot, 'vite.config.ts') });
-  execFileSync(process.execPath, [resolve(projectRoot, 'node_modules/typescript/bin/tsc'), '--noEmit'], {
-    cwd: projectRoot,
+  await build({ configFile: resolve(frameworkRoot, 'vite.config.ts') });
+  const tsc = resolve(frameworkRoot, 'node_modules/.bin/tsc');
+  const typeRoots = existsSync(resolve(frameworkRoot, 'node_modules/@types'))
+    ? resolve(frameworkRoot, 'node_modules/@types')
+    : resolve(frameworkRoot, '../@types');
+  execFileSync(tsc, ['--noEmit', '-p', resolve(frameworkRoot, 'tsconfig.json')], {
+    cwd: process.cwd(),
     stdio: 'inherit',
   });
+  execFileSync(tsc, [
+    '--ignoreConfig', '--noEmit', '--jsx', 'react-jsx', '--module', 'ESNext',
+    '--moduleResolution', 'Bundler', '--skipLibCheck', '--types', 'node,react,react-dom',
+    '--typeRoots', typeRoots,
+    resolve(process.cwd(), 'src/app.tsx'), resolve(process.cwd(), 'golem.config.ts'),
+  ], { cwd: process.cwd(), stdio: 'inherit' });
 }
 
 function gitRevision(root: string): string {
