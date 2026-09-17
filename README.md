@@ -10,7 +10,7 @@ Golem is a framework for building applications with AI. **Your app is its own ID
 
 ## Getting Started
 
-Install Node.js, pnpm and tmux, and sign in to Claude Code or Codex. Then:
+Install Node.js and pnpm. Then:
 
 ```sh
 mkdir my-app
@@ -25,7 +25,7 @@ Do this once to create the application. It does not launch it. The generated pro
 ./golem dev
 ```
 
-Open the browser address printed in the terminal and select **Enter build mode**. The agent takes over onboarding: tell it what you want and start building together.
+The running Golem shell checks whether Claude Code or Codex is available and starts a usable one automatically. If it finds neither, it shows the instructions needed to install one. Open the browser address printed in the terminal and select **Enter build mode**. The agent takes over onboarding: tell it what you want and start building together.
 
 ## What You Get
 
