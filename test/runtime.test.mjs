@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict'
 import { test } from 'node:test'
-import { discoverAgents, runtimeState, SessionManager } from '../src/runtime/index.ts'
+import { discoverAgents, probeExecutable, runtimeState, SessionManager } from '../src/runtime/index.ts'
 
 const available = (names) => async (executable) => ({ status: names.includes(executable) ? 'available' : 'missing' })
 
@@ -27,6 +27,19 @@ test('discovery preserves failed and timed-out probes', async () => {
   ])
 })
 
+test('probeExecutable handles missing, nonzero, and SIGTERM-resistant timeout processes', async () => {
+  assert.equal((await probeExecutable('/definitely/missing/golem-agent')).status, 'missing')
+  assert.deepEqual(await probeExecutable(process.execPath, ['-e', 'process.exit(3)']), {
+    status: 'failed', detail: 'exited with code 3',
+  })
+  const started = Date.now()
+  const timeout = await probeExecutable(process.execPath, [
+    '-e', 'process.on("SIGTERM", () => {}); setInterval(() => {}, 1000)',
+  ], 40)
+  assert.deepEqual(timeout, { status: 'failed', detail: 'timed out' })
+  assert.ok(Date.now() - started < 1_000)
+})
+
 class FakeBackend {
   events = []
   started = 0
@@ -36,6 +49,13 @@ class FakeBackend {
   async shutdown() { this.stopped++ }
   message(text) { this.events.push(`message:${text}`); this.emit({ type: 'message', text }) }
   interrupt(reason) { this.emit({ type: 'interrupted', reason }) }
+}
+
+class PendingBackend extends FakeBackend {
+  send(text) {
+    this.events.push(`send:${text}`)
+    return new Promise((resolve, reject) => { this.pending = { resolve, reject } })
+  }
 }
 
 test('sessions order events, retain history across subscriptions, and shut down explicitly', async () => {
@@ -70,4 +90,45 @@ test('sessions are independent', async () => {
   assert.notEqual(one.id, two.id)
   await one.send('one')
   assert.deepEqual(two.history.map(({ type }) => type), ['status'])
+})
+
+test('interruption rejects queued sends and only a fresh action resumes', async () => {
+  const backend = new PendingBackend()
+  const session = await new SessionManager().start('claude', backend)
+  const first = session.send('first')
+  await new Promise((resolve) => setImmediate(resolve))
+  const queued = session.send('queued')
+  backend.interrupt('cancelled')
+  await assert.rejects(queued, /interrupted/)
+  backend.pending.resolve()
+  await first
+  assert.deepEqual(backend.events, ['send:first'])
+  const fresh = session.send('fresh')
+  await new Promise((resolve) => setImmediate(resolve))
+  backend.pending.resolve()
+  await fresh
+  assert.deepEqual(backend.events, ['send:first', 'send:fresh'])
+  assert.equal(session.status, 'ready')
+})
+
+test('startup failure remains terminal and shuts the backend down', async () => {
+  const backend = new FakeBackend()
+  const originalStart = backend.start
+  backend.start = async (emit) => { await originalStart.call(backend, emit); emit({ type: 'error', message: 'start failed' }) }
+  await assert.rejects(new SessionManager().start('claude', backend), /failed during startup/)
+  assert.equal(backend.stopped, 1)
+})
+
+test('shutdown does not wait for send and runs backend shutdown once', async () => {
+  const backend = new PendingBackend()
+  const session = await new SessionManager().start('claude', backend)
+  const send = session.send('pending')
+  const shutdowns = await Promise.all([session.shutdown(), session.shutdown()])
+  assert.equal(shutdowns.length, 2)
+  assert.equal(backend.stopped, 1)
+  await assert.rejects(session.send('after shutdown'), /stopped/)
+  backend.message('late')
+  assert.equal(session.history.some(({ text }) => text === 'late'), false)
+  backend.pending.resolve()
+  await send
 })

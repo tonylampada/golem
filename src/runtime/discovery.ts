@@ -23,15 +23,25 @@ export function probeExecutable(executable: string, args = ['--version'], timeou
   return new Promise((resolve) => {
     const child = spawn(executable, args, { stdio: 'ignore', windowsHide: true })
     let settled = false
+    let timedOut = false
+    let timeoutTimer: NodeJS.Timeout
+    let killTimer: NodeJS.Timeout | undefined
+    let settleTimer: NodeJS.Timeout | undefined
     const finish = (result: ProbeResult) => {
       if (settled) return
       settled = true
-      clearTimeout(timer)
+      clearTimeout(timeoutTimer)
+      if (killTimer) clearTimeout(killTimer)
+      if (settleTimer) clearTimeout(settleTimer)
       resolve(result)
     }
-    const timer = setTimeout(() => {
+    timeoutTimer = setTimeout(() => {
+      timedOut = true
       child.kill('SIGTERM')
-      finish({ status: 'failed', detail: 'timed out' })
+      killTimer = setTimeout(() => {
+        child.kill('SIGKILL')
+        settleTimer = setTimeout(() => finish({ status: 'failed', detail: 'timed out' }), 500)
+      }, 100)
     }, timeoutMs)
     child.once('error', (error: NodeJS.ErrnoException) => {
       finish(error.code === 'ENOENT'
@@ -39,9 +49,11 @@ export function probeExecutable(executable: string, args = ['--version'], timeou
         : { status: 'failed', detail: error.message })
     })
     child.once('exit', (code, signal) => {
-      finish(code === 0
-        ? { status: 'available' }
-        : { status: 'failed', detail: signal ? `terminated by ${signal}` : `exited with code ${code}` })
+      finish(timedOut
+        ? { status: 'failed', detail: 'timed out' }
+        : code === 0
+          ? { status: 'available' }
+          : { status: 'failed', detail: signal ? `terminated by ${signal}` : `exited with code ${code}` })
     })
   })
 }
