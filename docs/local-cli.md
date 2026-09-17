@@ -5,6 +5,21 @@ Run `pnpm install`, then `./golem help`. The executable wrapper resolves the
 project-local CLI relative to itself, including when invoked from another directory.
 There are no package lifecycle scripts, global CLI installation or runtime dependencies.
 
+## Source resolution seam
+
+The root wrapper explicitly selects `src/cli.ts` relative to the wrapper's own
+directory. This is the sole CLI entrypoint resolution point today; there is no
+package-name lookup, published npm path, environment override or resolution
+configuration yet. The next card can add source-mode configuration and selection
+at this point, retaining checkout-local source as the default.
+
+The CLI imports `./dev-server.ts`, which imports `./shell-placeholder.ts`, both
+relative to their source files. The server does not resolve packages or depend on
+the caller's working directory. Keep source/package selection outside this server
+boundary so a hot-source workflow can select the CLI without changing HTTP startup.
+
+## Commands
+
 | Command | Behavior | Exit status |
 | --- | --- | --- |
 | `./golem help` (or `./golem`) | List all commands | 0 |

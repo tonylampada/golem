@@ -1,4 +1,5 @@
 #!/bin/sh
 set -eu
 cd -- "$(dirname -- "$0")"
+# Resolution seam: checkout-local source today; source-mode selection belongs here.
 exec node src/cli.ts "$@"
