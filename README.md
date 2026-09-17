@@ -18,11 +18,11 @@ cd my-app
 npx golem-kit init
 ```
 
-Do this once to create the application. It does not launch it. The generated project includes its own CLI, so you can discover and run its commands without writing package scripts:
+Do this once to create the application. It does not launch it. The generated project includes an executable `golem` wrapper at its root, so you can discover and run its commands without writing package scripts:
 
 ```sh
-golem help
-golem dev
+./golem help
+./golem dev
 ```
 
 Open the browser address printed in the terminal and select **Enter build mode**. The agent takes over onboarding: tell it what you want and start building together.
