@@ -47,7 +47,7 @@ export async function startDevServer(port = 3000): Promise<Server> {
         response.end(body);
       } catch {
         response.writeHead(500, { 'Content-Type': 'text/plain; charset=utf-8' });
-        response.end('Run `pnpm build` before starting the dev server.\n');
+        response.end('Run `./golem build` before starting the dev server.\n');
       }
     }
   });
