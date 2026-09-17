@@ -31,19 +31,59 @@ export const navigation: NavigationAdapter = {
   },
 }
 
-/** MNC-137 replaces this seam with the session worker. This response never claims work ran. */
-const messages: ChatMessage[] = []
+let sessionId: string | undefined
+let messages: ChatMessage[] = []
 const listeners = new Set<(messages: ChatMessage[]) => void>()
 const emit = () => listeners.forEach((listener) => listener([...messages]))
 
+function fromEvents(events: Array<{ type: string; sequence: number; text?: string; status?: string; reason?: string }>): ChatMessage[] {
+  return events.flatMap((event) => {
+    if ((event.type === 'user' || event.type === 'message') && event.text) {
+      return [{ id: `${event.sequence}`, role: event.type === 'user' ? 'user' : 'agent', text: event.text, at: new Date().toISOString() }]
+    }
+    if (event.type === 'error') return [{ id: `${event.sequence}`, role: 'agent', text: `Error: ${event.text ?? 'Agent failed.'}`, at: new Date().toISOString() }]
+    if (event.type === 'interrupted') return [{ id: `${event.sequence}`, role: 'agent', text: `Interrupted${event.reason ? `: ${event.reason}` : '.'}`, at: new Date().toISOString() }]
+    return []
+  })
+}
+
+export async function startBrowserSession(): Promise<{ id: string; backend: string }> {
+  const response = await fetch('/api/sessions', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ backend: 'codex' }) })
+  const result = await response.json() as { id?: string; backend?: string; error?: string }
+  if (!response.ok || !result.id) throw new Error(result.error ?? 'Unable to start session')
+  sessionId = result.id
+  messages = []
+  emit()
+  return { id: result.id, backend: result.backend ?? 'codex' }
+}
+
+export function currentBrowserSession(): string | undefined { return sessionId }
+
 export const chat: ChatAdapter = {
-  history: async () => [...messages],
-  subscribe(listener) { listeners.add(listener); return () => listeners.delete(listener) },
+  history: async () => {
+    if (!sessionId) return []
+    const response = await fetch(`/api/sessions/${sessionId}/history`)
+    if (!response.ok) throw new Error((await response.json()).error ?? 'Unable to load session history')
+    messages = fromEvents((await response.json()).events)
+    return [...messages]
+  },
+  subscribe(listener) {
+    listeners.add(listener)
+    if (sessionId) {
+      const source = new EventSource(`/api/sessions/${sessionId}/events`)
+      source.onmessage = (event) => {
+        const parsed = JSON.parse(event.data)
+        messages = [...messages, ...fromEvents([parsed])]
+        emit()
+      }
+      return () => { source.close(); listeners.delete(listener) }
+    }
+    return () => listeners.delete(listener)
+  },
   async send(text, attachments) {
-    const at = new Date().toISOString()
-    messages.push({ id: `dev-user-${messages.length}`, role: 'user', text, at, attachments })
-    messages.push({ id: `dev-agent-${messages.length}`, role: 'agent', at, text: 'No agent is connected. No work was executed.' })
-    emit()
+    if (!sessionId) throw new Error('Enter build mode before sending a message')
+    const response = await fetch(`/api/sessions/${sessionId}`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ text, attachments }) })
+    if (!response.ok) throw new Error((await response.json()).error ?? 'Agent request failed')
   },
 }
 

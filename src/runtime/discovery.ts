@@ -7,6 +7,7 @@ export type AgentDiscovery = {
   agent: AgentName
   executable: string
   status: ProbeStatus
+  runnable?: boolean
   detail?: string
 }
 
@@ -65,6 +66,7 @@ export async function discoverAgents(
   return Promise.all((Object.entries(executables) as [AgentName, string][]).map(async ([agent, executable]) => ({
     agent,
     executable,
+    ...(probe === probeExecutable ? { runnable: agent === 'codex' } : {}),
     ...(await probe(executable, ['--version'], timeoutMs)),
   })))
 }
@@ -75,9 +77,11 @@ export type RuntimeState =
   | { kind: 'choice-required'; available: AgentName[]; explanation: string }
 
 export function runtimeState(discoveries: AgentDiscovery[]): RuntimeState {
-  const available = discoveries.filter(({ status }) => status === 'available').map(({ agent }) => agent)
+  const available = discoveries
+    .filter(({ status, runnable = true }) => status === 'available' && runnable)
+    .map(({ agent }) => agent)
   if (available.length === 0) {
-    return { kind: 'setup', explanation: 'Install Claude Code or Codex to start an agent session.' }
+    return { kind: 'setup', explanation: 'Install Codex to start an agent session; Claude is not connected yet.' }
   }
   if (available.length === 1) return { kind: 'ready', backend: available[0] }
   return {
