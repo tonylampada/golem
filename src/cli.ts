@@ -35,7 +35,8 @@ No network exposure is enabled; the dev server binds to loopback.`);
     case 'build':
       try {
         await buildBrowser();
-      } catch {
+      } catch (error) {
+        console.error(`Cannot build Golem browser shell: ${error instanceof Error ? error.message : String(error)}`);
         process.exitCode = 1;
       }
       break;
