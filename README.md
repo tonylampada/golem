@@ -2,6 +2,8 @@
 
 *Design preview: the commands and capabilities below describe the intended product.*
 
+![Golem mascot](assets/golem-mascot.png)
+
 ## What is Golem?
 
 Golem is a framework for building applications with AI. **Your app is its own IDE:** talk to an agent inside the application to build and evolve it while you use it, all in the same environment.
