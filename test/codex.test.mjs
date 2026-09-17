@@ -1,8 +1,27 @@
 import assert from 'node:assert/strict'
+import { readFile, rm } from 'node:fs/promises'
 import { test } from 'node:test'
 import { CodexBackend } from '../src/runtime/codex.ts'
 
 const fake = (code) => new CodexBackend(process.execPath, ['-e', code])
+
+async function waitFor(check, timeout = 1_000) {
+  const until = Date.now() + timeout
+  while (Date.now() < until) {
+    try { return await check() } catch { await new Promise((resolve) => setTimeout(resolve, 10)) }
+  }
+  return check()
+}
+
+async function waitForExit(pid) {
+  await waitFor(() => {
+    try { process.kill(pid, 0) } catch (error) {
+      if (error.code === 'ESRCH') return
+      throw error
+    }
+    throw new Error('still alive')
+  })
+}
 
 test('Codex backend parses native JSONL and shuts down a child process', async () => {
   const backend = fake("const a=process.argv.slice(1); const resume=a.includes('resume'); if ((!resume && (!a.includes('-s') || !a.includes('read-only'))) || (resume && (!a.includes('-c') || !a.includes('sandbox_mode=\\\"read-only\\\"')))) process.exit(4); console.log(JSON.stringify({type:'thread.started',thread_id:'fake-thread'})); console.log(JSON.stringify({type:'item.completed',item:{type:'agent_message',text:resume?'RESUMED_REPLY':'REAL_REPLY'}}))")
@@ -19,9 +38,27 @@ test('Codex backend escalates when a child ignores SIGTERM', async () => {
   const backend = fake("process.on('SIGTERM',()=>{}); setInterval(() => {}, 1000)")
   await backend.start(() => {})
   const pending = backend.send('wait')
-  await new Promise((resolve) => setImmediate(resolve))
+  await new Promise((resolve) => setTimeout(resolve, 30))
   const started = Date.now()
-  await backend.shutdown()
-  await assert.rejects(pending)
+  await Promise.all([backend.shutdown(), assert.rejects(pending)])
   assert.ok(Date.now() - started < 1_000)
+})
+
+test('Codex backend shutdown kills inherited children after the parent exits on TERM', { skip: process.platform === 'win32' }, async () => {
+  const marker = `/tmp/golem-inherited-${process.pid}-${Date.now()}`
+  const child = `const { writeFileSync } = require('node:fs'); process.on('SIGTERM', () => {}); writeFileSync(${JSON.stringify(marker)}, String(process.pid)); setInterval(() => {}, 1_000)`
+  const parent = `const { spawn } = require('node:child_process'); spawn(process.execPath, ['-e', ${JSON.stringify(child)}], { stdio: 'ignore' }); process.on('SIGTERM', () => process.exit(0)); setInterval(() => {}, 1_000)`
+  let descendant
+  try {
+    const backend = fake(parent)
+    await backend.start(() => {})
+    const pending = backend.send('wait')
+    descendant = Number(await waitFor(async () => readFile(marker, 'utf8')))
+    await backend.shutdown()
+    await pending
+    await waitForExit(descendant)
+  } finally {
+    if (descendant) { try { process.kill(descendant, 'SIGKILL') } catch {} }
+    await rm(marker, { force: true })
+  }
 })

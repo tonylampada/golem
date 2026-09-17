@@ -68,6 +68,8 @@ export async function startBrowserSession(): Promise<{ id: string; backend: stri
   const response = await fetch('/api/sessions', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ backend: 'codex' }) })
   const result = await response.json() as { id?: string; backend?: string; error?: string }
   if (!response.ok || !result.id) throw new Error(result.error ?? 'Unable to start session')
+  source?.close()
+  source = undefined
   sessionId = result.id
   window.sessionStorage.setItem(storageKey, sessionId)
   cursor = -1
@@ -108,7 +110,8 @@ export async function interruptBrowserSession(): Promise<void> {
   if (!response.ok) throw new Error((await response.json()).error ?? 'Unable to interrupt session')
 }
 
-function applyEvent(event: { sequence: number; type: string; text?: string; status?: string; reason?: string }): void {
+function applyEvent(event: { sessionId?: string; sequence: number; type: string; text?: string; status?: string; reason?: string }): void {
+  if (event.sessionId && event.sessionId !== sessionId) return
   if (event.sequence <= cursor) return
   cursor = event.sequence
   if (event.status) setStatus(event.status)
@@ -130,15 +133,21 @@ export const chat: ChatAdapter = {
     listeners.add(listener)
     if (sessionId) {
       source?.close()
-      source = new EventSource(`/api/sessions/${sessionId}/events?after=${cursor}`)
-      source.onmessage = (event) => applyEvent(JSON.parse(event.data))
-      source.onerror = () => {
-        if (source?.readyState === EventSource.CLOSED && sessionId) {
-          source = new EventSource(`/api/sessions/${sessionId}/events?after=${cursor}`)
-          source.onmessage = (event) => applyEvent(JSON.parse(event.data))
+      const subscribedSession = sessionId
+      let subscribedSource: EventSource
+      const connect = () => {
+        const nextSource = new EventSource(`/api/sessions/${subscribedSession}/events?after=${cursor}`)
+        subscribedSource = nextSource
+        source = nextSource
+        nextSource.onmessage = (event) => applyEvent(JSON.parse(event.data))
+        nextSource.onerror = () => {
+          if (source === nextSource && nextSource.readyState === EventSource.CLOSED && sessionId === subscribedSession) {
+            connect()
+          }
         }
       }
-      return () => { source?.close(); source = undefined; listeners.delete(listener) }
+      connect()
+      return () => { subscribedSource.close(); if (source === subscribedSource) source = undefined; listeners.delete(listener) }
     }
     return () => listeners.delete(listener)
   },

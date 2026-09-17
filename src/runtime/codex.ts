@@ -28,7 +28,7 @@ export class CodexBackend implements SessionBackend {
       : [...this.prefixArgs, 'exec', '--json', '-s', 'read-only', '--skip-git-repo-check', text]
     this.request = new Promise((resolve, reject) => {
       this.interrupted = false
-      const child = spawn(this.executable, args, { stdio: ['ignore', 'pipe', 'pipe'], windowsHide: true })
+      const child = spawn(this.executable, args, { stdio: ['ignore', 'pipe', 'pipe'], windowsHide: true, detached: process.platform !== 'win32' })
       this.child = child
       this.childClosed = new Promise((resolve) => child.once('close', () => resolve()))
       let stderr = ''
@@ -82,11 +82,20 @@ export class CodexBackend implements SessionBackend {
   }
 
   private async stopChild(child: ChildProcess): Promise<void> {
-    if (child.exitCode !== null || child.signalCode !== null) return
     const closed = this.childClosed ?? new Promise<void>((resolve) => child.once('close', () => resolve()))
-    child.kill('SIGTERM')
-    const escalation = setTimeout(() => { if (child.exitCode === null) child.kill('SIGKILL') }, 250)
-    await Promise.race([closed, new Promise<void>((resolve) => setTimeout(resolve, 1_000))])
-    clearTimeout(escalation)
+    this.signal(child, 'SIGTERM')
+    // Always escalate the request group: its leader may exit after TERM while a child survives.
+    await new Promise<void>((resolve) => setTimeout(resolve, 250))
+    this.signal(child, 'SIGKILL')
+    await Promise.race([closed, new Promise<void>((resolve) => setTimeout(resolve, 750))])
+  }
+
+  private signal(child: ChildProcess, signal: NodeJS.Signals): void {
+    try {
+      if (process.platform !== 'win32' && child.pid) process.kill(-child.pid, signal)
+      else child.kill(signal)
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== 'ESRCH') throw error
+    }
   }
 }
