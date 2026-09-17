@@ -1,6 +1,7 @@
 import { execFileSync } from 'node:child_process'
 import { existsSync } from 'node:fs'
 import { resolve } from 'node:path'
+import { pathToFileURL } from 'node:url'
 import { defineConfig, type UserConfig } from 'vite'
 import react from '@vitejs/plugin-react'
 
@@ -33,10 +34,29 @@ export function resolveUiSource(): UiSource | undefined {
   return { root, revision: gitRevision(root) }
 }
 
-export default defineConfig((): UserConfig => {
+export default defineConfig(async (): Promise<UserConfig> => {
   const ui = resolveUiSource()
+  const plugins: NonNullable<UserConfig['plugins']> = [react()]
+  if (ui) {
+    const styles = resolve(ui.root, 'src/styles.css')
+    plugins.push({
+      name: 'golem-ui-source-path',
+      enforce: 'pre',
+      transform(code: string, id: string) {
+        return id.split('?')[0] === styles
+          ? { code: `@source "${ui.root.replaceAll('\\\\', '/')}";\n${code}`, map: null }
+          : undefined
+      },
+    })
+    const tailwindPlugin = resolve(ui.root, 'node_modules/@tailwindcss/vite/dist/index.mjs')
+    if (!existsSync(tailwindPlugin)) {
+      throw new Error(`GOLEM_UI_SOURCE needs @tailwindcss/vite installed; run pnpm install in ${ui.root}`)
+    }
+    const { default: tailwindcss } = await import(pathToFileURL(tailwindPlugin).href)
+    plugins.push(tailwindcss())
+  }
   return {
-    plugins: [react()],
+    plugins,
     resolve: {
       alias: ui ? [
         { find: /^golem-ui$/, replacement: resolve(ui.root, 'src/index.ts') },
