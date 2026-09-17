@@ -7,6 +7,7 @@ import { discoverAgents, runtimeState } from './runtime/discovery.ts';
 import { CodexBackend, type SandboxMode } from './runtime/codex.ts';
 import { SessionManager, type Session, type SessionBackend } from './runtime/session.ts';
 import { ConversationState } from './runtime/state.ts';
+import { serverUrl } from './config.ts';
 
 const appRoot = resolve(process.cwd());
 const root = pathToFileURL(`${process.cwd()}/dist/`);
@@ -22,13 +23,14 @@ export async function startDevServer(
   port = 3000,
   createBackend: (mode: SandboxMode, threadId?: string) => SessionBackend = (mode, threadId) => new CodexBackend(appRoot, mode, 'codex', [], threadId),
   stateDirectory = join(appRoot, '.golem'),
+  host = '127.0.0.1',
 ): Promise<Server> {
   await buildBrowser();
   const state = new ConversationState(stateDirectory);
   const sessions = new SessionManager((snapshots) => state.save(snapshots));
   sessions.restore(await state.load(), (snapshot) => createBackend(snapshot.buildMode ? 'danger-full-access' : 'read-only', snapshot.threadId));
   const server = createServer((request, response) => {
-    void handleRequest(request, response, sessions, port, createBackend).catch((error) => {
+    void handleRequest(request, response, sessions, port, host, createBackend).catch((error) => {
       if (!response.headersSent) json(response, 400, { error: error instanceof Error ? error.message : 'Malformed request' });
       else response.destroy();
     });
@@ -36,7 +38,7 @@ export async function startDevServer(
   server.once('close', () => { void sessions.disposeAll().then(() => sessions.flushAll()) });
   return new Promise((resolve, reject) => {
     server.once('error', reject);
-    server.listen(port, '127.0.0.1', () => resolve(server));
+    server.listen(port, host, () => resolve(server));
   });
 }
 
@@ -45,12 +47,13 @@ async function handleRequest(
   response: import('node:http').ServerResponse,
   sessions: SessionManager,
   port: number,
+  host: string,
   createBackend: (mode: SandboxMode, threadId?: string) => SessionBackend,
 ): Promise<void> {
     const url = new URL(request.url ?? '/', 'http://127.0.0.1');
     decodeURIComponent(url.pathname);
     if (url.pathname.startsWith('/api/')) {
-      await handleApi(request, response, url, sessions, port, createBackend);
+      await handleApi(request, response, url, sessions, port, host, createBackend);
       return;
     }
     let pathname: string;
@@ -112,9 +115,9 @@ function triggerRebuild(session: Session): void {
   );
 }
 
-function mutationAllowed(request: import('node:http').IncomingMessage, port: number): boolean {
+function mutationAllowed(request: import('node:http').IncomingMessage, port: number, host: string): boolean {
   const origin = request.headers.origin;
-  return !origin || origin === `http://127.0.0.1:${port}` || origin === `http://localhost:${port}`;
+  return !origin || origin === serverUrl(host, port).slice(0, -1) || (host === '127.0.0.1' && origin === `http://localhost:${port}`);
 }
 
 async function handleApi(
@@ -123,6 +126,7 @@ async function handleApi(
   url: URL,
   sessions: SessionManager,
   port: number,
+  host: string,
   createBackend: (mode: SandboxMode) => SessionBackend,
 ): Promise<void> {
   if (request.method === 'GET' && url.pathname === '/api/runtime') {
@@ -131,7 +135,7 @@ async function handleApi(
     return;
   }
   if (request.method === 'POST' && url.pathname === '/api/sessions') {
-    if (!mutationAllowed(request, port)) return json(response, 403, { error: 'Cross-origin mutations are not allowed' });
+    if (!mutationAllowed(request, port, host)) return json(response, 403, { error: 'Cross-origin mutations are not allowed' });
     try {
       const input = await body(request) as { backend?: string; intent?: string };
       if (input.backend !== 'codex') return json(response, 400, { error: 'Only the connected Codex backend can start a session' });
@@ -165,7 +169,7 @@ async function handleApi(
     return;
   }
   if (request.method === 'POST' && !match[2]) {
-    if (!mutationAllowed(request, port)) return json(response, 403, { error: 'Cross-origin mutations are not allowed' });
+    if (!mutationAllowed(request, port, host)) return json(response, 403, { error: 'Cross-origin mutations are not allowed' });
     try {
       const input = await body(request) as { text?: unknown };
       if (typeof input.text !== 'string' || !input.text.trim()) return json(response, 400, { error: 'text must be a non-empty string' });
@@ -180,7 +184,7 @@ async function handleApi(
     return;
   }
   if (request.method === 'POST' && match[2] === 'interrupt') {
-    if (!mutationAllowed(request, port)) return json(response, 403, { error: 'Cross-origin mutations are not allowed' });
+    if (!mutationAllowed(request, port, host)) return json(response, 403, { error: 'Cross-origin mutations are not allowed' });
     await session.interrupt();
     await session.flush();
     json(response, 200, { status: session.status });

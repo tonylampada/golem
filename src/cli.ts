@@ -1,6 +1,7 @@
 #!/usr/bin/env tsx
 import { startDevServer } from './dev-server.ts';
 import { buildBrowser } from './browser-build.ts';
+import { loadAppConfig, serverUrl } from './config.ts';
 import { execFileSync } from 'node:child_process';
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { dirname, resolve } from 'node:path';
@@ -12,8 +13,8 @@ Usage: ./golem <command>
 
   help    Show every command (also the default).
   init    Create a minimal app in the current directory.
-  dev     Serve the browser shell at http://127.0.0.1:3000/.
-          Stop with Ctrl+C. Uses the local Codex runtime from the browser.
+  dev     Serve the browser shell using golem.config.ts (127.0.0.1:3000 by default).
+          Restart after changing settings. Uses the local Codex runtime from the browser.
   build   Build the browser shell into dist/.
   doctor  Report local shell and backend readiness.
 
@@ -45,7 +46,7 @@ if (args.length || !['help', 'init', 'dev', 'build', 'doctor'].includes(command)
 Ready: local CLI, HTTP shell, golem-ui browser build and Codex session seam.
 Claude integration: not yet connected.
 Not implemented: Claude integration.
-No network exposure is enabled; the dev server binds to loopback.`);
+The dev server defaults to 127.0.0.1:3000 and uses optional host/port from golem.config.ts.`);
       break;
     case 'build':
       try {
@@ -57,7 +58,8 @@ No network exposure is enabled; the dev server binds to loopback.`);
       break;
     case 'dev':
       try {
-        const server = await startDevServer();
+        const config = await loadAppConfig();
+        const server = await startDevServer(config.port, undefined, undefined, config.host);
         const stop = () => {
           server.close((error) => {
             process.removeListener('SIGINT', stop);
@@ -73,7 +75,7 @@ No network exposure is enabled; the dev server binds to loopback.`);
         };
         process.once('SIGINT', stop);
         process.once('SIGTERM', stop);
-        console.log('Golem shell: http://127.0.0.1:3000/ (Ctrl+C to stop)');
+        console.log(`Golem shell: ${serverUrl(config.host, config.port)} (Ctrl+C to stop)`);
       } catch (error) {
         console.error(`Cannot start Golem dev server: ${error instanceof Error ? error.message : String(error)}`);
         process.exitCode = 1;
