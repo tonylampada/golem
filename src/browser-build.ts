@@ -4,18 +4,18 @@ import { resolve } from 'node:path';
 import { build } from 'vite';
 import { resolveUiSource } from '../vite.config.ts';
 
-const projectRoot = resolve(fileURLToPath(new URL('..', import.meta.url)));
+const frameworkRoot = resolve(fileURLToPath(new URL('..', import.meta.url)));
 
 /** The one build boundary used by both `./golem build` and `./golem dev`. */
 export async function buildBrowser(): Promise<void> {
   const ui = resolveUiSource();
   if (ui) {
-    console.log(`Golem source: ${projectRoot} (${gitRevision(projectRoot)})`);
+    console.log(`Golem source: ${frameworkRoot} (${gitRevision(frameworkRoot)})`);
     console.log(`golem-ui source: ${ui.root} (${ui.revision})`);
   }
-  await build({ configFile: resolve(projectRoot, 'vite.config.ts') });
-  execFileSync(process.execPath, [resolve(projectRoot, 'node_modules/typescript/bin/tsc'), '--noEmit'], {
-    cwd: projectRoot,
+  await build({ configFile: resolve(frameworkRoot, 'vite.config.ts') });
+  execFileSync('pnpm', ['exec', 'tsc', '--noEmit', '-p', resolve(frameworkRoot, 'tsconfig.json')], {
+    cwd: process.cwd(),
     stdio: 'inherit',
   });
 }
