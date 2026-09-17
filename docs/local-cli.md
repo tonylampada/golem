@@ -23,16 +23,25 @@ boundary so a hot-source workflow can select the CLI without changing HTTP start
 | Command | Behavior | Exit status |
 | --- | --- | --- |
 | `./golem help` (or `./golem`) | List all commands | 0 |
-| `./golem dev` | Refresh the browser build, then serve it at `http://127.0.0.1:3000/` until SIGINT/SIGTERM | 0 on clean shutdown; 1 on startup failure |
+| `./golem dev` | Refresh the browser build, then serve it at the `golem.config.ts` address (default `http://127.0.0.1:3000/`) until SIGINT/SIGTERM | 0 on clean shutdown; 1 on startup failure |
 | `./golem build` | Build the browser shell into `dist/` | 0 |
 | `./golem doctor` | Report local shell and backend readiness | 0 |
 
 Unknown commands and extra arguments exit 2. Built assets are served directly; extensionless browser
 routes fall back to `index.html`, while missing assets return 404. Malformed URLs return 400. The
-server binds to loopback only. Port 3000 must be free.
+default server binds to loopback on port 3000. To use another local port or a
+specific tailnet address, export optional root settings from `golem.config.ts`:
+
+```ts
+export default { title: 'Golem', host: '100.114.197.65', port: 3000 }
+```
+
+`host` must be a nonempty string and `port` an integer from 1 through 65535;
+`0.0.0.0` is not accepted. Configuration, build, and bind failures are printed
+by `./golem dev`. Restart the server after changing these settings.
 `doctor` succeeding means its report ran, not that the full product is ready.
 
-`src/dev-server.ts` exports `startDevServer(port = 3000)`, resolving to a listening
+`src/dev-server.ts` exports `startDevServer(port = 3000, backend, stateDirectory, host = '127.0.0.1')`, resolving to a listening
 Node HTTP server. It refreshes the browser build before listening; the CLI owns signal handling and output. `src/browser/app.tsx` is the
 composition boundary: anonymous identity and browser navigation are explicit host adapters, while
 the chat adapter connects explicit browser build-mode sessions to the local Codex runtime.
