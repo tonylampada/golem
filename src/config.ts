@@ -9,7 +9,7 @@ export type AppConfig = { host: string; port: number; storage: 'jsonl' | 'sqlite
  * whose only tools are the listed app operations, run as the person chatting.
  */
 export type AgentsConfig = { builder?: 'codex' | 'claude'; ordinary?: OrdinaryAgentConfig }
-export type OrdinaryAgentConfig = { backend: 'anthropic'; model: string; operations: string[]; collections?: string[]; instructions?: string }
+export type OrdinaryAgentConfig = { backend: 'anthropic'; model: string; operations: string[]; collections?: string[]; roots?: string[]; instructions?: string }
 
 /** golem-ui's Auth role shape: `manages` roles run accounts and may build; `builder` may build. */
 export type AccountRole = { id: string; label: string; manages: boolean }
@@ -83,7 +83,7 @@ const byteOperations = ['files.upload', 'files.read']
 
 function ordinaryAgent(value: unknown): OrdinaryAgentConfig {
   if (!value || typeof value !== 'object' || Array.isArray(value)) throw new Error('golem.config.ts agents.ordinary must be an object')
-  const { backend, model = 'claude-opus-5', operations, collections, instructions, ...unknown } = value as Record<string, unknown>
+  const { backend, model = 'claude-opus-5', operations, collections, roots, instructions, ...unknown } = value as Record<string, unknown>
   if (Object.keys(unknown).length) throw new Error(`golem.config.ts agents.ordinary has unknown fields: ${Object.keys(unknown).join(', ')}`)
   if (backend === 'codex' || backend === 'claude') {
     throw new Error(`golem.config.ts agents.ordinary.backend '${backend}' is not supported: a terminal agent runs with this computer account's file access, which Golem cannot limit to the listed operations. Use 'anthropic'.`)
@@ -101,6 +101,7 @@ function ordinaryAgent(value: unknown): OrdinaryAgentConfig {
   return {
     backend, model, operations: allowed,
     ...(collections === undefined ? {} : { collections: names(collections, 'collections') }),
+    ...(roots === undefined ? {} : { roots: names(roots, 'roots') }),
     ...(instructions === undefined ? {} : { instructions }),
   }
 }

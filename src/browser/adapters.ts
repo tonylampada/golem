@@ -88,12 +88,16 @@ function fromEvents(events: Array<{ type: string; sequence: number; text?: strin
 }
 
 function refresh(): void { mergeEvents([]); emit() }
+
+// This tab's view of the open chat: sent with each message so the assistant's offers come here.
+let chatView: string | undefined
+export function setChatView(id: string | undefined): void { chatView = id }
 function messageId(): string { return globalThis.crypto?.randomUUID?.() ?? `${Date.now()}-${Math.random()}` }
 function findOutbox(id: string): OutboxMessage | undefined { return outbox.find((message) => message.id === id && message.sessionId === sessionId) }
 
 async function deliver(message: OutboxMessage): Promise<void> {
   try {
-    const response = await fetch(`/api/sessions/${message.sessionId}`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ text: message.text, attachments: message.attachments, clientMessageId: message.id }) })
+    const response = await fetch(`/api/sessions/${message.sessionId}`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ text: message.text, attachments: message.attachments, clientMessageId: message.id, ...(chatView ? { view: chatView } : {}) }) })
     if (!response.ok) throw new Error((await response.json()).error ?? 'Message was not accepted')
     message.delivery = undefined
     saveOutbox()

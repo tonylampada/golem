@@ -16,6 +16,7 @@
     "docs/builder.md",
     "docs/app-backend.md",
     "docs/knowledge.md",
+    "docs/agents.md",
     "docs/source-development.md",
     "golem.config.ts",
     "index.html",

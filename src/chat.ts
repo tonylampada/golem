@@ -22,15 +22,26 @@ export function ordinaryChat(backend: AppBackend) {
   /** Operations as tools for one turn: only the listed ones, collections checked on parsed input. */
   const tools = (context: TurnContext) => {
     if (!profile) return []
-    return backend.app.agentTools(context.principal).filter((tool) => profile.operations.includes(tool.name)).map((tool) => {
-      const { collections } = profile
+    const { collections, roots } = profile
+    return backend.app.agentTools(context.principal, context).filter((tool) => profile.operations.includes(tool.name)).map((tool) => {
       const operation = backend.app.operations.find((one) => one.name === tool.name)
-      if (!collections || !tool.name.startsWith('records.') || !operation) return tool
+      // The resource a call names, read from its parsed input; undefined when the profile does not scope it.
+      const scoped = (input: unknown): { value: unknown; allowed: string[] } | undefined => {
+        if (tool.name === 'view.request') {
+          const target = (input as { action?: unknown; input?: { root?: unknown } } | null)
+          return roots && target?.action === 'source.open' ? { value: target.input?.root, allowed: roots } : undefined
+        }
+        const parsed = operation?.input.safeParse(input)
+        if (!parsed?.success) return undefined
+        if (collections && tool.name.startsWith('records.')) return { value: (parsed.data as { collection: string }).collection, allowed: collections }
+        if (roots && tool.name.startsWith('knowledge.')) return { value: (parsed.data as { root: string }).root, allowed: roots }
+        return undefined
+      }
       return {
         ...tool,
         call: async (input: unknown) => {
-          const parsed = operation.input.safeParse(input)
-          if (parsed.success && !collections.includes((parsed.data as { collection: string }).collection)) throw new ForbiddenError(`Not allowed: ${tool.name}`)
+          const scope = scoped(input)
+          if (scope && !scope.allowed.includes(scope.value as string)) throw new ForbiddenError(`Not allowed: ${tool.name}`)
           return tool.call(input)
         },
       }
@@ -40,6 +51,8 @@ export function ordinaryChat(backend: AppBackend) {
   return {
     available: !detail,
     detail,
+    /** Whether the assistant may offer to open sources in a chat tab. */
+    views: () => Boolean(profile?.operations.includes('view.request') && backend.app.views.actions().length),
     /** The trusted owner key for this request: the account, else this browser's cookie. Never from input. */
     owner(request: IncomingMessage, principal: Principal): string | null {
       if (principal.kind === 'user') return principal.id

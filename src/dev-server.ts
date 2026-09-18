@@ -36,6 +36,11 @@ export async function startDevServer(
   const sessions = new SessionManager((snapshots) => state.save(snapshots));
   const app = await createAppBackend(appRoot, join(stateDirectory, 'data'));
   const chat = ordinaryChat(app);
+  // Source views of a chat belong to whoever owns that chat.
+  app.app.views.useConversations({
+    owner: (request, principal) => chat.owner(request, principal),
+    owns: (conversation, owner) => { const session = sessions.get(conversation); return session?.backend === 'anthropic' && session.owner === owner; },
+  });
   // Restored conversations wait for their next message; nothing is re-run.
   sessions.restore(await state.load(), (snapshot) => snapshot.backend === 'anthropic'
     ? chat.backend(snapshot.transcript)
@@ -174,7 +179,7 @@ async function handleApi(
     if (!mayChat) return json(response, 401, { error: 'Sign in to chat.' });
     if (request.method === 'GET') {
       const latest = chatOwner ? sessions.latest((session) => session.backend === 'anthropic' && session.owner === chatOwner) : undefined;
-      return json(response, 200, { available: chat.available, detail: chat.detail, latest: latest && { id: latest.id, status: latest.status } });
+      return json(response, 200, { available: chat.available, detail: chat.detail, views: chat.views(), latest: latest && { id: latest.id, status: latest.status } });
     }
     if (request.method !== 'POST') return json(response, 404, { error: 'Unknown API route' });
     if (!mutationAllowed(request)) return json(response, 403, { error: 'Cross-origin mutations are not allowed' });
@@ -256,8 +261,11 @@ async function handleApi(
       const attachments = Array.isArray(input.attachments) && input.attachments.every((item) => item && typeof item.id === 'string' && typeof item.name === 'string' && (item.size === undefined || typeof item.size === 'number')) ? input.attachments : undefined;
       if (input.attachments !== undefined && !attachments) return json(response, 400, { error: 'attachments must contain a name and id' });
       // A chat message carries its sender, fixed here from this request; the turn acts as them.
-      if (input.view !== undefined && session.backend === 'anthropic') return json(response, 400, { error: 'This app has no views to target.' });
-      const context = session.backend === 'anthropic' ? { principal, owner: chatOwner!, conversation: session.id } : undefined;
+      const context = session.backend === 'anthropic' ? { principal, owner: chatOwner!, conversation: session.id, ...(input.view === undefined ? {} : { view: input.view as string }) } : undefined;
+      // A view names the tab that sent this message; it must be that person's view of this chat.
+      if (input.view !== undefined && !(session.backend === 'anthropic' && typeof input.view === 'string' && await app.app.views.bound(input.view, context!))) {
+        return json(response, 400, { error: 'That view does not belong to this conversation.' });
+      }
       const accepted = await session.accept(input.text, input.clientMessageId, attachments, context);
       json(response, 202, { status: session.status, duplicate: accepted.duplicate });
       if (!accepted.duplicate && accepted.completion) void accepted.completion.then(

@@ -37,8 +37,12 @@ export default {
 
 - **Operations**: the agent gets a tool for each listed operation and nothing else. It cannot build, run commands, read files, or enter build mode. A message cannot add a tool.
 - **Permissions**: each tool call goes through the same `authorize` as a browser call, as the person who sent the message, refreshed on every call. A call the person may not make fails with the same `Not allowed: <operation>` error the app's own UI would get. Signing out stops a running turn.
-- **Collections**: with `collections`, the built-in `records.*` operations refuse any other collection. Custom operations are limited only by being listed and by `authorize`; `collections` does not confine what their code touches.
+- **Collections and roots**: with `collections`, the built-in `records.*` operations refuse any other collection; with `roots`, the `knowledge.*` operations and source offers refuse any other knowledge root. Custom operations are limited only by being listed and by `authorize`; `collections` does not confine what their code touches.
 - **Refused**: a terminal backend (`'codex'` or `'claude'`) for ordinary chat, because its file access cannot be limited to the listed operations. Also `files.upload` and `files.read`, which carry file bytes. Golem stops at startup instead of ignoring the setting.
+
+## Showing sources
+
+With knowledge roots (see `knowledge.md`) and `view.actions` and `view.request` listed in `operations`, the assistant can offer to open a knowledge file at a passage. The offer appears under the chat in the tab the message came from, with **Open** and **Dismiss**. Nothing opens until the person chooses **Open**; then that tab alone shows the file in the Editor, scrolled to the passage. Other tabs on the same sign-in are not moved.
 
 ## Conversations
 
