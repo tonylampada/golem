@@ -4,8 +4,11 @@ import { ForbiddenError, InvalidError, NotFoundError, UnauthorizedError, Version
 
 /** Something an agent offered to show; the person accepts it in one browser view, where alone it is applied. */
 export type ViewOffer = { id: string; conversation: string; action: 'source.open'; input: { root: string; path: string; line: number; endLine: number } }
-/** `apply` carries the file `version` its lines were counted in: show them once the editor has that version. */
-export type ViewEvent = { type: 'offer'; offer: ViewOffer } | { type: 'apply'; offer: ViewOffer; version: number } | { type: 'withdrawn'; id: string }
+/**
+ * `apply` carries the file `version` its lines were counted in and the `text` of those lines: show them
+ * once the editor has that version, and look for `text` instead when the editor shows an unsaved draft.
+ */
+export type ViewEvent = { type: 'offer'; offer: ViewOffer } | { type: 'apply'; offer: ViewOffer; version: number; text: string } | { type: 'withdrawn'; id: string }
 
 /** What an agent can discover: names, when to use them and their input, never data. */
 export type ViewActionDoc = { name: string; description: string; inputSchema: unknown }
@@ -181,14 +184,16 @@ export function createViews(app: {
       // Access may have changed since the offer: check again as the person now is.
       const now = await app.refresh(principal).catch(() => { throw new UnauthorizedError('Sign in again to open this source.') })
       const source = await readable(now, pending.offer.input.root, pending.offer.input.path)
+      const lines = source.body.split('\n')
       let offer = pending.offer
       if (source.sha256 !== pending.sha256) {
         // The file changed since the offer: highlight the same passage where it now is, or say it is gone.
-        const at = pending.passage.trim() ? locate(source.body.split('\n'), pending.passage) : null
+        const at = pending.passage.trim() ? locate(lines, pending.passage) : null
         if (!at) throw new VersionConflictError('That passage changed since it was offered; ask for it again', null)
         offer = { ...offer, input: { ...offer.input, line: at[0], endLine: at[1] } }
       }
-      channel.send?.({ type: 'apply', offer, version: source.version })
+      const { line, endLine } = offer.input
+      channel.send?.({ type: 'apply', offer, version: source.version, text: lines.slice(line - 1, endLine).join('\n') })
     },
   }
 }
