@@ -19,7 +19,7 @@ export default function golem({ server = 'src/server', persistence = 'src/server
     regex: '^node:',
     message: `Node built-ins are server-only; use them under ${server}/.`,
   }, {
-    // ponytail: matches relative specifiers by directory name, not resolved paths; aliases are not checked.
+    // Matches relative specifiers by directory name, not resolved paths; aliases are not checked.
     regex: `^\\.\\.?/(.*/)?${escape(server.split('/').pop())}(/|$)`,
     message: `Browser and domain code cannot import backend modules from ${server}/.`,
   }] : []
