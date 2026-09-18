@@ -54,7 +54,7 @@ export async function createAppBackend(appRoot: string, dataDirectory: string): 
     resolveAccount: accounts.resolveAccount,
   }
   // FileStore writes metadata through the app's watched store, so file changes reach subscribers.
-  const app = createApp({ records, files: (watched) => diskFiles(join(dataDirectory, 'files'), watched) }, await load(), identity)
+  const app = createApp({ records, files: (watched) => diskFiles(join(dataDirectory, 'files'), watched), root: appRoot }, await load(), identity)
   const server = { app, accounts, config, cookie }
   return {
     app,
@@ -124,6 +124,30 @@ async function handle({ app, accounts, config, cookie }: Server, request: Incomi
         'Cache-Control': 'no-store',
       })
       response.end(bytes)
+      return
+    }
+    if (request.method === 'POST' && url.pathname === '/api/app/views') {
+      const { conversation } = await readJson(request) as { conversation?: unknown }
+      return send(response, 201, { result: await app.views.open(request, principal, conversation as string) })
+    }
+    const view = url.pathname.match(/^\/api\/app\/views\/([A-Za-z0-9_-]+)(\/answer)?$/)
+    if (view && request.method === 'POST' && view[2]) {
+      const { offer, accept } = await readJson(request) as { offer?: unknown; accept?: unknown }
+      if (typeof offer !== 'string' || typeof accept !== 'boolean') throw new InvalidError('An answer needs { offer, accept }')
+      await app.views.answer(request, principal, view[1], offer, accept)
+      return send(response, 200, { result: null })
+    }
+    if (view && request.method === 'GET' && !view[2]) {
+      // Throws before any header when this view is not the caller's; events only arrive on later ticks.
+      const close = await app.views.connect(request, principal, view[1], (event) => response.write(`data: ${JSON.stringify(event)}\n\n`))
+      response.writeHead(200, { 'Content-Type': 'text/event-stream; charset=utf-8', 'Cache-Control': 'no-cache', Connection: 'keep-alive' })
+      response.flushHeaders()
+      // A signed-out or removed reader loses the view at once.
+      const recheck = (accountId: string) => {
+        if (principal.kind === 'user' && accountId === principal.id) void app.refresh(principal).catch(() => response.end())
+      }
+      accounts?.changes.on('change', recheck)
+      request.on('close', () => { close(); accounts?.changes.off('change', recheck) })
       return
     }
     if (request.method === 'GET' && url.pathname === '/api/app/changes') {
