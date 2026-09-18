@@ -99,6 +99,15 @@ test('sessions are independent', async () => {
   assert.deepEqual(two.history.map(({ type }) => type), ['status'])
 })
 
+test('timestamped conversations outrank legacy restore order', () => {
+  const manager = new SessionManager()
+  manager.restore([
+    { id: 'legacy', backend: 'codex', buildMode: true, status: 'ready', active: false, history: [] },
+    { id: 'recent', backend: 'codex', buildMode: true, status: 'ready', active: false, history: [], updatedAt: '2026-09-18T13:00:00.000Z' },
+  ], () => new FakeBackend())
+  assert.equal(manager.latest()?.id, 'recent')
+})
+
 test('interruption rejects queued sends and only a fresh action resumes', async () => {
   const backend = new PendingBackend()
   const session = await new SessionManager().start('claude', backend)

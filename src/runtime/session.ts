@@ -45,7 +45,7 @@ export class Session {
   private persistenceError: Error | undefined
   private readonly pendingReceipts = new Map<string, { event: SessionEvent; receipt: Promise<void> }>()
   private requestGeneration = 0
-  private updatedAt = new Date().toISOString()
+  private updatedAt: string | undefined = new Date().toISOString()
   readonly id: string
   readonly backend: AgentName
   /** Server-owned: set once at creation from the request's explicit build intent, never inferred. */
@@ -90,7 +90,7 @@ export class Session {
     session.history.push(...snapshot.history)
     session.status = snapshot.status
     session.sequence = Math.max(-1, ...snapshot.history.map((event) => event.sequence)) + 1
-    session.updatedAt = snapshot.updatedAt ?? session.updatedAt
+    session.updatedAt = snapshot.updatedAt
     session.closed = snapshot.status === 'stopped'
     if (snapshot.active) session.recoverInterrupted()
     return session
@@ -358,9 +358,14 @@ export class SessionManager {
   get(id: string): Session | undefined { return this.sessions.get(id) }
 
   latest(): Session | undefined {
-    return [...this.sessions.values()]
-      .filter((session) => session.buildMode)
-      .sort((left, right) => right.snapshot().updatedAt!.localeCompare(left.snapshot().updatedAt!))[0]
+    let latest: Session | undefined
+    for (const session of this.sessions.values()) {
+      if (!session.buildMode) continue
+      const candidate = session.snapshot().updatedAt
+      const current = latest?.snapshot().updatedAt
+      if (!latest || (candidate && (!current || candidate >= current)) || (!candidate && !current)) latest = session
+    }
+    return latest
   }
 
   restore(snapshots: SessionSnapshot[], createWorker: (snapshot: SessionSnapshot) => SessionBackend): void {

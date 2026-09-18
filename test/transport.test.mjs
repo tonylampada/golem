@@ -2,6 +2,7 @@ import assert from 'node:assert/strict'
 import { request as httpRequest } from 'node:http'
 import { test } from 'node:test'
 import { mkdtempSync } from 'node:fs'
+import { writeFile } from 'node:fs/promises'
 import { join } from 'node:path'
 import { tmpdir } from 'node:os'
 import { startDevServer } from '../src/dev-server.ts'
@@ -45,6 +46,23 @@ test('HTTP transport validates mutations and isolates server-owned sessions', { 
     assert.equal(history.backend, 'codex')
     assert.deepEqual(history.events.map((event) => event.type), ['status'])
     assert.equal((await fetch(`http://127.0.0.1:3218/api/sessions/${two}/history`)).status, 200)
+  } finally {
+    await new Promise((resolve) => server.close(resolve))
+  }
+})
+
+test('legacy saved conversations discover the last saved build session without inventing activity time', { timeout: 30000 }, async () => {
+  const state = mkdtempSync(join(tmpdir(), 'golem-state-'))
+  await writeFile(join(state, 'conversations.json'), JSON.stringify({ version: 1, sessions: [
+    { id: 'legacy-first', backend: 'codex', buildMode: true, status: 'ready', active: false, history: [] },
+    { id: 'legacy-last', backend: 'codex', buildMode: true, status: 'ready', active: false, history: [] },
+  ] }))
+  let starts = 0
+  const server = await startDevServer(3216, () => ({ async start() { starts++ }, async send() {}, async shutdown() {} }), state)
+  try {
+    const latest = await (await fetch('http://127.0.0.1:3216/api/sessions/latest')).json()
+    assert.equal(latest.id, 'legacy-last')
+    assert.equal(starts, 0)
   } finally {
     await new Promise((resolve) => server.close(resolve))
   }
