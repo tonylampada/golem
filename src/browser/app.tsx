@@ -71,8 +71,6 @@ export function App() {
         <div className="flex shrink-0 items-center gap-3">
           <button
             type="button"
-            aria-label="Dark mode"
-            aria-pressed={dark}
             onClick={() => setDark((current) => !current)}
             className="rounded border border-neutral-300 px-2 py-1 text-sm dark:border-neutral-700"
           >
