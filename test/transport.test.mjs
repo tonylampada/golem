@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict'
+import { request as httpRequest } from 'node:http'
 import { test } from 'node:test'
 import { mkdtempSync } from 'node:fs'
 import { join } from 'node:path'
@@ -6,6 +7,17 @@ import { tmpdir } from 'node:os'
 import { startDevServer } from '../src/dev-server.ts'
 
 const start = (port, backend) => startDevServer(port, backend, mkdtempSync(join(tmpdir(), 'golem-state-')))
+
+function postWithAuthority(address, port, authority, origin) {
+  return new Promise((resolve, reject) => {
+    const request = httpRequest({ host: address, port, path: '/api/sessions', method: 'POST', headers: { host: authority, origin, 'content-type': 'application/json' } }, (response) => {
+      response.resume()
+      response.once('end', () => resolve(response.statusCode))
+    })
+    request.once('error', reject)
+    request.end(JSON.stringify({ backend: 'invalid' }))
+  })
+}
 
 test('HTTP transport validates mutations and isolates server-owned sessions', { timeout: 30000 }, async () => {
   const server = await start(3218)
@@ -38,17 +50,13 @@ test('HTTP transport validates mutations and isolates server-owned sessions', { 
   }
 })
 
-test('a configured non-default host accepts its own origin and rejects others', { timeout: 30000 }, async () => {
+test('a configured bind address accepts the request hostname origin and rejects unrelated origins', { timeout: 30000 }, async () => {
   const port = 3217
   const host = '127.0.0.2'
   const server = await startDevServer(port, () => { throw new Error('backend must not start') }, mkdtempSync(join(tmpdir(), 'golem-state-')), host)
   try {
-    const accepted = await fetch(`http://${host}:${port}/api/sessions`, {
-      method: 'POST',
-      headers: { origin: `http://${host}:${port}`, 'content-type': 'application/json' },
-      body: JSON.stringify({ backend: 'invalid' }),
-    })
-    assert.equal(accepted.status, 400)
+    const hostname = `builder.example.test:${port}`
+    assert.equal(await postWithAuthority(host, port, hostname, `http://${hostname}`), 400)
     const rejected = await fetch(`http://${host}:${port}/api/sessions`, {
       method: 'POST',
       headers: { origin: 'https://example.invalid', 'content-type': 'application/json' },

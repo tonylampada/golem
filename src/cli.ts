@@ -85,7 +85,7 @@ The dev server defaults to 127.0.0.1:3000 and uses optional host/port from golem
 
 function initProject(): void {
   const root = resolve(process.cwd());
-  const files = ['golem.config.ts', 'src/app.tsx', 'docs/domain.md', 'golem'];
+  const files = ['golem.config.ts', 'src/app.tsx', 'docs/domain.md', 'AGENTS.md', 'golem'];
   const existing = files.filter((file) => existsSync(resolve(root, file)));
   if (existing.length) throw new Error(`refusing to overwrite existing files: ${existing.join(', ')}`);
   const packagePath = resolve(root, 'package.json');
@@ -117,13 +117,15 @@ function initProject(): void {
   )
 }
 `);
-  writeFileSync(resolve(root, 'docs/domain.md'), '# Golem app\n\nA minimal editable app entrypoint.\n');
+  writeFileSync(resolve(root, 'docs/domain.md'), '# App intent\n\nDescribe the people this app helps, the problem it solves, and the important concepts and rules. Discuss meaningful workflows and contracts with the builder before asking it to implement a major feature.\n');
+  writeFileSync(resolve(root, 'AGENTS.md'), '# Golem app\n\nRead `node_modules/golem-kit/docs/builder.md` before changing this app. Keep this file and `docs/domain.md` for app-specific intent; framework guidance stays in the installed Golem package.\n');
   const ignorePath = resolve(root, '.gitignore');
   const ignore = existsSync(ignorePath) ? readFileSync(ignorePath, 'utf8') : '';
-  if (!ignore.split(/\r?\n/).includes('.golem/')) writeFileSync(ignorePath, `${ignore}${ignore && !ignore.endsWith('\n') ? '\n' : ''}.golem/\n`);
+  const additions = ['.golem/', '.env.local'].filter((entry) => !ignore.split(/\r?\n/).includes(entry));
+  if (additions.length) writeFileSync(ignorePath, `${ignore}${ignore && !ignore.endsWith('\n') ? '\n' : ''}${additions.join('\n')}\n`);
   if (!packageExisted) {
     const packageSpec = process.env.GOLEM_KIT_TARBALL ?? `golem-kit@${framework.version}`;
     execFileSync('pnpm', ['add', '--save-exact', packageSpec], { cwd: root, stdio: 'inherit' });
   }
-  writeFileSync(resolve(root, 'golem'), '#!/bin/sh\nset -eu\ncd -- "$(dirname -- "$0")"\nif [ -n "${GOLEM_SOURCE:-}" ]; then\n  exec node "$GOLEM_SOURCE/src/cli.ts" "$@"\nfi\nexec node_modules/.bin/golem-kit "$@"\n', { mode: 0o755 });
+  writeFileSync(resolve(root, 'golem'), '#!/bin/sh\nset -eu\ncd -- "$(dirname -- "$0")"\nexec node --env-file-if-exists=.env.local node_modules/golem-kit/src/entry.mjs "$@"\n', { mode: 0o755 });
 }

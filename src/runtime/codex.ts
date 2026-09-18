@@ -1,8 +1,20 @@
 import { spawn, type ChildProcess } from 'node:child_process'
+import { existsSync } from 'node:fs'
+import { dirname, resolve } from 'node:path'
+import { fileURLToPath } from 'node:url'
 import type { BackendEvent, SessionBackend } from './session.ts'
 
 type JsonEvent = { type?: string; thread_id?: string; item?: { type?: string; text?: string }; error?: string; message?: string }
 export type SandboxMode = 'read-only' | 'danger-full-access'
+
+const frameworkRoot = resolve(dirname(fileURLToPath(import.meta.url)), '../..')
+
+function builderInstructions(cwd: string): string {
+  const source = process.env.GOLEM_SOURCE ? resolve(process.env.GOLEM_SOURCE) : frameworkRoot
+  const ui = process.env.GOLEM_UI_SOURCE ? resolve(process.env.GOLEM_UI_SOURCE) : undefined
+  const guide = resolve(source, 'docs/builder.md')
+  return `You are Golem's in-app builder. The user sees Chat beside their application's Canvas. Explain that plainly and ask what they want to create; do not redirect them to generic coding-assistant documentation. Build-mode turns may edit the app and, after success, Golem rebuilds and refreshes the Canvas. Conversation history persists, including resumed threads. Read ${existsSync(guide) ? guide : resolve(frameworkRoot, 'docs/builder.md')} and ${resolve(cwd, 'docs/domain.md')} when present before major work. This app is ${cwd}; active Golem source is ${source}${ui ? `; active golem-ui source is ${ui}` : ''}. Keep app-specific decisions in the app and shared framework/UI knowledge in its owner. Respect the selected sandbox and do not change files in read-only mode.`
+}
 
 /**
  * One native `codex exec --json` process per turn; the thread id preserves continuity.
@@ -41,9 +53,10 @@ export class CodexBackend implements SessionBackend {
 
   send(text: string): Promise<void> {
     if (this.request) return Promise.reject(new Error('Codex is already handling a request'))
+    const instructions = `developer_instructions=${JSON.stringify(builderInstructions(this.cwd))}`
     const args = this.nativeThreadId
-      ? [...this.prefixArgs, 'exec', 'resume', this.nativeThreadId, '--json', '-c', `sandbox_mode="${this.mode}"`, '--skip-git-repo-check', text]
-      : [...this.prefixArgs, 'exec', '--json', '-s', this.mode, '-C', this.cwd, '--skip-git-repo-check', text]
+      ? [...this.prefixArgs, 'exec', 'resume', this.nativeThreadId, '--json', '-c', instructions, '-c', `sandbox_mode="${this.mode}"`, '--skip-git-repo-check', text]
+      : [...this.prefixArgs, 'exec', '--json', '-c', instructions, '-s', this.mode, '-C', this.cwd, '--skip-git-repo-check', text]
     this.request = new Promise((resolve, reject) => {
       this.interrupted = false
       const child = spawn(this.executable, args, { cwd: this.cwd, stdio: ['ignore', 'pipe', 'pipe'], windowsHide: true, detached: process.platform !== 'win32' })
