@@ -24,6 +24,8 @@ export type SessionEvent = {
   status?: SessionStatus
   text?: string
   reason?: string
+  clientMessageId?: string
+  attachments?: Array<{ id: string; name: string; size?: number }>
 }
 
 export class Session {
@@ -41,6 +43,7 @@ export class Session {
   private workerStarted = false
   private persistence = Promise.resolve()
   private persistenceError: Error | undefined
+  private updatedAt = new Date().toISOString()
   readonly id: string
   readonly backend: AgentName
   /** Server-owned: set once at creation from the request's explicit build intent, never inferred. */
@@ -85,13 +88,14 @@ export class Session {
     session.history.push(...snapshot.history)
     session.status = snapshot.status
     session.sequence = Math.max(-1, ...snapshot.history.map((event) => event.sequence)) + 1
+    session.updatedAt = snapshot.updatedAt ?? session.updatedAt
     session.closed = snapshot.status === 'stopped'
     if (snapshot.active) session.recoverInterrupted()
     return session
   }
 
   snapshot(): SessionSnapshot {
-    return { id: this.id, backend: this.backend, buildMode: this.buildMode, status: this.status, active: this.active, history: this.history, threadId: this.worker.threadId?.() }
+    return { id: this.id, backend: this.backend, buildMode: this.buildMode, status: this.status, active: this.active, history: this.history, threadId: this.worker.threadId?.(), updatedAt: this.updatedAt }
   }
 
   async flush(): Promise<void> {
@@ -99,15 +103,26 @@ export class Session {
     if (this.persistenceError) throw this.persistenceError
   }
 
-  send(text: string): Promise<void> {
+  async accept(text: string, clientMessageId: string, attachments?: SessionEvent['attachments']): Promise<{ duplicate: boolean; completion?: Promise<void> }> {
     if (this.closed || (this.status !== 'ready' && this.status !== 'interrupted' && this.status !== 'failed')) {
-      return Promise.reject(new Error(`Session ${this.status}`))
+      throw new Error(`Session ${this.status}`)
     }
+    if (!clientMessageId) throw new Error('clientMessageId is required')
+    if (this.history.some((event) => event.type === 'user' && event.clientMessageId === clientMessageId)) return { duplicate: true }
     if (this.status === 'interrupted' || this.status === 'failed') this.setStatus('ready')
-    return new Promise((resolve, reject) => {
-      this.pending.push({ text, resolve, reject })
-      this.pump()
-    })
+    await this.recordDurably({ type: 'user', text, clientMessageId, attachments })
+    if (this.closed || this.status !== 'ready') throw new Error(`Session ${this.status}`)
+    let resolve!: () => void
+    let reject!: (error: Error) => void
+    const completion = new Promise<void>((ok, fail) => { resolve = ok; reject = fail })
+    this.pending.push({ text, resolve, reject })
+    this.pump()
+    return { duplicate: false, completion }
+  }
+
+  async send(text: string): Promise<void> {
+    const accepted = await this.accept(text, randomUUID())
+    await accepted.completion
   }
 
   subscribe(listener: (event: SessionEvent) => void): () => void {
@@ -191,7 +206,6 @@ export class Session {
         }
         this.pending.shift()
         this.active = true
-        this.record({ type: 'user', text: next.text })
         if (this.closed || this.status !== 'ready') {
           this.active = false
           next.reject(new Error(`Session ${this.status}`))
@@ -252,8 +266,24 @@ export class Session {
   private record(event: Omit<SessionEvent, 'sequence' | 'sessionId'>): void {
     const complete = { ...event, sequence: this.sequence++, sessionId: this.id }
     this.history.push(complete)
+    this.updatedAt = new Date().toISOString()
     this.listeners.forEach((listener) => listener(complete))
     this.persist()
+  }
+
+  /** A user receipt is not externally visible until it is durable. */
+  private async recordDurably(event: Omit<SessionEvent, 'sequence' | 'sessionId'>): Promise<void> {
+    const complete = { ...event, sequence: this.sequence++, sessionId: this.id }
+    this.history.push(complete)
+    this.updatedAt = new Date().toISOString()
+    this.persist()
+    try {
+      await this.flush()
+    } catch (error) {
+      this.history.splice(this.history.indexOf(complete), 1)
+      throw error
+    }
+    this.listeners.forEach((listener) => listener(complete))
   }
 
   private persist(): void {
@@ -278,6 +308,7 @@ export type SessionSnapshot = {
   active: boolean
   history: SessionEvent[]
   threadId?: string
+  updatedAt?: string
 }
 
 export class SessionManager {
@@ -302,6 +333,12 @@ export class SessionManager {
   }
 
   get(id: string): Session | undefined { return this.sessions.get(id) }
+
+  latest(): Session | undefined {
+    return [...this.sessions.values()]
+      .filter((session) => session.buildMode)
+      .sort((left, right) => right.snapshot().updatedAt!.localeCompare(left.snapshot().updatedAt!))[0]
+  }
 
   restore(snapshots: SessionSnapshot[], createWorker: (snapshot: SessionSnapshot) => SessionBackend): void {
     for (const snapshot of snapshots) this.sessions.set(snapshot.id, Session.restore(snapshot, createWorker(snapshot), this.persist))

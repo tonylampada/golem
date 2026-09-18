@@ -154,6 +154,12 @@ async function handleApi(
     }
     return;
   }
+  if (request.method === 'GET' && url.pathname === '/api/sessions/latest') {
+    const latest = sessions.latest();
+    if (!latest) return json(response, 404, { error: 'No saved build conversation' });
+    json(response, 200, { id: latest.id, backend: latest.backend, status: latest.status });
+    return;
+  }
   const match = url.pathname.match(/^\/api\/sessions\/([^/]+)(?:\/(history|events|interrupt))?$/);
   if (!match) return json(response, 404, { error: 'Unknown API route' });
   const session = sessions.get(match[1]);
@@ -175,12 +181,17 @@ async function handleApi(
   if (request.method === 'POST' && !match[2]) {
     if (!mutationAllowed(request)) return json(response, 403, { error: 'Cross-origin mutations are not allowed' });
     try {
-      const input = await body(request) as { text?: unknown };
+      const input = await body(request) as { text?: unknown; clientMessageId?: unknown; attachments?: unknown };
       if (typeof input.text !== 'string' || !input.text.trim()) return json(response, 400, { error: 'text must be a non-empty string' });
-      await session.send(input.text);
-      await session.flush();
-      json(response, 202, { status: session.status });
-      if (session.buildMode) triggerRebuild(session);
+      if (typeof input.clientMessageId !== 'string' || !input.clientMessageId) return json(response, 400, { error: 'clientMessageId is required' });
+      const attachments = Array.isArray(input.attachments) && input.attachments.every((item) => item && typeof item.id === 'string' && typeof item.name === 'string' && (item.size === undefined || typeof item.size === 'number')) ? input.attachments : undefined;
+      if (input.attachments !== undefined && !attachments) return json(response, 400, { error: 'attachments must contain a name and id' });
+      const accepted = await session.accept(input.text, input.clientMessageId, attachments);
+      json(response, 202, { status: session.status, duplicate: accepted.duplicate });
+      if (!accepted.duplicate && accepted.completion) void accepted.completion.then(
+        () => { if (session.buildMode) triggerRebuild(session); },
+        () => {},
+      );
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
       json(response, message.startsWith('Request body') ? 400 : 409, { error: message, status: session.status });

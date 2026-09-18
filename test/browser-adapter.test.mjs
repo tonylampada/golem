@@ -93,3 +93,52 @@ test('session replacement rejects stale events and old cleanup preserves the new
   assert.deepEqual(seen.at(-1).map(({ text }) => text), ['current'])
   unsubscribeNew()
 })
+
+test('a fresh browser discovers history without starting work', async () => {
+  const values = new Map()
+  globalThis.window = {
+    sessionStorage: { getItem: () => null, setItem(key, value) { values.set(key, value) }, removeItem() {} },
+    localStorage: { getItem: () => null, setItem() {} },
+  }
+  let discovery = 0
+  globalThis.fetch = async (url) => {
+    if (url === '/api/sessions/latest') { discovery++; return { ok: true, status: 200, json: async () => ({ id: 'saved' }) } }
+    if (url === '/api/sessions/saved/history') return { ok: true, status: 200, json: async () => ({ events: [{ sequence: 0, type: 'user', text: 'earlier', clientMessageId: 'old' }], status: 'ready' }) }
+    throw new Error(`unexpected fetch ${url}`)
+  }
+  const { chat, restoreBrowserSession } = await import(`../src/browser/adapters.ts?discovery=${Date.now()}`)
+  assert.equal(await restoreBrowserSession(), true)
+  assert.equal(discovery, 1)
+  assert.deepEqual((await chat.history()).map(({ text }) => text), ['earlier'])
+  assert.equal(values.get('golem.browser.session'), 'saved')
+})
+
+test('failed optimistic messages remain retryable until matching history confirms them', async () => {
+  const values = new Map()
+  globalThis.window = {
+    sessionStorage: { getItem: () => 'session', setItem() {}, removeItem() {} },
+    localStorage: { getItem: (key) => values.get(key) ?? null, setItem(key, value) { values.set(key, value) } },
+  }
+  let attempts = 0
+  let sentId
+  globalThis.fetch = async (url, options = {}) => {
+    if (url === '/api/sessions/session' && options.method === 'POST') {
+      sentId = JSON.parse(options.body).clientMessageId
+      attempts++
+      return attempts === 1 ? { ok: false, json: async () => ({ error: 'offline' }) } : { ok: true, json: async () => ({}) }
+    }
+    if (url === '/api/sessions/session/history') return { ok: true, json: async () => ({ events: [{ sequence: 1, type: 'user', text: 'keep me', clientMessageId: sentId }], status: 'ready' }) }
+    throw new Error(`unexpected fetch ${url}`)
+  }
+  const { chat } = await import(`../src/browser/adapters.ts?outbox=${Date.now()}`)
+  const seen = []
+  chat.subscribe((messages) => seen.push(messages))
+  await assert.rejects(chat.send('keep me'), /offline/)
+  const failed = seen.at(-1)[0]
+  assert.equal(failed.delivery, 'failed')
+  await chat.retry(failed.id)
+  assert.equal(seen.at(-1).filter(({ text }) => text === 'keep me').length, 1)
+  assert.equal(seen.at(-1)[0].delivery, undefined)
+  await chat.history()
+  assert.equal(seen.at(-1).filter(({ text }) => text === 'keep me').length, 1)
+})
