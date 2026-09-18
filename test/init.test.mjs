@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict'
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from 'node:fs'
+import { chmodSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from 'node:fs'
 import { spawnSync } from 'node:child_process'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
@@ -33,6 +33,26 @@ test('init creates the editable boundary and refuses repeat overwrite', { timeou
     assert.equal(repeat.status, 1)
     assert.equal(readFileSync(join(root, 'sentinel.txt'), 'utf8'), 'keep')
     assert.equal(readFileSync(join(root, 'package.json'), 'utf8'), packageBefore)
+  } finally {
+    rmSync(root, { recursive: true, force: true })
+  }
+})
+
+test('fresh init installs golem-ui directly at the version golem-kit uses', () => {
+  const root = mkdtempSync(join(tmpdir(), 'golem-init-'))
+  const bin = join(root, 'bin')
+  try {
+    mkdirSync(bin)
+    writeFileSync(join(bin, 'pnpm'), '#!/bin/sh\necho "$@" > pnpm-args\n')
+    chmodSync(join(bin, 'pnpm'), 0o755)
+    const app = join(root, 'app')
+    mkdirSync(app)
+    const result = spawnSync(process.execPath, [cli, 'init'], {
+      cwd: app, encoding: 'utf8', env: { ...process.env, PATH: `${bin}:${process.env.PATH}`, GOLEM_KIT_TARBALL: '/fixture/golem-kit.tgz' },
+    })
+    assert.equal(result.status, 0, result.stderr)
+    const framework = JSON.parse(readFileSync(join(frameworkRoot, 'package.json'), 'utf8'))
+    assert.equal(readFileSync(join(app, 'pnpm-args'), 'utf8'), `add --save-exact /fixture/golem-kit.tgz golem-ui@${framework.dependencies['golem-ui']}\n`)
   } finally {
     rmSync(root, { recursive: true, force: true })
   }

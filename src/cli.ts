@@ -111,7 +111,7 @@ function initProject(): void {
     if (!current.dependencies?.['golem-kit']) throw new Error('refusing to overwrite existing package.json');
   }
   const frameworkRoot = resolve(dirname(fileURLToPath(import.meta.url)), '..');
-  const framework = JSON.parse(readFileSync(resolve(frameworkRoot, 'package.json'), 'utf8')) as { version: string };
+  const framework = JSON.parse(readFileSync(resolve(frameworkRoot, 'package.json'), 'utf8')) as { version: string; dependencies: Record<string, string> };
   mkdirSync(resolve(root, 'src'), { recursive: true });
   mkdirSync(resolve(root, 'docs'), { recursive: true });
   if (!existsSync(packagePath)) {
@@ -170,7 +170,8 @@ Before changing this app, read \`docs/domain.md\` (this app's DNA) and the insta
   if (additions.length) writeFileSync(ignorePath, `${ignore}${ignore && !ignore.endsWith('\n') ? '\n' : ''}${additions.join('\n')}\n`);
   if (!packageExisted) {
     const packageSpec = process.env.GOLEM_KIT_TARBALL ?? `golem-kit@${framework.version}`;
-    execFileSync('pnpm', ['add', '--save-exact', packageSpec], { cwd: root, stdio: 'inherit' });
+    // App code imports golem-ui directly, so pin the same version golem-kit builds with.
+    execFileSync('pnpm', ['add', '--save-exact', packageSpec, `golem-ui@${framework.dependencies['golem-ui']}`], { cwd: root, stdio: 'inherit' });
   }
   writeFileSync(resolve(root, 'golem'), '#!/bin/sh\nset -eu\ncd -- "$(dirname -- "$0")"\nexec node --env-file-if-exists=.env.local node_modules/golem-kit/src/entry.mjs "$@"\n', { mode: 0o755 });
 }
