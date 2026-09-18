@@ -73,6 +73,7 @@ export function App() {
           <div className="golem-browser-header flex items-center justify-between border-b border-neutral-200 bg-white px-4 py-3 text-sm">
             <span className="font-medium">{mode ? 'Build mode' : 'Conversation mode'}</span>
             <span className={mode ? 'golem-browser-status-connected text-green-700' : 'golem-browser-status-disconnected text-neutral-500'}>{mode ? `${sessionStatus} · ${session}` : 'Not connected'}</span>
+            {mode && <button className="golem-browser-new rounded border border-neutral-300 px-2 py-1" onClick={() => setMode(false)}>New conversation</button>}
             {mode && (sessionStatus === 'ready' || sessionStatus === 'starting') && <button className="golem-browser-interrupt rounded border border-red-300 px-2 py-1 text-red-700" onClick={interrupt}>Interrupt</button>}
           </div>
           {!mode ? (
@@ -81,14 +82,17 @@ export function App() {
                 {discoveries.length ? discoveries.map((item) => `${agentNames[item.agent] ?? item.agent}: ${item.status === 'available' && item.runnable ? 'available' : item.status === 'missing' ? 'not installed' : item.detail ?? 'unavailable'}`).join(' · ') : 'Checking agents…'}
               </p>
               {runnable.length > 1 && (
-                <label className="mt-3 flex items-center gap-2">
+                <label className="golem-browser-runtime mt-3 flex items-center gap-2">
                   Agent
                   <select className="golem-browser-backend rounded border border-neutral-300 px-2 py-1" value={backend} onChange={(event) => chooseBackend(event.target.value)}>
                     {runnable.map((agent) => <option key={agent} value={agent}>{agentNames[agent] ?? agent}</option>)}
                   </select>
                 </label>
               )}
-              <button className="golem-browser-enter mt-4 rounded bg-neutral-900 px-3 py-2 text-white disabled:opacity-40" disabled={!backend || enteringBuildMode} onClick={enterBuildMode}>Enter build mode{backend ? ` with ${agentNames[backend] ?? backend}` : ''}</button>
+              <div className="mt-4 flex flex-wrap gap-2">
+              <button className="golem-browser-enter rounded bg-neutral-900 px-3 py-2 text-white disabled:opacity-40" disabled={!backend || enteringBuildMode} onClick={enterBuildMode}>Enter build mode{backend ? ` with ${agentNames[backend] ?? backend}` : ''}</button>
+              {session && <button className="golem-browser-new rounded border border-neutral-300 px-3 py-2" onClick={() => setMode(true)}>Back to conversation</button>}
+              </div>
               {error && <p className="golem-browser-error mt-3 text-red-700">{error}</p>}
             </div>
           ) : <Chat key={session} config={{ agentName: `Golem ${agentNames[sessionBackend ?? 'codex'] ?? sessionBackend}`, emptyState: `Ask ${agentNames[sessionBackend ?? 'codex'] ?? sessionBackend} to inspect or explain this workspace.` }} adapters={chatAdapters} />}

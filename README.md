@@ -22,7 +22,7 @@ Start the application:
 ./golem dev
 ```
 
-Open the browser address printed in the terminal, enter build mode, and start a conversation. Build chat requires the Claude Code or Codex CLI installed and signed in on the same machine; when both are ready, choose one before entering build mode. Each conversation keeps its agent. After a successful build-mode change, the browser shell rebuilds and refreshes; conversations are saved in `.golem/` and restored when the server restarts.
+Open the browser address printed in the terminal, enter build mode, and start a conversation. Build chat requires the Claude Code or Codex CLI installed and signed in on the same machine; when both are ready, choose one before entering build mode. Each conversation keeps its agent; use **New conversation** to start another, possibly with the other agent, while earlier conversations stay saved. After a successful build-mode change, the browser shell rebuilds and refreshes; conversations are saved in `.golem/` and restored when the server restarts.
 
 `./golem build` writes the browser shell to `dist/`. `./golem dev` defaults to
 `127.0.0.1:3000`; set an optional `host` and `port` in `golem.config.ts`, then restart
