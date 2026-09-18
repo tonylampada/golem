@@ -84,6 +84,15 @@ async function waitForHistory(port, id, predicate, timeout = 20_000) {
   throw new Error('timed out waiting for history')
 }
 
+async function waitFor(predicate, timeout = 2_000) {
+  const until = Date.now() + timeout
+  while (Date.now() < until) {
+    if (predicate()) return
+    await new Promise((resolve) => setTimeout(resolve, 10))
+  }
+  throw new Error('timed out waiting for condition')
+}
+
 test('a successful build-mode turn triggers a rebuild and notifies the browser', { timeout: 30000 }, async () => {
   const server = await start(3230, () => new InstantBackend())
   try {
@@ -177,7 +186,7 @@ test('SSE cursor replays a response after disconnecting during work', { timeout:
     const send = fetch(`http://127.0.0.1:3219/api/sessions/${created.id}`, {
       method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ text: 'delayed', clientMessageId: 'delayed' }),
     })
-    await new Promise((resolve) => setImmediate(resolve))
+    await waitFor(() => backend.pending)
     const user = new TextDecoder().decode((await reader.read()).value)
     assert.match(user, /id: 1/)
     await reader.cancel()
@@ -207,7 +216,7 @@ test('a receipt is durable and idempotent before a delayed backend turn complete
     const first = await request('stable-message')
     assert.equal(first.status, 202)
     assert.equal((await first.json()).duplicate, false)
-    await new Promise((resolve) => setImmediate(resolve))
+    await waitFor(() => backend.pending)
     assert.equal(backend.pending.text, 'keep this')
     const repeated = await request('stable-message')
     assert.equal(repeated.status, 202)
@@ -237,6 +246,7 @@ test('saved sessions survive restart without starting a backend, and resume thei
       method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ backend: 'codex', intent: 'build' }),
     })).json()).id
     await fetch(`http://127.0.0.1:3225/api/sessions/${stale}`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ text: 'first', clientMessageId: 'first' }) })
+    await waitForHistory(3225, stale, (events) => events.some((event) => event.text === 'echo:native-thread:first'))
   } finally {
     await new Promise((resolve) => firstServer.close(resolve))
   }
@@ -251,6 +261,7 @@ test('saved sessions survive restart without starting a backend, and resume thei
     assert.deepEqual(history.events.filter((event) => event.type === 'user' || event.type === 'message').map((event) => event.text), ['first', 'echo:native-thread:first'])
     const followup = await fetch(`http://127.0.0.1:3225/api/sessions/${stale}`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ text: 'followup', clientMessageId: 'followup' }) })
     assert.equal(followup.status, 202)
+    await waitFor(() => backends.at(-1).started)
     assert.equal(backends.at(-1).savedThread, 'native-thread')
     assert.equal(backends.at(-1).started, true)
   } finally {
