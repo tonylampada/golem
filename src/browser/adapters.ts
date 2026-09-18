@@ -199,7 +199,7 @@ export const chat: ChatAdapter & { retry(messageId: string): Promise<void> } = {
         }
         nextSource.onerror = () => {
           if (source === nextSource && nextSource.readyState === EventSource.CLOSED && sessionId === subscribedSession) {
-            void chat.history().catch(() => {}).finally(connect)
+            connect()
           }
         }
       }
