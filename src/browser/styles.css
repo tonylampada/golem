@@ -1,0 +1,10 @@
+[data-golem-theme] .golem-browser-status-connected { color: oklch(52.7% .154 150.069); }
+[data-golem-theme] .golem-browser-interrupt { border-color: oklch(80.8% .114 19.571); color: oklch(50.5% .213 27.518); }
+[data-golem-theme='dark'] .golem-browser-header { border-color: oklch(26.9% 0 0); background-color: oklch(14.5% 0 0); }
+[data-golem-theme='dark'] .golem-browser-status-connected { color: oklch(79.2% .209 151.711); }
+[data-golem-theme='dark'] .golem-browser-status-disconnected, [data-golem-theme='dark'] .golem-browser-guest { color: oklch(70.8% 0 0); }
+[data-golem-theme='dark'] .golem-browser-interrupt { border-color: oklch(44.4% .177 26.899); color: oklch(70.4% .191 22.216); }
+[data-golem-theme='dark'] .golem-browser-runtime { color: oklch(87% 0 0); }
+[data-golem-theme='dark'] .golem-browser-enter { background-color: oklch(87% 0 0); color: oklch(14.5% 0 0); }
+[data-golem-theme='dark'] .golem-browser-error { color: oklch(70.4% .191 22.216); }
+[data-golem-theme='dark'] .golem-browser-theme-toggle { border-color: oklch(37.1% 0 0); }
