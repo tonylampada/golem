@@ -92,7 +92,7 @@ export default {
   accounts: {
     guests: false,       // default: signed-out visitors see only the sign-in screen
     allowSignUp: false,  // default: people join through invite links
-    roles: [             // golem-ui Auth roles; the first is what a plain sign-up gets
+    roles: [             // golem-ui Auth roles; ids are unique
       { id: 'member', label: 'Member' },
       { id: 'builder', label: 'Builder' },
       { id: 'admin', label: 'Admin', manages: true },
@@ -102,9 +102,9 @@ export default {
 }
 ```
 
-The roles above are the default. A role with `manages: true` may invite, change roles and groups, remove members, and build. The `builder` role may build. Every other role is for the app's own `authorize`. At least one role must manage, and the last member holding one cannot be demoted or removed.
+The roles above are the default. A role with `manages: true` may invite, change roles and groups, remove members, and build. The `builder` role may build. Every other role is for the app's own `authorize`. At least one role must manage, and the last member holding one cannot be demoted or removed. An invite carries its role. A sign-up without one (`allowSignUp: true`) gets the first role that neither manages nor is `builder`, whatever the order.
 
-- **guests: false**: every signed-out `/api/app/*` call (operations, files, changes) answers 401, and the shell shows golem-ui's sign-in screen.
+- **guests: false**: `invoke` refuses `anonymous` with `UnauthorizedError` on every path (HTTP, agent tools, server code). Signed-out `/api/app/*` calls, the change stream included, answer 401, and the shell shows golem-ui's sign-in screen.
 - **guests: true**: signed-out callers run as `anonymous` through `authorize`. The default `authorize` allows everything, so write one that refuses what guests may not do.
 - **Policy** stays in `authorize`: check `principal.roles`, `principal.groups` and `record`. Without an `authorize`, every signed-in member may do everything.
 - **Build mode** needs a signed-in member who may build; `/api/runtime` and every `/api/sessions` route answer 401 or 403 to anyone else. A build conversation belongs to the member who started it. Conversations saved before accounts were enabled are visible to managers only. Losing build access, or signing out everywhere, interrupts a running build turn.

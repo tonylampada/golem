@@ -1,6 +1,6 @@
 import { createHash, randomBytes, scrypt, timingSafeEqual } from 'node:crypto'
 import { EventEmitter } from 'node:events'
-import type { AccountsConfig } from '../config.ts'
+import { isPlain, type AccountsConfig } from '../config.ts'
 import {
   AppError, ForbiddenError, InvalidError, NotFoundError, RecordRefusedError, UnauthorizedError, validId, z,
   type Principal, type RecordStore, type Row,
@@ -51,6 +51,8 @@ export function createAccounts(records: RecordStore, config: AccountsConfig) {
   /** Emits `change` with an account id whenever its sessions, roles, groups or existence change. */
   const changes = new EventEmitter().setMaxListeners(0)
   const failures = new Map<string, { count: number; until: number }>()
+  // Sign-up checks the email, claims the invite and creates the account as one step, one at a time.
+  let signingUp: Promise<unknown> = Promise.resolve()
   const managing = new Set(config.roles.filter((role) => role.manages).map((role) => role.id))
   const roleIds = new Set(config.roles.map((role) => role.id))
   const digest = (token: string) => createHash('sha256').update(token).digest('base64url')
@@ -125,6 +127,22 @@ export function createAccounts(records: RecordStore, config: AccountsConfig) {
     return user(account)
   }
 
+  async function createAccount(name: string, email: string, hashed: string, invite: string | undefined): Promise<Account> {
+    if ((await records.list(ACCOUNTS, { filter: { email }, limit: 1 })).rows.length) throw new InvalidError('That email already has an account. Sign in instead.')
+    // Without an invite, only a role that neither manages nor builds, whatever the role order.
+    let role = config.roles.find(isPlain)?.id
+    if (invite) {
+      const found = /^[A-Za-z0-9_-]{43}$/.test(invite) ? await records.get(INVITES, digest(invite)) : null
+      if (!found || Date.parse(String(found.expiresAt)) <= Date.now()) throw new InvalidError('That invite link has expired or was already used.')
+      // Removing first claims the invite: a second sign-up on the same link finds it gone.
+      await records.remove(INVITES, found.id).catch(() => { throw new InvalidError('That invite link has expired or was already used.') })
+      role = String(found.role)
+    } else if (!config.allowSignUp || !role) {
+      throw new ForbiddenError('This app is invite-only. Ask an admin for an invite link.')
+    }
+    return await records.create(ACCOUNTS, { email, name, password: hashed, roles: [role], groups: [] }) as Account
+  }
+
   async function mintInvite(role: string, origin: string, lifetime: number): Promise<string> {
     if (!roleIds.has(role)) throw new InvalidError(`Unknown role: ${role}`)
     const token = randomBytes(32).toString('base64url')
@@ -187,19 +205,10 @@ export function createAccounts(records: RecordStore, config: AccountsConfig) {
 
     async signUp(input: unknown): Promise<{ user: Member; token: string }> {
       const { name, email, password, invite } = parse(inputs.signUp, input)
-      if ((await records.list(ACCOUNTS, { filter: { email }, limit: 1 })).rows.length) throw new InvalidError('That email already has an account. Sign in instead.')
-      let role = config.roles[0].id
-      if (invite) {
-        const found = /^[A-Za-z0-9_-]{43}$/.test(invite) ? await records.get(INVITES, digest(invite)) : null
-        if (!found || Date.parse(String(found.expiresAt)) <= Date.now()) throw new InvalidError('That invite link has expired or was already used.')
-        // Removing first claims the invite: a second sign-up on the same link finds it gone.
-        await records.remove(INVITES, found.id).catch(() => { throw new InvalidError('That invite link has expired or was already used.') })
-        role = String(found.role)
-      } else if (!config.allowSignUp) {
-        throw new ForbiddenError('This app is invite-only. Ask an admin for an invite link.')
-      }
-      const account = await records.create(ACCOUNTS, { email, name, password: await hash(password), roles: [role], groups: [] }) as Account
-      return startSession(account)
+      const hashed = await hash(password)
+      const step = signingUp.then(() => createAccount(name, email, hashed, invite))
+      signingUp = step.catch(() => {})
+      return startSession(await step)
     },
 
     async signOut(principal: Principal): Promise<void> {

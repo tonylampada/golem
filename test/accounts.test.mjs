@@ -66,7 +66,7 @@ test('local accounts: sign-in, groups, roles, build access and revocation over H
 
     // Signed out, with guests off: no app data, no change stream, no build routes.
     const guest = client(base)
-    assert.deepEqual((await guest.get('/api/auth/me')).body, { user: null, canBuild: false, accounts: { guests: false, allowSignUp: false, roles: [{ id: 'member', label: 'Member', manages: false }, { id: 'builder', label: 'Builder', manages: false }, { id: 'admin', label: 'Admin', manages: true }] } })
+    assert.deepEqual((await guest.get('/api/auth/me')).body.result, { user: null, canBuild: false, accounts: { guests: false, allowSignUp: false, roles: [{ id: 'member', label: 'Member', manages: false }, { id: 'builder', label: 'Builder', manages: false }, { id: 'admin', label: 'Admin', manages: true }] } })
     assert.equal((await guest.op('records.list', { collection: 'notes' })).status, 401)
     assert.equal((await guest.get('/api/app/changes')).status, 401)
     assert.equal((await guest.get('/api/runtime')).status, 401)
@@ -90,9 +90,9 @@ test('local accounts: sign-in, groups, roles, build access and revocation over H
     const builder = await join_('builder', 'Bea Builder', 'builder@example.test')
 
     // Session separation: each cookie is its own person.
-    assert.equal((await member.get('/api/auth/me')).body.user.name, 'Mo Member')
-    assert.equal((await builder.get('/api/auth/me')).body.canBuild, true)
-    assert.equal((await member.get('/api/auth/me')).body.canBuild, false)
+    assert.equal((await member.get('/api/auth/me')).body.result.user.name, 'Mo Member')
+    assert.equal((await builder.get('/api/auth/me')).body.result.canBuild, true)
+    assert.equal((await member.get('/api/auth/me')).body.result.canBuild, false)
 
     // Record rules, enforced the same way for HTTP and agent tools, with groups read fresh on each call.
     const note = (await admin.op('records.create', { collection: 'notes', data: { title: 'North gate', team: 'field' } })).body.result
@@ -103,7 +103,7 @@ test('local accounts: sign-in, groups, roles, build access and revocation over H
     assert.equal((await member.post(`/api/auth/members/${member.id}/groups`, { groups: ['field'] })).status, 403)
     assert.equal((await admin.post(`/api/auth/members/${member.id}/groups`, { groups: ['field'] })).status, 200)
     assert.equal((await member.op('records.update', { collection: 'notes', id: note.id, patch: { title: 'North gate, checked' } })).status, 200)
-    assert.deepEqual((await member.get('/api/auth/me')).body.user.groups, ['field'])
+    assert.deepEqual((await member.get('/api/auth/me')).body.result.user.groups, ['field'])
 
     // Build access is its own permission, and conversations belong to whoever started them.
     assert.equal((await member.post('/api/sessions', { backend: 'codex', intent: 'build' })).status, 403)
@@ -130,11 +130,11 @@ test('local accounts: sign-in, groups, roles, build access and revocation over H
     assert.equal(history.status, 'interrupted')
 
     // Keep a manager; sign-out ends the cookie session.
-    assert.equal((await admin.post(`/api/auth/members/${(await admin.get('/api/auth/me')).body.user.id}/role`, { role: 'member' })).status, 422)
+    assert.equal((await admin.post(`/api/auth/members/${(await admin.get('/api/auth/me')).body.result.user.id}/role`, { role: 'member' })).status, 422)
     const stale = member.cookie
     assert.equal((await member.post('/api/auth/sign-out')).status, 200)
     assert.equal(member.cookie, '')
-    assert.equal((await fetch(`${base}/api/auth/me`, { headers: { cookie: stale } }).then((response) => response.json())).user, null)
+    assert.equal((await fetch(`${base}/api/auth/me`, { headers: { cookie: stale } }).then((response) => response.json())).result.user, null)
 
     // Brute force: five misses lock the address, even for the right password afterwards.
     const attacker = client(base)
@@ -201,7 +201,32 @@ test('accounts and origin config are validated, and absent accounts keep the ano
     [`export default { accounts: { roles: [{ id: 'member', label: 'Member' }] } }`, /manages: true/],
     [`export default { accounts: { guest: true } }`, /unknown fields: guest/],
     [`export default { origin: 'https://notes.example.test/' }`, /exact origin/],
+    [`export default { accounts: { roles: [{ id: 'admin', label: 'A', manages: true }, { id: 'admin', label: 'B' }] } }`, /unique/],
+    [`export default { accounts: { allowSignUp: true, roles: [{ id: 'admin', label: 'A', manages: true }, { id: 'builder', label: 'B' }] } }`, /allowSignUp needs a role/],
   ]) {
     await assert.rejects(load(source), message)
+  }
+})
+
+test('guests: false refuses anonymous on every invoke path; open sign-up never grants a privileged role; sign-up is serialized', { timeout: 60000 }, async () => {
+  // Admin listed first on purpose: role order must not decide what an open sign-up receives.
+  const root = app({ allowSignUp: true, roles: [{ id: 'admin', label: 'Admin', manages: true }, { id: 'builder', label: 'Builder' }, { id: 'reader', label: 'Reader' }] })
+  const { createAppBackend } = await import('../src/backend/http.ts')
+  const backend = await createAppBackend(root, join(root, '.golem/data'))
+  const { accounts, app: served } = backend
+  const anonymous = { kind: 'anonymous' }
+  try {
+    for (const via of ['http', 'agent', 'server']) await assert.rejects(served.invoke('records.list', { collection: 'notes' }, anonymous, via), { name: 'UnauthorizedError' })
+    await assert.rejects(served.agentTools(anonymous).find((tool) => tool.name === 'records.list').call({ collection: 'notes' }), { name: 'UnauthorizedError' })
+
+    const walkIn = await accounts.signUp({ name: 'Walk In', email: 'walk@example.test', password: 'long enough' })
+    assert.deepEqual(walkIn.user.roles, ['reader'])
+    assert.equal(accounts.canBuild(await accounts.fromToken(walkIn.token)), false)
+
+    const attempts = await Promise.allSettled(Array.from({ length: 5 }, (_, index) => accounts.signUp({ name: `Twin ${index}`, email: ' Twin@Example.test ', password: 'long enough' })))
+    assert.deepEqual(attempts.map((one) => one.status).sort(), ['fulfilled', 'rejected', 'rejected', 'rejected', 'rejected'])
+    assert.equal((await backend.app.invoke('records.list', { collection: 'notes' }, await accounts.fromToken(walkIn.token), 'agent')).rows.length, 0)
+  } finally {
+    await backend.close()
   }
 })

@@ -57,9 +57,14 @@ function accounts(value: unknown): AccountsConfig {
     }
     return { id: role.id, label: role.label, manages: role.manages === true }
   })
+  if (new Set(parsed.map((role) => role.id)).size !== parsed.length) throw new Error('golem.config.ts accounts role ids must be unique')
   if (!parsed.some((role) => role.manages)) throw new Error('golem.config.ts accounts roles need one role with manages: true')
+  if (allowSignUp && !parsed.some(isPlain)) throw new Error("golem.config.ts accounts allowSignUp needs a role that neither manages nor is 'builder'")
   return { guests, allowSignUp, roles: parsed }
 }
+
+/** Neither manages accounts nor builds: what an open sign-up may receive. */
+export const isPlain = (role: AccountRole) => !role.manages && role.id !== 'builder'
 
 function safeUrl(value: string): URL | undefined {
   try { return new URL(value) } catch { return undefined }

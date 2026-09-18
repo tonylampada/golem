@@ -1,7 +1,7 @@
 import { EventEmitter } from 'node:events'
 import type { IncomingMessage } from 'node:http'
 import {
-  anonymous, defineOperation, ForbiddenError, InvalidError, NotFoundError, validCollection, z,
+  anonymous, defineOperation, ForbiddenError, InvalidError, NotFoundError, UnauthorizedError, validCollection, z,
   type Authorize, type FileStore, type Operation, type Principal, type RecordStore, type Row, type Via,
 } from '../operations.ts'
 import { FILES_COLLECTION } from './files.ts'
@@ -40,6 +40,8 @@ const allowAll: Authorize = () => true
 
 /** Where principals come from when the app has local accounts; replaces the module's `resolvePrincipal`. */
 export type Identity = {
+  /** guests: false — anonymous callers are refused on every path, HTTP, agent and server alike. */
+  requireUser: boolean
   resolve(request: IncomingMessage): Promise<Principal>
   refresh(principal: Principal): Promise<Principal>
   resolveAccount(id: string): Promise<Principal>
@@ -53,6 +55,7 @@ export function createApp(stores: { records: RecordStore; files: (records: Recor
 
   async function invoke(name: string, raw: unknown, principal: Principal, via: Via): Promise<unknown> {
     const { byName, authorize } = current
+    if (identity?.requireUser && principal.kind === 'anonymous') throw new UnauthorizedError('Sign in to use this app.')
     const operation = byName.get(name)
     if (!operation) throw new NotFoundError(`Unknown operation: ${name}`)
     const parsed = operation.input.safeParse(raw)
