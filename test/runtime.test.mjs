@@ -275,6 +275,29 @@ test('an interrupt cannot revive an acceptance that was waiting for durability',
   assert.deepEqual(backend.events, ['send:fresh'])
 })
 
+test('an interrupt cannot revive a turn paused while persisting active work', async () => {
+  let hold = false
+  let activeSaving
+  let release
+  const activeSave = new Promise((resolve) => { release = resolve })
+  const backend = new FakeBackend()
+  const session = new Session('codex', backend, 'active-generation', false, async (snapshot) => {
+    if (hold && snapshot.active) { activeSaving?.(); await activeSave }
+  })
+  await session.start()
+  hold = true
+  const waiting = new Promise((resolve) => { activeSaving = resolve })
+  const old = await session.accept('old', 'old-active')
+  void old.completion?.catch(() => {})
+  await waiting
+  await session.interrupt()
+  const fresh = session.accept('fresh', 'fresh-active')
+  release()
+  await fresh
+  await new Promise((resolve) => setImmediate(resolve))
+  assert.deepEqual(backend.events, ['send:fresh'])
+})
+
 test('conversation state rejects corrupt and unwritable files without replacing them', async () => {
   const directory = mkdtempSync(join(tmpdir(), 'golem-state-'))
   await writeFile(join(directory, 'conversations.json'), '{not json')

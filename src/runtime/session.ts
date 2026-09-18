@@ -33,7 +33,7 @@ export class Session {
   status: SessionStatus = 'starting'
   private readonly listeners = new Set<(event: SessionEvent) => void>()
   private sequence = 0
-  private readonly pending: Array<{ text: string; resolve: () => void; reject: (error: Error) => void }> = []
+  private readonly pending: Array<{ text: string; generation: number; resolve: () => void; reject: (error: Error) => void }> = []
   private active = false
   private dispatchScheduled = false
   private closed = false
@@ -120,7 +120,7 @@ export class Session {
     let resolve!: () => void
     let reject!: (error: Error) => void
     const completion = new Promise<void>((ok, fail) => { resolve = ok; reject = fail })
-    this.pending.push({ text, resolve, reject })
+    this.pending.push({ text, generation, resolve, reject })
     this.pump()
     return { duplicate: false, completion }
   }
@@ -208,7 +208,7 @@ export class Session {
     Promise.resolve()
       .then(async () => {
         this.dispatchScheduled = false
-        if (this.closed || this.status !== 'ready' || this.pending[0] !== next) {
+        if (next.generation !== this.requestGeneration || this.closed || this.status !== 'ready' || this.pending[0] !== next) {
           this.pump()
           return
         }
@@ -221,7 +221,7 @@ export class Session {
           this.pump()
           return
         }
-        if (this.closed || this.status !== 'ready') {
+        if (next.generation !== this.requestGeneration || this.closed || this.status !== 'ready') {
           this.active = false
           next.reject(new Error(`Session ${this.status}`))
           this.pump()
@@ -229,7 +229,7 @@ export class Session {
         }
         try {
           await this.startWorker()
-          if (this.closed || this.status !== 'ready') {
+          if (next.generation !== this.requestGeneration || this.closed || this.status !== 'ready') {
             this.active = false
             next.reject(new Error(`Session ${this.status}`))
             this.pump()
