@@ -1,10 +1,11 @@
 import { resolve } from 'node:path'
 import { pathToFileURL } from 'node:url'
 
-export type AppConfig = { host: string; port: number }
+/** Browser-visible settings: never put secrets in golem.config.ts. */
+export type AppConfig = { host: string; port: number; storage: 'jsonl' | 'sqlite' }
 
-export async function loadAppConfig(): Promise<AppConfig> {
-  const path = resolve(process.cwd(), 'golem.config.ts')
+export async function loadAppConfig(root = process.cwd()): Promise<AppConfig> {
+  const path = resolve(root, 'golem.config.ts')
   let value: unknown
   try {
     value = (await import(pathToFileURL(path).href)).default
@@ -14,7 +15,7 @@ export async function loadAppConfig(): Promise<AppConfig> {
   if (!value || typeof value !== 'object' || Array.isArray(value)) {
     throw new Error('golem.config.ts must default-export an object')
   }
-  const configured = value as { host?: unknown; port?: unknown }
+  const configured = value as { host?: unknown; port?: unknown; storage?: unknown }
   const host: unknown = configured.host === undefined ? '127.0.0.1' : configured.host
   const port: unknown = configured.port === undefined ? 3000 : configured.port
   if (typeof host !== 'string' || !host.trim()) {
@@ -23,7 +24,11 @@ export async function loadAppConfig(): Promise<AppConfig> {
   if (typeof port !== 'number' || !Number.isInteger(port) || port < 1 || port > 65_535) {
     throw new Error('golem.config.ts port must be an integer from 1 to 65535')
   }
-  return { host, port }
+  const storage = configured.storage ?? 'jsonl'
+  if (storage !== 'jsonl' && storage !== 'sqlite') {
+    throw new Error("golem.config.ts storage must be 'jsonl' or 'sqlite'")
+  }
+  return { host, port, storage }
 }
 
 function message(error: unknown): string {

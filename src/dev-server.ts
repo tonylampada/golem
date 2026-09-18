@@ -3,6 +3,7 @@ import { readFile } from 'node:fs/promises';
 import { extname, join, normalize, resolve } from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { buildBrowser, rebuild } from './browser-build.ts';
+import { createAppBackend, mutationAllowed } from './backend/http.ts';
 import { discoverAgents, runtimeState } from './runtime/discovery.ts';
 import { CodexBackend, type SandboxMode } from './runtime/codex.ts';
 import { SessionManager, type Session, type SessionBackend } from './runtime/session.ts';
@@ -28,13 +29,14 @@ export async function startDevServer(
   const state = new ConversationState(stateDirectory);
   const sessions = new SessionManager((snapshots) => state.save(snapshots));
   sessions.restore(await state.load(), (snapshot) => createBackend(snapshot.buildMode ? 'danger-full-access' : 'read-only', snapshot.threadId));
+  const app = await createAppBackend(appRoot, join(stateDirectory, 'data'));
   const server = createServer((request, response) => {
-    void handleRequest(request, response, sessions, port, host, createBackend).catch((error) => {
+    void (request.url?.startsWith('/api/app/') ? app.handle(request, response) : handleRequest(request, response, sessions, port, host, createBackend)).catch((error) => {
       if (!response.headersSent) json(response, 400, { error: error instanceof Error ? error.message : 'Malformed request' });
       else response.destroy();
     });
   });
-  server.once('close', () => { void sessions.disposeAll().then(() => sessions.flushAll()) });
+  server.once('close', () => { void sessions.disposeAll().then(() => sessions.flushAll()).finally(() => app.close()) });
   return new Promise((resolve, reject) => {
     server.once('error', reject);
     server.listen(port, host, () => resolve(server));
@@ -112,18 +114,6 @@ function triggerRebuild(session: Session): void {
     () => session.notifyRebuilt(),
     (error) => session.notifyBuildFailed(error instanceof Error ? error.message : String(error)),
   );
-}
-
-function mutationAllowed(request: import('node:http').IncomingMessage): boolean {
-  const origin = request.headers.origin;
-  if (!origin) return true;
-  const authority = request.headers.host;
-  if (!authority) return false;
-  try {
-    return origin === new URL(origin).origin && origin === new URL(`http://${authority}`).origin;
-  } catch {
-    return false;
-  }
 }
 
 async function handleApi(
