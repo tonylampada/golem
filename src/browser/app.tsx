@@ -79,7 +79,7 @@ export function App() {
     const unsubscribe = subscribeBrowserStatus(setSessionStatus)
     const discover = canBuild ? 'build' : chatInfo?.available ? 'chat' : undefined
     if (!discover) return unsubscribe
-    restoreBrowserSession(discover).then((restored) => {
+    restoreBrowserSession(discover).then((restored) => restored || discover === 'chat' || !chatInfo?.available ? restored : restoreBrowserSession('chat')).then((restored) => {
       if (restored) { setSession(currentBrowserSession()); setSessionBackend(currentBrowserBackend()); setMode(true) }
     }).catch((cause) => setError(cause instanceof Error ? cause.message : String(cause)))
     return unsubscribe
