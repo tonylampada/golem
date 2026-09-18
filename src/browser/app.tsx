@@ -35,7 +35,13 @@ export function App() {
     // Another person on this browser starts clean: their own build conversation, their own view.
     return identity.subscribe(() => void currentSession().then((next) => {
       if (!next.accounts) return
-      if ((next.user?.id ?? null) !== signedInAs.current) { forgetBrowserSession(); window.location.reload() }
+      if ((next.user?.id ?? null) !== signedInAs.current) {
+        // A used invite link must not reopen sign-up on the next load.
+        const url = new URL(window.location.href)
+        url.searchParams.delete('invite')
+        forgetBrowserSession()
+        window.location.replace(url)
+      }
       else setMe(next)
     }))
   }, [])
