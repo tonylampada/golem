@@ -28,6 +28,9 @@ Open the browser address printed in the terminal, enter build mode, and start a 
 `127.0.0.1:3000`; set an optional `host` and `port` in `golem.config.ts`, then restart
 the dev server. The terminal prints the usable address.
 
+`./golem lint` checks the app's architecture boundaries; see
+[the architecture guide](docs/architecture.md) to adapt or disable them.
+
 ## Local source development
 
 Use an installed package by default, or put a durable checkout in the app's uncommitted `.env.local` while developing Golem:

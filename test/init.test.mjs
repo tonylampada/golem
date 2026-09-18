@@ -17,18 +17,36 @@ test('init creates the editable boundary and refuses repeat overwrite', { timeou
     const first = spawnSync(process.execPath, [cli, 'init'], { cwd: root, encoding: 'utf8' })
     assert.equal(first.status, 0, first.stderr)
     assert.equal(readFileSync(join(root, 'package.json'), 'utf8'), packageBefore)
-    for (const file of ['package.json', 'golem.config.ts', 'src/app.tsx', 'docs/domain.md', 'AGENTS.md', 'golem']) {
+    for (const file of ['package.json', 'golem.config.ts', 'eslint.config.mjs', 'src/app.tsx', 'docs/domain.md', 'AGENTS.md', 'CLAUDE.md', 'golem']) {
       assert.ok(readFileSync(join(root, file)))
     }
     assert.match(readFileSync(join(root, '.gitignore'), 'utf8'), /^\.golem\/$/m)
     assert.match(readFileSync(join(root, '.gitignore'), 'utf8'), /^\.env\.local$/m)
     assert.match(readFileSync(join(root, 'AGENTS.md'), 'utf8'), /golem-kit\/docs\/builder\.md/)
-    assert.match(readFileSync(join(root, 'docs/domain.md'), 'utf8'), /important concepts and rules/)
+    assert.equal(readFileSync(join(root, 'CLAUDE.md'), 'utf8'), '@AGENTS.md\n')
+    assert.match(readFileSync(join(root, 'eslint.config.mjs'), 'utf8'), /from 'golem-kit\/eslint'/)
+    for (const heading of ['Purpose', 'Concepts', 'Operations', 'Decisions']) {
+      assert.match(readFileSync(join(root, 'docs/domain.md'), 'utf8'), new RegExp(`^## ${heading}$`, 'm'))
+    }
     writeFileSync(join(root, 'sentinel.txt'), 'keep')
     const repeat = spawnSync(process.execPath, [cli, 'init'], { cwd: root, encoding: 'utf8' })
     assert.equal(repeat.status, 1)
     assert.equal(readFileSync(join(root, 'sentinel.txt'), 'utf8'), 'keep')
     assert.equal(readFileSync(join(root, 'package.json'), 'utf8'), packageBefore)
+  } finally {
+    rmSync(root, { recursive: true, force: true })
+  }
+})
+
+test('init refuses to overwrite an existing agent pointer', () => {
+  const root = mkdtempSync(join(tmpdir(), 'golem-init-'))
+  try {
+    writeFileSync(join(root, 'package.json'), '{"dependencies":{"golem-kit":"0.1.0"}}\n')
+    writeFileSync(join(root, 'CLAUDE.md'), 'mine\n')
+    const result = spawnSync(process.execPath, [cli, 'init'], { cwd: root, encoding: 'utf8' })
+    assert.equal(result.status, 1)
+    assert.match(result.stderr, /refusing to overwrite existing files: CLAUDE\.md/)
+    assert.equal(readFileSync(join(root, 'CLAUDE.md'), 'utf8'), 'mine\n')
   } finally {
     rmSync(root, { recursive: true, force: true })
   }

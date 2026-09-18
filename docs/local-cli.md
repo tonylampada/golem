@@ -27,6 +27,7 @@ boundary so a hot-source workflow can select the CLI without changing HTTP start
 | `./golem help` (or `./golem`) | List all commands | 0 |
 | `./golem dev` | Refresh the browser build, then serve it at the `golem.config.ts` address (default `http://127.0.0.1:3000/`) until SIGINT/SIGTERM | 0 on clean shutdown; 1 on startup failure |
 | `./golem build` | Build the browser shell into `dist/` | 0 |
+| `./golem lint` | Check the app's architecture rules with ESLint and `eslint.config.mjs` ([architecture guide](architecture.md)) | 0 clean; 1 violations or missing config |
 | `./golem doctor` | Report local shell and backend readiness | 0 |
 
 Unknown commands and extra arguments exit 2. Built assets are served directly; extensionless browser
@@ -54,8 +55,9 @@ and rebuilds the shared `dist/` directory; requires port 3000).
 
 ## Generated projects
 
-`golem-kit init` creates `package.json`, `golem.config.ts`, `src/app.tsx`,
-`docs/domain.md`, a small `AGENTS.md` pointer, and an executable `./golem`. Normal initialization writes the
+`golem-kit init` creates `package.json`, `golem.config.ts`, `eslint.config.mjs`, `src/app.tsx`,
+`docs/domain.md` (the app's DNA template), small `AGENTS.md` and `CLAUDE.md` pointers to the
+installed framework guide, and an executable `./golem`. Normal initialization writes the
 pinned npm dependency `golem-kit@<framework version>` and installs it with pnpm.
 For local packed-tarball acceptance only, set `GOLEM_KIT_TARBALL=/path/to/golem-kit.tgz`.
 An existing package is supported only when it already declares `golem-kit`; its
