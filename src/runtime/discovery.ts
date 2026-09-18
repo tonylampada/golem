@@ -59,16 +59,22 @@ export function probeExecutable(executable: string, args = ['--version'], timeou
   })
 }
 
+/**
+ * Runnable means a turn can start: Codex needs only its executable; Claude Code also needs
+ * `claude auth status` to exit 0 (it exits 1 when signed out). Neither probe starts an agent turn.
+ */
 export async function discoverAgents(
   probe: Probe = probeExecutable,
   timeoutMs = 2_000,
 ): Promise<AgentDiscovery[]> {
-  return Promise.all((Object.entries(executables) as [AgentName, string][]).map(async ([agent, executable]) => ({
-    agent,
-    executable,
-    ...(probe === probeExecutable ? { runnable: agent === 'codex' } : {}),
-    ...(await probe(executable, ['--version'], timeoutMs)),
-  })))
+  return Promise.all((Object.entries(executables) as [AgentName, string][]).map(async ([agent, executable]) => {
+    const found = await probe(executable, ['--version'], timeoutMs)
+    if (agent !== 'claude' || found.status !== 'available') return { agent, executable, runnable: found.status === 'available', ...found }
+    const auth = await probe(executable, ['auth', 'status'], timeoutMs)
+    return auth.status === 'available'
+      ? { agent, executable, runnable: true, ...found }
+      : { agent, executable, runnable: false, ...found, detail: 'not signed in; run `claude auth login`' }
+  }))
 }
 
 export type RuntimeState =
@@ -81,7 +87,7 @@ export function runtimeState(discoveries: AgentDiscovery[]): RuntimeState {
     .filter(({ status, runnable = true }) => status === 'available' && runnable)
     .map(({ agent }) => agent)
   if (available.length === 0) {
-    return { kind: 'setup', explanation: 'Install Codex to start an agent session; Claude is not connected yet.' }
+    return { kind: 'setup', explanation: 'Install and sign in to Claude Code or Codex to start an agent session.' }
   }
   if (available.length === 1) return { kind: 'ready', backend: available[0] }
   return {

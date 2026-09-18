@@ -46,7 +46,7 @@ the server after changing these settings.
 `src/dev-server.ts` exports `startDevServer(port = 3000, backend, stateDirectory, host = '127.0.0.1')`, resolving to a listening
 Node HTTP server. It refreshes the browser build before listening; the CLI owns signal handling and output. `src/browser/app.tsx` is the
 composition boundary: anonymous identity and browser navigation are explicit host adapters, while
-the chat adapter connects explicit browser build-mode sessions to the local Codex runtime.
+the chat adapter connects explicit browser build-mode sessions to the chosen local Claude Code or Codex runtime.
 
 Check types with `pnpm exec tsc --noEmit`; run the CLI/HTTP smoke check with
 `node --test --test-concurrency=1 test/*.mjs` (serial because the CLI test intentionally removes
