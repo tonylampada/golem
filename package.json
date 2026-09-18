@@ -14,6 +14,7 @@
     "assets/golem-mascot.png",
     "docs/local-cli.md",
     "docs/builder.md",
+    "docs/app-backend.md",
     "docs/source-development.md",
     "golem.config.ts",
     "index.html",
