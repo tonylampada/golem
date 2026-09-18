@@ -3,8 +3,8 @@ import { Editor, type RecordsAdapter } from 'golem-ui'
 import { knowledge, type ViewOffer } from '../client'
 import { answerOffer, subscribeChatView } from './adapters'
 
-/** An accepted passage: its lines were counted in file `version`. */
-export type OpenSource = ViewOffer['input'] & { key: string; version: number }
+/** An accepted passage: `line`–`endLine` hold `text` in file `version`. */
+export type OpenSource = ViewOffer['input'] & { key: string; version: number; text: string }
 
 /**
  * This tab's view of the open chat: the assistant's offers to open a source, answered here. Only an
@@ -21,7 +21,7 @@ export function useSourceView(conversation: string | undefined, onOpen: (source:
     return subscribeChatView((event) => {
       if (event.type === 'offer' && event.offer.conversation === conversation) setOffers((list) => [...list.filter((one) => one.id !== event.offer.id), event.offer])
       if (event.type === 'withdrawn') setOffers((list) => list.filter((one) => one.id !== event.id))
-      if (event.type === 'apply') open.current({ ...event.offer.input, key: event.offer.id, version: event.version })
+      if (event.type === 'apply') open.current({ ...event.offer.input, key: event.offer.id, version: event.version, text: event.text })
     })
   }, [conversation])
   const answer = async (offer: ViewOffer, accept: boolean) => {
@@ -51,9 +51,10 @@ type FocusedEditor = (props: ComponentProps<typeof Editor> & { focus?: { line: n
 const SourceEditor = Editor as unknown as FocusedEditor
 // The latest version of each file the Editor was handed, and its body, so a passage is marked only
 // once the Editor shows the text its lines were counted in.
-type Seen = { version: number; body: string }
+type Seen = { version: number; body: string; at: number }
 const seen = new Map<string, Seen>()
 const seenListeners = new Set<() => void>()
+const settle = 150
 const note = (root: string, path: string, record: unknown, body?: string) => {
   const found = record as { version?: unknown; body?: unknown } | null | undefined
   if (typeof found?.version !== 'number') return
@@ -61,8 +62,9 @@ const note = (root: string, path: string, record: unknown, body?: string) => {
   if (text === undefined) return
   const before = seen.get(`${root}/${path}`)
   if (before && before.version > found.version) return
-  seen.set(`${root}/${path}`, { version: found.version, body: text })
-  for (const listener of seenListeners) listener()
+  seen.set(`${root}/${path}`, { version: found.version, body: text, at: Date.now() })
+  // The Editor takes the record after this returns; look again once it has had time to show it.
+  setTimeout(() => { for (const listener of seenListeners) listener() }, settle)
 }
 const tracked: RecordsAdapter = {
   ...knowledge,
@@ -91,31 +93,44 @@ export function SourcePanel({ source, shown, onClose }: { source: OpenSource; sh
   const current = useRef(record)
   current.current = record
   const [statuses, setStatuses] = useState<Record<string, string>>({})
-  // The accepted passage waits here until the Editor shows, unedited, the version it was counted in.
+  // The accepted passage waits here until the Editor shows its version or a later one, then is found in the text on screen.
   const wanted = useRef<OpenSource | undefined>(undefined)
   const [focus, setFocus] = useState<{ line: number; endLine: number; key: string }>()
-  const [stale, setStale] = useState(false)
+  const [marked, setMarked] = useState<{ line: number; endLine: number }>()
+  const [unmarked, setUnmarked] = useState<string>()
   const check = useRef(() => {})
   check.current = () => {
     const want = wanted.current
     const element = root.current
-    if (!want || !element) return
+    if (!want || !element || current.current !== `${want.root}/${want.path}`) return
     const has = seen.get(`${want.root}/${want.path}`)
-    if (!has || current.current !== `${want.root}/${want.path}`) return
-    // The file moved on before the passage could be shown: its lines may now be other text.
-    if (has.version > want.version) { wanted.current = undefined; setStale(true); return }
-    if (has.version !== want.version) return
-    // A load, a merge, an unsaved draft or a conflict: the text on screen is not that version.
-    if (element.querySelector('[data-golem-status]')?.getAttribute('data-golem-status') !== 'saved') return
-    const text = element.querySelector<HTMLTextAreaElement>('[data-golem-pane="source"] textarea')?.value
-    if (text !== undefined && text !== has.body) return
+    const editor = element.querySelector('[data-golem-status]')
+    const status = editor?.getAttribute('data-golem-status')
+    // The Editor must hold the passage's version or a later one, merged into what is on screen.
+    const version = Number(element.querySelector('[data-golem-version]')?.getAttribute('data-golem-version') ?? NaN)
+    const taken = Number.isFinite(version) ? version : has && Date.now() - has.at >= settle ? has.version : -1
+    if (taken < want.version || !has) return
+    // A load or a conflict waiting for the person: the text on screen is about to change.
+    if (status !== 'saved' && status !== 'dirty' && status !== 'saving' && status !== 'error') return
+    const text = element.querySelector<HTMLTextAreaElement>('[data-golem-pane="source"] textarea')?.value ?? (status === 'saved' ? has.body : undefined)
+    // A clean save at that version for a status of 'saved' that has not re-rendered yet: wait for it.
+    if (status === 'saved' && text !== has.body) return
     wanted.current = undefined
-    setFocus({ line: want.line, endLine: want.endLine, key: want.key })
+    // Only the file exactly as counted vouches for the offered lines; any other text is searched.
+    const clean = status === 'saved' && has.version === want.version
+    const found = text === undefined ? { lines: [] } : locate(text, want, clean)
+    if (found.lines.length === 1) {
+      const [line] = found.lines as [number]
+      const endLine = line + want.endLine - want.line
+      setMarked({ line, endLine })
+      setFocus({ line, endLine, key: want.key })
+    } else setUnmarked(found.lines.length > 1 ? 'the passage appears more than once in your text' : 'the passage is not in the text on screen')
   }
   useEffect(() => {
     wanted.current = source
     setFocus(undefined)
-    setStale(false)
+    setMarked(undefined)
+    setUnmarked(undefined)
     check.current()
   }, [source.key])
   useEffect(() => {
@@ -145,7 +160,7 @@ export function SourcePanel({ source, shown, onClose }: { source: OpenSource; sh
   return (
     <div ref={root} className="golem-browser-source flex h-full flex-col overflow-hidden" style={shown ? undefined : { display: 'none' }}>
       <div className="golem-browser-header flex items-center justify-between gap-2 border-b border-neutral-200 px-4 py-2 text-sm">
-        <span className="golem-browser-runtime min-w-0 truncate"><span className="font-medium">{source.path}</span>, lines {source.line}–{source.endLine}{stale && ' (the file changed since; not marked)'}</span>
+        <span className="golem-browser-runtime min-w-0 truncate"><span className="font-medium">{source.path}</span>, lines {(marked ?? source).line}–{(marked ?? source).endLine}{unmarked && ` (not marked: ${unmarked})`}</span>
         {unsaved.some((key) => key !== record) && <span className="golem-browser-error shrink-0 text-red-700">Unsaved: {unsaved.filter((key) => key !== record).map((key) => key.slice(key.indexOf('/') + 1)).join(', ')}</span>}
         <button type="button" className="golem-browser-new shrink-0 rounded border border-neutral-300 px-2 py-1" onClick={onClose}>Back to app</button>
       </div>
@@ -154,6 +169,22 @@ export function SourcePanel({ source, shown, onClose }: { source: OpenSource; sh
       </div>
     </div>
   )
+}
+
+/**
+ * Where `want.text` is in the text on screen, as 1-based start lines: the offered lines when the screen
+ * shows the file they were counted in, otherwise every exact match of the whole passage, so a caller
+ * can refuse to guess between two.
+ */
+function locate(text: string, want: OpenSource, clean: boolean): { lines: number[] } {
+  const lines = text.split('\n')
+  const passage = want.text.split('\n')
+  if (!want.text.trim()) return { lines: [] }
+  const at = (start: number) => passage.every((one, index) => lines[start + index] === one)
+  if (clean && at(want.line - 1)) return { lines: [want.line] }
+  const starts: number[] = []
+  for (let start = 0; start + passage.length <= lines.length; start++) if (at(start)) starts.push(start + 1)
+  return { lines: starts }
 }
 
 /** Returns to the open source after Back to app, as the Editor left it. */
