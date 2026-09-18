@@ -7,6 +7,7 @@ import {
 /** Reserved collections: the records operations refuse `_` names, so run state never leaks through them. */
 export const SCHEDULES = '_job_schedules'
 export const RUNS = '_job_runs'
+// ponytail: finished runs are kept forever; prune per job when a long-lived schedule makes the list heavy.
 /** The only name job state puts on the change stream; readers re-list through `jobs.runs`. */
 export const JOBS_CHANGE = '_jobs'
 
