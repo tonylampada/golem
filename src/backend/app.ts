@@ -70,9 +70,16 @@ export function createApp(stores: { records: RecordStore; files: (records: Recor
 /** Validates a server module into the lookup `invoke` reads; throws before anything is swapped. */
 function compile(module: AppServerModule) {
   if (!module || typeof module !== 'object') throw new Error('src/server/index.ts must default-export an object')
+  for (const hook of ['authorize', 'resolvePrincipal'] as const) {
+    if (module[hook] !== undefined && typeof module[hook] !== 'function') throw new Error(`${hook} must be a function`)
+  }
+  if (module.operations !== undefined && !Array.isArray(module.operations)) throw new Error('operations must be an array')
   const byName = new Map<string, Operation>()
   for (const operation of [...builtins, ...(module.operations ?? [])]) {
-    if (!operation?.name || typeof operation.run !== 'function') throw new Error('Every operation needs a name and a run function')
+    const schemas = [operation?.input, operation?.output].every((schema) => typeof (schema as { safeParse?: unknown })?.safeParse === 'function')
+    if (typeof operation?.name !== 'string' || !operation.name || typeof operation.run !== 'function' || !schemas) {
+      throw new Error(`Operation ${operation?.name ?? '(unnamed)'} needs a name, input and output schemas, and a run function`)
+    }
     if (byName.has(operation.name)) throw new Error(`Operation ${operation.name} is defined twice`)
     byName.set(operation.name, operation)
   }

@@ -60,8 +60,9 @@ async function loadServerModule(appRoot: string, outDir: string): Promise<AppSer
       rollupOptions: { external: (id) => !id.startsWith('.') && !isAbsolute(id) && !id.startsWith('\0'), output: { entryFileNames: 'index.mjs' } },
     },
   })
-  const loaded = (await import(`${pathToFileURL(join(outDir, 'index.mjs')).href}?generation=${++generation}`)).default as AppServerModule | undefined
-  return loaded ?? {}
+  const loaded = (await import(`${pathToFileURL(join(outDir, 'index.mjs')).href}?generation=${++generation}`)).default as unknown
+  if (!loaded || typeof loaded !== 'object') throw new Error('src/server/index.ts must default-export an object')
+  return loaded as AppServerModule
 }
 
 async function handle(app: App, request: IncomingMessage, response: ServerResponse): Promise<void> {

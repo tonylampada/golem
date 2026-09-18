@@ -41,7 +41,7 @@ const result = await invoke<{ message: string }>('notes.archive', { id })
 
 ## Server module: `src/server/index.ts`
 
-Optional. Default-export an `AppServerModule`:
+Optional. When the file exists it must default-export an `AppServerModule`:
 
 ```ts
 import { defineOperation, z, type AppServerModule } from 'golem-kit/server'

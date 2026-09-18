@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict'
-import { appendFileSync, mkdtempSync, readFileSync } from 'node:fs'
+import { appendFileSync, mkdtempSync, readFileSync, writeFileSync } from 'node:fs'
 import { createServer } from 'node:http'
 import { tmpdir } from 'node:os'
 import { join, resolve } from 'node:path'
@@ -159,4 +159,28 @@ test('list results pass through the same authorize hook, row by row', async () =
   const page = await app.invoke('records.list', { collection: 'notes' }, anonymous, 'http')
   assert.deepEqual(page.rows.map((row) => row.title), ['Public'])
   assert.deepEqual(seen, [['records.list', null], ['records.list', 'Public'], ['records.list', 'Secret']])
+})
+
+test('a malformed server module edit keeps the last good operations and policy', async () => {
+  const root = fixtureApp(mkdtempSync(join(tmpdir(), 'golem-backend-')))
+  const backend = await createAppBackend(root, join(root, '.golem/data'))
+  const entry = join(root, 'src/server/index.ts')
+  const good = readFileSync(entry, 'utf8')
+  const locked = await backend.app.invoke('records.create', { collection: 'notes', data: { title: 'Locked', locked: true } }, anonymous, 'server')
+  const broken = [
+    good.replace('export default {', 'export const notDefault = {'),
+    `${good}\nexport const unused = 1\n`.replace('export default {', 'export default null as unknown as {'),
+    good.replace('authorize: (', "authorize: 'allow' as never, _unused: ("),
+    good.replace('operations: [archive]', "operations: [{ name: 'notes.bad', run() {} } as never]"),
+  ]
+  try {
+    for (const source of broken) {
+      writeFileSync(entry, source)
+      await assert.rejects(backend.reload())
+      await assert.rejects(backend.app.invoke('notes.archive', { id: locked.id }, anonymous, 'http'), { name: 'ForbiddenError' })
+      assert.ok(backend.app.operations.some((operation) => operation.name === 'notes.archive'))
+    }
+  } finally {
+    await backend.close()
+  }
 })
