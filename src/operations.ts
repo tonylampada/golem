@@ -58,6 +58,21 @@ export type OperationContext = {
   files: FileStore
   /** Asks `authorize` about this same call for one row; list-style operations drop rows it refuses. */
   permits(record: Row): Promise<boolean>
+  /** Set when a job run called this operation (then `via` is `server`). */
+  job?: JobContext
+}
+
+/**
+ * What a job run hands its operation. Cancellation is cooperative: `signal` aborts when someone
+ * cancels, and the run stays `running` until the operation returns or throws. Nothing is rolled back.
+ */
+export type JobContext = {
+  runId: string
+  /** Stable across an explicit retry of the same run, and per slot for scheduled runs; a valid record id, for idempotent writes. */
+  key: string
+  signal: AbortSignal
+  /** Stored on the run for anyone who may see it; the browser reads it through `jobs.runs`. */
+  progress(value: { done?: number; total?: number; message?: string }): Promise<void>
 }
 
 export interface Operation<I extends z.ZodType = z.ZodType, O extends z.ZodType = z.ZodType> {

@@ -62,7 +62,7 @@ export async function createAppBackend(appRoot: string, dataDirectory: string): 
     mutationAllowed: (request) => mutationAllowed(request, config.origin),
     origin: (authority) => originOf(config, authority),
     reload: async () => app.use(await load()),
-    close: () => records.close(),
+    close: () => { app.close(); return records.close() },
   }
 }
 

@@ -2,9 +2,10 @@ import { EventEmitter } from 'node:events'
 import type { IncomingMessage } from 'node:http'
 import {
   anonymous, defineOperation, ForbiddenError, InvalidError, NotFoundError, UnauthorizedError, validCollection, z,
-  type Authorize, type FileStore, type Operation, type Principal, type RecordStore, type Row, type Via,
+  type Authorize, type FileStore, type JobContext, type Operation, type Principal, type RecordStore, type Row, type Via,
 } from '../operations.ts'
 import { FILES_COLLECTION } from './files.ts'
+import { createJobs, JOBS_CHANGE, type JobDefinition } from './jobs.ts'
 
 /** What an app's src/server/index.ts may default-export. Every field is optional. */
 export type AppServerModule = {
@@ -13,6 +14,8 @@ export type AppServerModule = {
   authorize?: Authorize
   /** Trusted server-side identity for an HTTP request. Defaults to `anonymous`. */
   resolvePrincipal?: (request: IncomingMessage) => Principal | Promise<Principal>
+  /** Server-side runs of these operations, started or scheduled through the `jobs.*` operations. */
+  jobs?: JobDefinition[]
 }
 
 export type AgentTool = { name: string; description: string; inputSchema: unknown; call(input: unknown): Promise<unknown> }
@@ -22,6 +25,8 @@ export type App = {
   /** Swaps in a new server module's operations and hooks; stores, change stream and callers stay. */
   use(module: AppServerModule): void
   invoke(name: string, input: unknown, principal: Principal, via: Via): Promise<unknown>
+  /** Stops job timers; call before closing the store. */
+  close(): void
   /**
    * The operations as tools for an in-process agent acting for `principal`. Each call first
    * refreshes the principal, so a signed-out session or a changed role takes effect at once.
@@ -51,9 +56,24 @@ export function createApp(stores: { records: RecordStore; files: (records: Recor
   const changes = new EventEmitter().setMaxListeners(0)
   const records = watched(stores.records, (collection) => changes.emit('change', collection))
   const files = stores.files(records)
+  // Job state lives in reserved collections of the raw store: only the `_jobs` name reaches the change stream.
+  const jobs = createJobs({
+    store: stores.records,
+    definitions: () => current.module.jobs ?? [],
+    hasAccounts: Boolean(identity),
+    resolveAccount: (id) => resolveAccount(id),
+    invoke: (name, input, principal, job) => invoke(name, input, principal, 'server', job),
+    emit: () => changes.emit('change', JOBS_CHANGE),
+  })
+  const compile = (next: AppServerModule) => compileModule(next, jobs.operations)
   let current = compile(module)
 
-  async function invoke(name: string, raw: unknown, principal: Principal, via: Via): Promise<unknown> {
+  async function resolveAccount(id: string): Promise<Principal> {
+    if (!identity) throw new ForbiddenError('This app has no accounts')
+    return identity.resolveAccount(id)
+  }
+
+  async function invoke(name: string, raw: unknown, principal: Principal, via: Via, job?: JobContext): Promise<unknown> {
     const { byName, authorize } = current
     if (identity?.requireUser && principal.kind === 'anonymous') throw new UnauthorizedError('Sign in to use this app.')
     const operation = byName.get(name)
@@ -66,7 +86,7 @@ export function createApp(stores: { records: RecordStore; files: (records: Recor
     const request = { operation: name, input, principal, via }
     if (!(await authorize({ ...request, record }))) throw new ForbiddenError(`Not allowed: ${name}`)
     const permits = async (row: Row) => Boolean(await authorize({ ...request, record: row }))
-    return operation.output.parse(await operation.run(input, { principal, via, records, files, permits }))
+    return operation.output.parse(await operation.run(input, { principal, via, records, files, permits, ...(job ? { job } : {}) }))
   }
 
   return {
@@ -74,12 +94,10 @@ export function createApp(stores: { records: RecordStore; files: (records: Recor
     invoke,
     changes,
     use(next) { current = compile(next) },
+    close: () => jobs.close(),
     resolvePrincipal: async (request) => identity ? identity.resolve(request) : (await current.module.resolvePrincipal?.(request)) ?? anonymous,
     refresh: async (principal) => identity ? identity.refresh(principal) : principal,
-    resolveAccount: async (id) => {
-      if (!identity) throw new ForbiddenError('This app has no accounts')
-      return identity.resolveAccount(id)
-    },
+    resolveAccount,
     agentTools: (principal) => [...current.byName.values()].map((operation) => ({
       name: operation.name,
       description: operation.description,
@@ -90,20 +108,30 @@ export function createApp(stores: { records: RecordStore; files: (records: Recor
 }
 
 /** Validates a server module into the lookup `invoke` reads; throws before anything is swapped. */
-function compile(module: AppServerModule) {
+function compileModule(module: AppServerModule, jobOperations: Operation[]) {
   if (!module || typeof module !== 'object') throw new Error('src/server/index.ts must default-export an object')
   for (const hook of ['authorize', 'resolvePrincipal'] as const) {
     if (module[hook] !== undefined && typeof module[hook] !== 'function') throw new Error(`${hook} must be a function`)
   }
-  if (module.operations !== undefined && !Array.isArray(module.operations)) throw new Error('operations must be an array')
+  for (const list of ['operations', 'jobs'] as const) {
+    if (module[list] !== undefined && !Array.isArray(module[list])) throw new Error(`${list} must be an array`)
+  }
   const byName = new Map<string, Operation>()
-  for (const operation of [...builtins, ...(module.operations ?? [])]) {
+  for (const operation of [...builtins, ...jobOperations, ...(module.operations ?? [])]) {
     const schemas = [operation?.input, operation?.output].every((schema) => typeof (schema as { safeParse?: unknown })?.safeParse === 'function')
     if (typeof operation?.name !== 'string' || !operation.name || typeof operation.run !== 'function' || !schemas) {
       throw new Error(`Operation ${operation?.name ?? '(unnamed)'} needs a name, input and output schemas, and a run function`)
     }
     if (byName.has(operation.name)) throw new Error(`Operation ${operation.name} is defined twice`)
     byName.set(operation.name, operation)
+  }
+  const jobNames = new Set<string>()
+  for (const job of module.jobs ?? []) {
+    if (typeof job?.name !== 'string' || !job.name || typeof job.description !== 'string') throw new Error(`Job ${job?.name ?? '(unnamed)'} needs a name and a description`)
+    if (jobNames.has(job.name)) throw new Error(`Job ${job.name} is defined twice`)
+    if (!byName.has(job.operation) || job.operation.startsWith('jobs.')) throw new Error(`Job ${job.name} runs ${job.operation}, which is not an app operation`)
+    if (job.missed !== undefined && job.missed !== 'skip' && job.missed !== 'once') throw new Error(`Job ${job.name}: missed must be 'skip' or 'once'`)
+    jobNames.add(job.name)
   }
   return { module, byName, authorize: module.authorize ?? allowAll }
 }
