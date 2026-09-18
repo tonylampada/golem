@@ -38,11 +38,14 @@ export default {
 - **Operations**: the agent gets a tool for each listed operation and nothing else. It cannot build, run commands, read files, or enter build mode. A message cannot add a tool.
 - **Permissions**: each tool call goes through the same `authorize` as a browser call, as the person who sent the message, refreshed on every call. A call the person may not make fails with the same `Not allowed: <operation>` error the app's own UI would get. Signing out stops a running turn.
 - **Collections and roots**: with `collections`, the built-in `records.*` operations refuse any other collection; with `roots`, the `knowledge.*` operations and source offers refuse any other knowledge root. Custom operations are limited only by being listed and by `authorize`; `collections` does not confine what their code touches.
-- **Refused**: a terminal backend (`'codex'` or `'claude'`) for ordinary chat, because its file access cannot be limited to the listed operations. Also `files.upload` and `files.read`, which carry file bytes. Golem stops at startup instead of ignoring the setting.
+- **Refused**: a terminal backend (`'codex'` or `'claude'`) for ordinary chat, because its file access cannot be limited to the listed operations. Also `files.upload` and `files.read`, which carry file bytes, and operations whose tool names would be invalid or the same (`a.b` and `a__b` both become `a__b`). Golem stops at startup instead of ignoring the setting.
 
 ## Showing sources
 
-With knowledge roots (see `knowledge.md`) and `view.actions` and `view.request` listed in `operations`, the assistant can offer to open a knowledge file at a passage. The offer appears under the chat in the tab the message came from, with **Open** and **Dismiss**. Nothing opens until the person chooses **Open**; then that tab alone shows the file in the Editor, scrolled to the passage. Other tabs on the same sign-in are not moved.
+With knowledge roots (see `knowledge.md`) and `view.actions` and `view.request` listed in `operations`, the assistant can offer to open a knowledge file at a passage. The offer appears under the chat in the tab the message came from, with **Open** and **Dismiss**. Nothing opens until the person chooses **Open**; then that tab alone shows the file in the Editor, headed by its path and the passage's line numbers. Other tabs on the same sign-in are not moved.
+
+- **Scrolling to the passage needs a newer golem-ui.** The Editor's `focus` prop, which scrolls to and tints the passage, is not in the released golem-ui 0.1.1. With 0.1.1 installed, the file opens at the top and the line numbers in the header are the pointer. To get `focus` before a release, run against a golem-ui checkout that has it (commit `b165ee3` or later) with `GOLEM_UI_SOURCE` (see `source-development.md`).
+- **Edits are kept.** Opened sources share one Editor for the life of the page. Opening another source parks the current one's unsaved draft or open conflict in the Editor without writing it, and opening it again restores it. **Back to app** hides the Editor, and **Show** under the chat brings it back as it was. A header note names any other source with unsaved edits. Leaving or reloading the page while a source has unsaved edits, a save in flight or an open conflict asks the browser to confirm first.
 
 ## Conversations
 

@@ -303,5 +303,21 @@ test('ordinary agent config refuses what it cannot enforce', async () => {
   await assert.rejects(load({ ordinary: { backend: 'claude', operations: [] } }), /cannot limit to the listed operations/)
   await assert.rejects(load({ ordinary: { backend: 'anthropic', operations: ['files.read'] } }), /cannot include files.read/)
   await assert.rejects(load({ ordinary: { backend: 'anthropic', operations: ['records.list'], resources: ['docs'] } }), /unknown fields: resources/)
+  await assert.rejects(load({ ordinary: { backend: 'anthropic', operations: ['notes.archive', 'notes__archive'] } }), /'notes.archive' and 'notes__archive' both become the tool name 'notes__archive'/)
+  await assert.rejects(load({ ordinary: { backend: 'anthropic', operations: ['a._b', 'a_.b'] } }), /both become the tool name 'a___b'/)
+  await assert.rejects(load({ ordinary: { backend: 'anthropic', operations: ['notes archive'] } }), /'notes archive' is not a valid tool name/)
   await assert.rejects(load({ builder: 'other' }), /agents.builder/)
+})
+
+test('assistant refuses colliding tool names before calling the provider', async () => {
+  const { AssistantBackend } = await import('../src/runtime/assistant.ts')
+  let called = false
+  const client = { messages: { create: async () => { called = true } } }
+  const tool = (name) => ({ name, description: name, inputSchema: { type: 'object' }, call: async () => null })
+  const backend = new AssistantBackend(client, { model: 'claude-opus-5', tools: () => [tool('notes.archive'), tool('notes__archive')] }, [])
+  const events = []
+  await backend.start((event) => events.push(event))
+  await backend.send('archive it', { principal: { kind: 'guest' } })
+  assert.equal(called, false)
+  assert.match(events[0].message, /both become the tool name 'notes__archive'/)
 })

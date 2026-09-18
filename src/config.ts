@@ -1,5 +1,6 @@
 import { resolve } from 'node:path'
 import { pathToFileURL } from 'node:url'
+import { toolNameProblem } from './runtime/tool-names.ts'
 
 /** Browser-visible settings: never put secrets in golem.config.ts. */
 export type AppConfig = { host: string; port: number; storage: 'jsonl' | 'sqlite'; origin?: string; accounts?: AccountsConfig; agents?: AgentsConfig }
@@ -97,6 +98,8 @@ function ordinaryAgent(value: unknown): OrdinaryAgentConfig {
   const allowed = names(operations, 'operations')
   const refused = allowed.filter((name) => byteOperations.includes(name))
   if (refused.length) throw new Error(`golem.config.ts agents.ordinary.operations cannot include ${refused.join(', ')}: chat tools carry no file bytes`)
+  const problem = toolNameProblem(allowed)
+  if (problem) throw new Error(`golem.config.ts agents.ordinary.operations: ${problem}`)
   if (instructions !== undefined && typeof instructions !== 'string') throw new Error('golem.config.ts agents.ordinary.instructions must be a string')
   return {
     backend, model, operations: allowed,

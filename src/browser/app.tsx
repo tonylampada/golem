@@ -5,7 +5,7 @@ import projectConfig from '@golem/config'
 import { currentSession, identity, type Me } from '../client'
 import { anonymousIdentity, chat, currentBrowserBackend, currentBrowserSession, forgetBrowserSession, interruptBrowserSession, navigation, restoreBrowserSession, startBrowserSession, startChatSession, subscribeBrowserStatus } from './adapters'
 import { Groups } from './groups'
-import { SourcePanel, useSourceView, type OpenSource } from './sources'
+import { SourcePanel, SourceReturn, useSourceView, type OpenSource } from './sources'
 
 const chatAdapters = { chat }
 const authAdapters = { identity, navigation }
@@ -35,6 +35,7 @@ export function App() {
   const [error, setError] = useState<string>()
   const [chatInfo, setChatInfo] = useState<{ available: boolean; detail?: string; views?: boolean }>()
   const [source, setSource] = useState<OpenSource>()
+  const [sourceShown, setSourceShown] = useState(false)
   const [me, setMe] = useState<Me>()
   const [view, setView] = useState<'app' | 'account'>('app')
   const signedInAs = useRef<string | null>(null)
@@ -56,7 +57,7 @@ export function App() {
   }, [])
   const canBuild = me?.canBuild === true
   const chatting = sessionBackend === 'anthropic'
-  const offers = useSourceView(mode && chatting && chatInfo?.views ? session : undefined, setSource)
+  const offers = useSourceView(mode && chatting && chatInfo?.views ? session : undefined, (next) => { setSource(next); setSourceShown(true) })
   // Losing build access closes an open build conversation; its history stays on the server for later.
   useEffect(() => { if (me && !canBuild && !chatting) setMode(false) }, [me, canBuild, chatting])
   useEffect(() => {
@@ -148,14 +149,16 @@ export function App() {
               {error && <p className="golem-browser-error mt-3 text-red-700">{error}</p>}
             </div>
           ) : chatting
-            ? <><div className="min-h-0 flex-1"><Chat key={session} config={{ agentName: 'Assistant', emptyState: 'Ask about or update what you can see in this app.' }} adapters={chatAdapters} /></div>{offers}</>
+            ? <><div className="min-h-0 flex-1"><Chat key={session} config={{ agentName: 'Assistant', emptyState: 'Ask about or update what you can see in this app.' }} adapters={chatAdapters} /></div>{offers}{source && !sourceShown && <SourceReturn source={source} onShow={() => setSourceShown(true)} />}</>
             : <Chat key={session} config={{ agentName: `Golem ${agentNames[sessionBackend ?? 'codex'] ?? sessionBackend}`, emptyState: `Ask ${agentNames[sessionBackend ?? 'codex'] ?? sessionBackend} to inspect or explain this workspace.` }} adapters={chatAdapters} />}
         </div>
       }
       canvas={
-        !me ? null
-          : source ? <SourcePanel source={source} onClose={() => setSource(undefined)} />
-          : !authConfig ? <UserApp />
+        !me ? null : <>
+          {/* Mounted from the first accepted source on, so closing or switching never drops an edit. */}
+          {source && <SourcePanel source={source} shown={sourceShown} onClose={() => setSourceShown(false)} />}
+          <div className="h-full" style={source && sourceShown ? { display: 'none' } : undefined}>{
+          !authConfig ? <UserApp />
           : view === 'account' || (invited && !me.user)
             ? <div className="flex h-full flex-col overflow-auto">
                 <button type="button" className="golem-browser-back m-4 self-start rounded border border-neutral-300 px-2 py-1 text-sm" onClick={() => setView('app')}>Back to app</button>
@@ -164,6 +167,8 @@ export function App() {
               </div>
           : accounts.guests ? <UserApp />
           : <Auth.Guard config={authConfig} adapters={authAdapters}><UserApp /></Auth.Guard>
+          }</div>
+        </>
       }
       account={
         <div className="flex shrink-0 items-center gap-3">

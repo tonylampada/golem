@@ -2,6 +2,7 @@ import Anthropic from '@anthropic-ai/sdk'
 import type { AgentTool } from '../backend/app.ts'
 import { UnauthorizedError, type Principal } from '../operations.ts'
 import type { BackendEvent, SessionBackend } from './session.ts'
+import { toolName, toolNameProblem } from './tool-names.ts'
 
 /** Who a user message came from, fixed by the server when it accepted that message. */
 export type TurnContext = { principal: Principal; owner: string; conversation: string; view?: string }
@@ -50,6 +51,8 @@ export class AssistantBackend implements SessionBackend {
     if (typeof client === 'string') return this.emit({ type: 'error', message: client })
     const abort = this.abort = new AbortController()
     const tools = this.options.tools(context)
+    const problem = toolNameProblem(tools.map((tool) => tool.name))
+    if (problem) return this.emit({ type: 'error', message: `Chat cannot offer these operations as tools: ${problem}.` })
     const byName = new Map(tools.map((tool) => [toolName(tool.name), tool]))
     const definitions = tools.map((tool) => ({ name: toolName(tool.name), description: tool.description, input_schema: schema(tool.inputSchema) }))
     this.messages.push({ role: 'user', content: text })
@@ -102,9 +105,6 @@ export class AssistantBackend implements SessionBackend {
 
   async shutdown(): Promise<void> { this.abort?.abort() }
 }
-
-/** Anthropic tool names allow [A-Za-z0-9_-]; operation names also use dots. */
-function toolName(operation: string): string { return operation.replaceAll('.', '__') }
 
 function schema(inputSchema: unknown): Anthropic.Tool.InputSchema {
   const { $schema: _, ...rest } = inputSchema as Record<string, unknown>
