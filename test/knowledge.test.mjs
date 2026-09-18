@@ -196,7 +196,8 @@ test('view offers go to the view the message came from and apply only where acce
   await assert.rejects(app.views.answer(request, ann, otherConversation, shown.offer.id, true), { name: 'NotFoundError' })
   await assert.rejects(app.views.answer(request, member('ann', 's1b'), otherBrowser, shown.offer.id, true), { name: 'NotFoundError' })
   await app.views.answer(request, ann, tabB, shown.offer.id, true)
-  assert.deepEqual(events.get(tabB).at(-1), { type: 'apply', offer: shown.offer, version: (await app.invoke('knowledge.read', { root: 'handbook', path: 'guides/opening.md' }, ann, 'http')).version })
+  const shownFile = await app.invoke('knowledge.read', { root: 'handbook', path: 'guides/opening.md' }, ann, 'http')
+  assert.deepEqual(events.get(tabB).at(-1), { type: 'apply', offer: shown.offer, version: shownFile.version, text: shownFile.body.split('\n').slice(5, 7).join('\n') })
 
   // The file changes before the person answers: the same passage is highlighted where it now is.
   const moving = (await tools['view.request'].call({ action: 'source.open', input: { root: 'handbook', path: 'guides/opening.md', quote: 'first-aid kit' } })).offer
@@ -206,7 +207,7 @@ test('view offers go to the view the message came from and apply only where acce
   await app.views.answer(request, ann, tabA, moving.id, true)
   const moved = await app.invoke('knowledge.read', { root: 'handbook', path: 'guides/opening.md' }, ann, 'http')
   assert.equal(moved.body.split('\n')[11], 'Check the first-aid kit is stocked.')
-  assert.deepEqual(events.get(tabA).at(-1), { type: 'apply', offer: { ...moving, input: { ...moving.input, line: 12, endLine: 12 } }, version: moved.version }, 'the lines belong to the version that has them')
+  assert.deepEqual(events.get(tabA).at(-1), { type: 'apply', offer: { ...moving, input: { ...moving.input, line: 12, endLine: 12 } }, version: moved.version, text: 'Check the first-aid kit is stocked.' }, 'the lines belong to the version that has them')
   // Gone from the file: refused visibly, nothing applied, a fresh offer is needed.
   const vanishing = (await tools['view.request'].call({ action: 'source.open', input: { root: 'handbook', path: 'guides/opening.md', quote: 'Then this.' } })).offer
   writeFileSync(file, readFileSync(file, 'utf8').replace('Then this.\n', ''))

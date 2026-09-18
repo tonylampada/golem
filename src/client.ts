@@ -155,8 +155,11 @@ export const knowledge: RecordsAdapter = {
 
 /** A knowledge passage an agent offered to show; `line` and `endLine` are 1-based and inclusive. */
 export type ViewOffer = { id: string; conversation: string; action: 'source.open'; input: { root: string; path: string; line: number; endLine: number } }
-/** `apply` carries the file `version` its lines were counted in: show them once the editor has that version. */
-export type ViewEvent = { type: 'offer'; offer: ViewOffer } | { type: 'apply'; offer: ViewOffer; version: number } | { type: 'withdrawn'; id: string }
+/**
+ * `apply` carries the file `version` its lines were counted in and the `text` of those lines: show them
+ * once the editor has that version, and look for `text` instead when the editor shows an unsaved draft.
+ */
+export type ViewEvent = { type: 'offer'; offer: ViewOffer } | { type: 'apply'; offer: ViewOffer; version: number; text: string } | { type: 'withdrawn'; id: string }
 
 /**
  * Opens this tab's view of one conversation. `id` is the view to send with this tab's chat messages,
