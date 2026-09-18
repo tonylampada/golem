@@ -19,7 +19,7 @@ export type KnowledgeFile = Row & { root: string; path: string; body: string; sh
 const maxBytes = 2_000_000
 
 // One queue per absolute file path, shared across server-module reloads.
-// ponytail: in-process only; a second server process on the same app is not covered.
+// In-process only: a second server process on the same app is not covered.
 const locks = new Map<string, Promise<unknown>>()
 function serial<T>(key: string, work: () => Promise<T>): Promise<T> {
   const next = (locks.get(key) ?? Promise.resolve()).then(work, work)
@@ -56,18 +56,20 @@ export function knowledgeOperations(appRoot: string, roots: KnowledgeRoots): Ope
       throw new Error(`knowledge root ${name} must be a directory inside the app`)
     }
   }
+  // Policy: no symlink anywhere between the app root and a file, so a path is also the file's one identity.
   async function base(root: string): Promise<string> {
     if (!Object.hasOwn(roots, root)) throw new NotFoundError(`No knowledge root ${root}`)
-    return realpath(join(appRoot, roots[root])).catch(() => { throw new NotFoundError(`Knowledge root ${root} has no directory`) })
+    const app = await realpath(appRoot)
+    const top = join(app, roots[root])
+    if (!(await unlinked(app, top))) throw new NotFoundError(`Knowledge root ${root} has no directory`)
+    return top
   }
 
-  /** Absolute path of a file whose parent resolves inside the root; the file itself is opened without following links. */
+  /** Absolute path of a file under the root; every folder on the way is a real directory, and the file is opened without following links. */
   async function locate(root: string, path: string): Promise<string> {
     const top = await base(root)
     const file = join(top, validPath(path))
-    const parent = await realpath(dirname(file)).catch(() => null)
-    if (parent === null) return file
-    if (parent !== top && !parent.startsWith(top + sep)) throw new ForbiddenError('Path leaves the knowledge root')
+    await unlinked(top, dirname(file))
     return file
   }
 
@@ -82,7 +84,9 @@ export function knowledgeOperations(appRoot: string, roots: KnowledgeRoots): Ope
       throw error
     }
     try {
-      if (!(await handle.stat()).isFile()) throw new ForbiddenError('Not a knowledge file')
+      const stat = await handle.stat()
+      // A second hard link would be a second name for the same bytes, possibly outside the root.
+      if (!stat.isFile() || stat.nlink > 1) throw new ForbiddenError('Not a knowledge file')
       const bytes = await handle.readFile()
       if (bytes.byteLength > maxBytes) throw new InvalidError('Knowledge file is too large')
       return bytes
@@ -160,6 +164,7 @@ export function knowledgeOperations(appRoot: string, roots: KnowledgeRoots): Ope
   const folder = z.string().refine((value) => value === '' || value.split('/').every((part) => segment.test(part)), 'must be a relative folder')
   async function files(input: { root: string; folder?: string }, permits: (row: Row) => Promise<boolean>) {
     const top = await base(input.root)
+    if (input.folder && !(await unlinked(top, join(top, input.folder)))) return []
     const found: string[] = []
     for await (const one of walk(top, input.folder ?? '')) {
       if (await permits(knowledgeEntry(input.root, one))) found.push(one)
@@ -211,6 +216,18 @@ export function knowledgeOperations(appRoot: string, roots: KnowledgeRoots): Ope
       run: (input, { records }) => write(records, input.root, input.path, input.body, input.expectedVersion),
     }),
   ]
+}
+
+/** True when every step from `top` down to `target` exists as a real directory; a symlink on the way is refused. */
+async function unlinked(top: string, target: string): Promise<boolean> {
+  let at = top
+  for (const part of relative(top, target).split(sep).filter(Boolean)) {
+    at = join(at, part)
+    const stat = await lstat(at).catch(() => null)
+    if (!stat) return false
+    if (!stat.isDirectory()) throw new ForbiddenError('Path leaves the knowledge root')
+  }
+  return true
 }
 
 async function mkdirInside(top: string, directory: string): Promise<void> {

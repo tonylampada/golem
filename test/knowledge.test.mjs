@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict'
-import { mkdirSync, mkdtempSync, readFileSync, symlinkSync, writeFileSync } from 'node:fs'
+import { linkSync, mkdirSync, mkdtempSync, readFileSync, symlinkSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { test } from 'node:test'
@@ -116,6 +116,23 @@ test('knowledge files: permissions, roots, traversal and symlinks', async () => 
   assert.equal(readFileSync(join(root, 'secret.md'), 'utf8'), 'outside the root\n')
   assert.deepEqual((await call('knowledge.list', { root: 'handbook' })).rows.map((row) => row.path), ['guides/opening.md'], 'links are not listed')
   assert.throws(() => createApp({ records, files: () => ({}), root }, { knowledge: { handbook: '../outside' } }), /inside the app/)
+  await assert.rejects(call('knowledge.list', { root: 'handbook', folder: 'escape' }), { name: 'ForbiddenError' }, 'a symlinked folder is not walked')
+
+  // A hard link is a second name for the same bytes; it is refused rather than versioned twice.
+  linkSync(join(root, 'secret.md'), join(root, 'knowledge/guides/hard.md'))
+  await assert.rejects(call('knowledge.read', { root: 'handbook', path: 'guides/hard.md' }), { name: 'ForbiddenError' })
+  assert.equal((await call('knowledge.search', { root: 'handbook', text: 'outside the root' })).length, 0)
+
+  // Configured roots are held to the same rule: a root that is, or passes through, a symlink is refused.
+  const outside = mkdtempSync(join(tmpdir(), 'golem-outside-'))
+  writeFileSync(join(outside, 'x.md'), '---\ntype: Note\n---\nnot the app\n')
+  symlinkSync(outside, join(root, 'elsewhere'))
+  symlinkSync(join(root, 'knowledge'), join(root, 'alias'))
+  const linkedRoots = createApp({ records, files: () => ({}), root }, { knowledge: { away: 'elsewhere', alias: 'alias/guides' } })
+  for (const [name, path] of [['away', 'x.md'], ['alias', 'opening.md']]) {
+    await assert.rejects(linkedRoots.invoke('knowledge.read', { root: name, path }, reader, 'agent'), { name: 'ForbiddenError' }, name)
+    await assert.rejects(linkedRoots.invoke('knowledge.list', { root: name }, reader, 'agent'), { name: 'ForbiddenError' }, name)
+  }
   await records.close()
 })
 
@@ -180,6 +197,19 @@ test('view offers go to the view the message came from and apply only where acce
   await assert.rejects(app.views.answer(request, member('ann', 's1b'), otherBrowser, shown.offer.id, true), { name: 'NotFoundError' })
   await app.views.answer(request, ann, tabB, shown.offer.id, true)
   assert.deepEqual(events.get(tabB).at(-1), { type: 'apply', offer: shown.offer })
+
+  // The file changes before the person answers: the same passage is highlighted where it now is.
+  const moving = (await tools['view.request'].call({ action: 'source.open', input: { root: 'handbook', path: 'guides/opening.md', quote: 'first-aid kit' } })).offer
+  assert.deepEqual([moving.input.line, moving.input.endLine], [9, 9])
+  const file = join(root, 'knowledge/guides/opening.md')
+  writeFileSync(file, readFileSync(file, 'utf8').replace('# Opening the workshop\n', '# Opening the workshop\n\nRead this first.\nThen this.\n'))
+  await app.views.answer(request, ann, tabA, moving.id, true)
+  assert.deepEqual(events.get(tabA).at(-1), { type: 'apply', offer: { ...moving, input: { ...moving.input, line: 12, endLine: 12 } } })
+  // Gone from the file: refused visibly, nothing applied, a fresh offer is needed.
+  const vanishing = (await tools['view.request'].call({ action: 'source.open', input: { root: 'handbook', path: 'guides/opening.md', quote: 'Then this.' } })).offer
+  writeFileSync(file, readFileSync(file, 'utf8').replace('Then this.\n', ''))
+  await assert.rejects(app.views.answer(request, ann, tabA, vanishing.id, true), { name: 'VersionConflictError' })
+  assert.equal(events.get(tabA).at(-1).type, 'withdrawn')
 
   // Denied and missing sources refuse alike, with nothing from the file in the error.
   for (const path of ['staff/rota.md', 'guides/missing.md']) {

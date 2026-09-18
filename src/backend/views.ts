@@ -1,6 +1,6 @@
 import { randomBytes, randomUUID } from 'node:crypto'
 import type { IncomingMessage } from 'node:http'
-import { ForbiddenError, InvalidError, NotFoundError, UnauthorizedError, z, type Principal, type Via } from '../operations.ts'
+import { ForbiddenError, InvalidError, NotFoundError, UnauthorizedError, VersionConflictError, z, type Principal, type Via } from '../operations.ts'
 
 /** Something an agent offered to show; the person accepts it in one browser view, where alone it is applied. */
 export type ViewOffer = { id: string; conversation: string; action: 'source.open'; input: { root: string; path: string; line: number; endLine: number } }
@@ -45,7 +45,8 @@ export type Views = {
 }
 
 type Channel = { holder: Principal; owner: string; conversation: string; send?: (event: ViewEvent) => void }
-type Pending = { offer: ViewOffer; holder: Principal; owner: string; view?: string }
+/** `sha256` and `passage` are what the offer pointed at, so acceptance can find the same text in a changed file. */
+type Pending = { offer: ViewOffer; holder: Principal; owner: string; view?: string; sha256: string; passage: string }
 
 const offerLifetime = 10 * 60_000
 const connectWithin = 60_000
@@ -110,9 +111,9 @@ export function createViews(app: {
   }
 
   /** Reads the file as `principal`; any failure is the same refusal, so a view never tells what exists. */
-  async function readable(principal: Principal, root: string, path: string): Promise<string> {
+  async function readable(principal: Principal, root: string, path: string): Promise<{ body: string; sha256: string }> {
     try {
-      return ((await app.invoke('knowledge.read', { root, path }, principal, 'agent')) as { body: string }).body
+      return (await app.invoke('knowledge.read', { root, path }, principal, 'agent')) as { body: string; sha256: string }
     } catch (error) {
       if ((error as Error).name === 'UnauthorizedError') throw error
       throw refused()
@@ -148,7 +149,8 @@ export function createViews(app: {
       const { root, path, quote, line, endLine } = parsed.data
       const { owner, conversation, view } = binding
       const holder = await check(binding)
-      const lines = (await readable(holder, root, path)).split('\n')
+      const source = await readable(holder, root, path)
+      const lines = source.body.split('\n')
       let first = line ?? 1
       let last = endLine ?? first
       if (quote) {
@@ -161,7 +163,7 @@ export function createViews(app: {
       const offer: ViewOffer = { id: randomUUID(), conversation, action, input: { root, path, line: first, endLine: last } }
       const channel = view === undefined ? undefined : channels.get(view)
       const target = channel?.send && channel.conversation === conversation && channel.owner === owner && same(channel.holder, holder) ? view : undefined
-      offers.set(offer.id, { offer, holder, owner, view: target })
+      offers.set(offer.id, { offer, holder, owner, view: target, sha256: source.sha256, passage: lines.slice(first - 1, last).join('\n') })
       setTimeout(() => { if (offers.has(offer.id)) withdraw(offer.id) }, offerLifetime).unref()
       if (target) channel!.send!({ type: 'offer', offer })
       return { offer, delivered: Boolean(target) }
@@ -177,8 +179,15 @@ export function createViews(app: {
       if (!accept) return
       // Access may have changed since the offer: check again as the person now is.
       const now = await app.refresh(principal).catch(() => { throw new UnauthorizedError('Sign in again to open this source.') })
-      await readable(now, pending.offer.input.root, pending.offer.input.path)
-      channel.send?.({ type: 'apply', offer: pending.offer })
+      const source = await readable(now, pending.offer.input.root, pending.offer.input.path)
+      let offer = pending.offer
+      if (source.sha256 !== pending.sha256) {
+        // The file changed since the offer: highlight the same passage where it now is, or say it is gone.
+        const at = pending.passage.trim() ? locate(source.body.split('\n'), pending.passage) : null
+        if (!at) throw new VersionConflictError('That passage changed since it was offered; ask for it again', null)
+        offer = { ...offer, input: { ...offer.input, line: at[0], endLine: at[1] } }
+      }
+      channel.send?.({ type: 'apply', offer })
     },
   }
 }
