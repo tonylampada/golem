@@ -1,9 +1,10 @@
 import { useEffect, useMemo, useRef, useState, type ComponentProps } from 'react'
-import { Editor } from 'golem-ui'
+import { Editor, type RecordsAdapter } from 'golem-ui'
 import { knowledge, type ViewOffer } from '../client'
 import { answerOffer, subscribeChatView } from './adapters'
 
-export type OpenSource = ViewOffer['input'] & { key: string }
+/** An accepted passage: its lines were counted in file `version`. */
+export type OpenSource = ViewOffer['input'] & { key: string; version: number }
 
 /**
  * This tab's view of the open chat: the assistant's offers to open a source, answered here. Only an
@@ -20,7 +21,7 @@ export function useSourceView(conversation: string | undefined, onOpen: (source:
     return subscribeChatView((event) => {
       if (event.type === 'offer' && event.offer.conversation === conversation) setOffers((list) => [...list.filter((one) => one.id !== event.offer.id), event.offer])
       if (event.type === 'withdrawn') setOffers((list) => list.filter((one) => one.id !== event.id))
-      if (event.type === 'apply') open.current({ ...event.offer.input, key: event.offer.id })
+      if (event.type === 'apply') open.current({ ...event.offer.input, key: event.offer.id, version: event.version })
     })
   }, [conversation])
   const answer = async (offer: ViewOffer, accept: boolean) => {
@@ -48,7 +49,33 @@ const clock = { now: () => new Date(), timeZone: () => Intl.DateTimeFormat().res
 // at the top and the header's line numbers are the only pointer to the passage.
 type FocusedEditor = (props: ComponentProps<typeof Editor> & { focus?: { line: number; endLine?: number; key?: string } }) => ReturnType<typeof Editor>
 const SourceEditor = Editor as unknown as FocusedEditor
-const adapters = { records: knowledge, clock }
+// The latest version of each file the Editor was handed, and its body, so a passage is marked only
+// once the Editor shows the text its lines were counted in.
+type Seen = { version: number; body: string }
+const seen = new Map<string, Seen>()
+const seenListeners = new Set<() => void>()
+const note = (root: string, path: string, record: unknown, body?: string) => {
+  const found = record as { version?: unknown; body?: unknown } | null | undefined
+  if (typeof found?.version !== 'number') return
+  const text = typeof found.body === 'string' ? found.body : body
+  if (text === undefined) return
+  const before = seen.get(`${root}/${path}`)
+  if (before && before.version > found.version) return
+  seen.set(`${root}/${path}`, { version: found.version, body: text })
+  for (const listener of seenListeners) listener()
+}
+const tracked: RecordsAdapter = {
+  ...knowledge,
+  get: async <T,>(root: string, path: string) => { const record = await knowledge.get<T>(root, path); note(root, path, record); return record },
+  update: async <T,>(root: string, path: string, patch: Record<string, unknown>, options?: Parameters<RecordsAdapter['update']>[3]) => {
+    try {
+      const record = await knowledge.update<T>(root, path, patch, options)
+      note(root, path, record, typeof patch.body === 'string' ? patch.body : undefined)
+      return record
+    } catch (error) { note(root, path, (error as { record?: unknown }).record); throw error }
+  },
+}
+const adapters = { records: tracked, clock }
 // Editor statuses whose text is not yet in the file: an edit waiting to save, a save in flight, a
 // refused save or a conflict waiting for the person.
 const unsavedStatus = new Set(['dirty', 'saving', 'error', 'conflict'])
@@ -64,6 +91,33 @@ export function SourcePanel({ source, shown, onClose }: { source: OpenSource; sh
   const current = useRef(record)
   current.current = record
   const [statuses, setStatuses] = useState<Record<string, string>>({})
+  // The accepted passage waits here until the Editor shows, unedited, the version it was counted in.
+  const wanted = useRef<OpenSource | undefined>(undefined)
+  const [focus, setFocus] = useState<{ line: number; endLine: number; key: string }>()
+  const [stale, setStale] = useState(false)
+  const check = useRef(() => {})
+  check.current = () => {
+    const want = wanted.current
+    const element = root.current
+    if (!want || !element) return
+    const has = seen.get(`${want.root}/${want.path}`)
+    if (!has || current.current !== `${want.root}/${want.path}`) return
+    // The file moved on before the passage could be shown: its lines may now be other text.
+    if (has.version > want.version) { wanted.current = undefined; setStale(true); return }
+    if (has.version !== want.version) return
+    // A load, a merge, an unsaved draft or a conflict: the text on screen is not that version.
+    if (element.querySelector('[data-golem-status]')?.getAttribute('data-golem-status') !== 'saved') return
+    const text = element.querySelector<HTMLTextAreaElement>('[data-golem-pane="source"] textarea')?.value
+    if (text !== undefined && text !== has.body) return
+    wanted.current = undefined
+    setFocus({ line: want.line, endLine: want.endLine, key: want.key })
+  }
+  useEffect(() => {
+    wanted.current = source
+    setFocus(undefined)
+    setStale(false)
+    check.current()
+  }, [source.key])
   useEffect(() => {
     const element = root.current
     if (!element) return
@@ -71,11 +125,14 @@ export function SourcePanel({ source, shown, onClose }: { source: OpenSource; sh
     const read = () => {
       const status = element.querySelector('[data-golem-status]')?.getAttribute('data-golem-status')
       if (status) setStatuses((all) => all[current.current] === status ? all : { ...all, [current.current]: status })
+      check.current()
     }
     const observer = new MutationObserver(read)
-    observer.observe(element, { subtree: true, childList: true, attributes: true, attributeFilter: ['data-golem-status'] })
+    observer.observe(element, { subtree: true, childList: true, characterData: true, attributes: true, attributeFilter: ['data-golem-status'] })
+    const onSeen = () => check.current()
+    seenListeners.add(onSeen)
     read()
-    return () => observer.disconnect()
+    return () => { observer.disconnect(); seenListeners.delete(onSeen) }
   }, [])
   const unsaved = Object.keys(statuses).filter((key) => unsavedStatus.has(statuses[key]!))
   useEffect(() => {
@@ -88,12 +145,12 @@ export function SourcePanel({ source, shown, onClose }: { source: OpenSource; sh
   return (
     <div ref={root} className="golem-browser-source flex h-full flex-col overflow-hidden" style={shown ? undefined : { display: 'none' }}>
       <div className="golem-browser-header flex items-center justify-between gap-2 border-b border-neutral-200 px-4 py-2 text-sm">
-        <span className="golem-browser-runtime min-w-0 truncate"><span className="font-medium">{source.path}</span>, lines {source.line}–{source.endLine}</span>
+        <span className="golem-browser-runtime min-w-0 truncate"><span className="font-medium">{source.path}</span>, lines {source.line}–{source.endLine}{stale && ' (the file changed since; not marked)'}</span>
         {unsaved.some((key) => key !== record) && <span className="golem-browser-error shrink-0 text-red-700">Unsaved: {unsaved.filter((key) => key !== record).map((key) => key.slice(key.indexOf('/') + 1)).join(', ')}</span>}
         <button type="button" className="golem-browser-new shrink-0 rounded border border-neutral-300 px-2 py-1" onClick={onClose}>Back to app</button>
       </div>
       <div className="min-h-0 flex-1">
-        <SourceEditor config={config} adapters={adapters} focus={{ line: source.line, endLine: source.endLine, key: source.key }} />
+        <SourceEditor config={config} adapters={adapters} focus={focus} />
       </div>
     </div>
   )
