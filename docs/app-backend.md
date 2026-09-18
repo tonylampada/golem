@@ -37,7 +37,7 @@ import { files, invoke, records } from 'golem-kit/client'
 const result = await invoke<{ message: string }>('notes.archive', { id })
 ```
 
-`records` and `files` implement the golem-ui `RecordsAdapter` and `FilesAdapter`. A stale `update` (one with `expectedVersion`) rejects with golem-ui's `VersionConflictError`, which carries the current row. `subscribe` listens to the server's change stream, so writes from any caller, the agent included, refresh open lists.
+`records` and `files` implement the golem-ui `RecordsAdapter` and `FilesAdapter`. A stale `update` (one with `expectedVersion`) rejects with golem-ui's `VersionConflictError`, which carries the current row. golem-ui's `RecordForm` sends only the changed fields and no `expectedVersion`, so two people saving the same field of one record means the last save wins; call `records.update` with `expectedVersion` yourself where that matters. `subscribe` listens to the server's change stream, so writes from any caller, the agent included, refresh open lists.
 
 ## Server module: `src/server/index.ts`
 
