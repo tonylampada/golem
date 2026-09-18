@@ -4,7 +4,7 @@
 
 ## What is Golem?
 
-Golem is an early local application shell for building applications with AI. **Your app is its own IDE:** enter build mode, ask a locally authenticated Codex to edit the app, and keep using it in the same browser shell.
+Golem is an early local application shell for building applications with AI. **Your app is its own IDE:** enter build mode, ask a locally authenticated Claude Code or Codex to edit the app, and keep using it in the same browser shell.
 
 ## Getting Started
 
@@ -22,7 +22,7 @@ Start the application:
 ./golem dev
 ```
 
-Open the browser address printed in the terminal, enter build mode, and start a conversation. Build chat requires the Codex CLI installed and authenticated on the same machine. After a successful build-mode change, the browser shell rebuilds and refreshes; conversations are saved in `.golem/` and restored when the server restarts.
+Open the browser address printed in the terminal, enter build mode, and start a conversation. Build chat requires the Claude Code or Codex CLI installed and signed in on the same machine; when both are ready, choose one before entering build mode. Each conversation keeps its agent; use **New conversation** to start another, possibly with the other agent, while earlier conversations stay saved. After a successful build-mode change, the browser shell rebuilds and refreshes; conversations are saved in `.golem/` and restored when the server restarts.
 
 `./golem build` writes the browser shell to `dist/`. `./golem dev` defaults to
 `127.0.0.1:3000`; set an optional `host` and `port` in `golem.config.ts`, then restart
@@ -40,4 +40,4 @@ See [the local CLI guide](docs/local-cli.md) for the complete command contract.
 
 ## Current scope
 
-Apps store records and files and define server operations as described in [the app backend guide](docs/app-backend.md). Claude integration and accounts are planned, not part of this release.
+Apps store records and files and define server operations as described in [the app backend guide](docs/app-backend.md). Builds run with Codex or Claude Code; see [the local CLI guide](docs/local-cli.md).

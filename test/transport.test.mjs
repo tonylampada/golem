@@ -24,7 +24,7 @@ test('HTTP transport validates mutations and isolates server-owned sessions', { 
   const server = await start(3218)
   try {
     const invalid = await fetch('http://127.0.0.1:3218/api/sessions', {
-      method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ backend: 'claude' }),
+      method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ backend: 'other' }),
     })
     assert.equal(invalid.status, 400)
     const crossOrigin = await fetch('http://127.0.0.1:3218/api/sessions', {
@@ -284,5 +284,40 @@ test('saved sessions survive restart without starting a backend, and resume thei
     assert.equal(backends.at(-1).started, true)
   } finally {
     await new Promise((resolve) => secondServer.close(resolve))
+  }
+})
+
+test('a Claude conversation keeps its backend and native session across restart without starting it', { timeout: 30000 }, async () => {
+  const state = mkdtempSync(join(tmpdir(), 'golem-state-'))
+  const made = []
+  class NativeBackend extends InstantBackend {
+    constructor(threadId) { super(); this.thread = threadId }
+    async send(text) { this.thread ??= 'claude-native'; await super.send(text) }
+    threadId() { return this.thread }
+  }
+  const makeBackend = (mode, threadId, backend) => { const created = new NativeBackend(threadId); made.push({ mode, threadId, backend, created }); return created }
+  const first = await startDevServer(3226, makeBackend, state)
+  let id
+  try {
+    const created = await (await fetch('http://127.0.0.1:3226/api/sessions', {
+      method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ backend: 'claude', intent: 'build' }),
+    })).json()
+    id = created.id
+    assert.equal(created.backend, 'claude')
+    assert.deepEqual(made.map(({ mode, backend }) => [mode, backend]), [['danger-full-access', 'claude']])
+    await fetch(`http://127.0.0.1:3226/api/sessions/${id}`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ text: 'first', clientMessageId: 'first' }) })
+    await waitForHistory(3226, id, (events) => events.some((event) => event.text === 'echo:first'))
+  } finally {
+    await new Promise((resolve) => first.close(resolve))
+  }
+  const second = await startDevServer(3226, makeBackend, state)
+  try {
+    const restored = made.at(-1)
+    assert.deepEqual([restored.mode, restored.threadId, restored.backend], ['danger-full-access', 'claude-native', 'claude'])
+    assert.equal(restored.created.started, undefined, 'restart must not start an agent')
+    const latest = await (await fetch('http://127.0.0.1:3226/api/sessions/latest')).json()
+    assert.deepEqual([latest.id, latest.backend], [id, 'claude'])
+  } finally {
+    await new Promise((resolve) => second.close(resolve))
   }
 })

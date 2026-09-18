@@ -43,6 +43,7 @@ let outbox: OutboxMessage[] = (() => {
   try { return (JSON.parse(window.localStorage.getItem(outboxKey) ?? '[]') as OutboxMessage[]).map((message) => ({ ...message, delivery: message.delivery === 'pending' ? 'failed' : message.delivery })) } catch { return [] }
 })()
 let messages: BrowserMessage[] = []
+let sessionBackend: string | undefined
 let cursor = -1
 let eventLog = new Map<number, { sequence: number; type: string; text?: string; status?: string; reason?: string; clientMessageId?: string; attachments?: ChatAttachment[] }>()
 let status = 'starting'
@@ -105,23 +106,25 @@ async function deliver(message: OutboxMessage): Promise<void> {
 }
 
 /** The only session-starting call in the UI — declares build intent explicitly; the server decides permission from it. */
-export async function startBrowserSession(): Promise<{ id: string; backend: string }> {
-  const response = await fetch('/api/sessions', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ backend: 'codex', intent: 'build' }) })
+export async function startBrowserSession(backend = 'codex'): Promise<{ id: string; backend: string }> {
+  const response = await fetch('/api/sessions', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ backend, intent: 'build' }) })
   const result = await response.json() as { id?: string; backend?: string; error?: string }
   if (!response.ok || !result.id) throw new Error(result.error ?? 'Unable to start session')
   source?.close()
   source = undefined
   sessionId = result.id
+  sessionBackend = result.backend ?? backend
   try { window.sessionStorage.setItem(storageKey, sessionId) } catch {}
   cursor = -1
   eventLog = new Map()
   setStatus('ready')
   messages = []
   emit()
-  return { id: result.id, backend: result.backend ?? 'codex' }
+  return { id: result.id, backend: sessionBackend }
 }
 
 export function currentBrowserSession(): string | undefined { return sessionId }
+export function currentBrowserBackend(): string | undefined { return sessionBackend }
 
 /** Drops this tab's remembered build conversation, e.g. when a different person signs in. */
 export function forgetBrowserSession(): void {
@@ -144,7 +147,8 @@ export async function restoreBrowserSession(): Promise<boolean> {
     return restoreBrowserSession()
   }
   if (!response.ok) throw new Error((await response.json()).error ?? 'Unable to restore session')
-  const result = await response.json() as { events: Array<{ sequence: number; type: string; text?: string; reason?: string; clientMessageId?: string; attachments?: ChatAttachment[] }>; status: string }
+  const result = await response.json() as { events: Array<{ sequence: number; type: string; text?: string; reason?: string; clientMessageId?: string; attachments?: ChatAttachment[] }>; status: string; backend?: string }
+  sessionBackend = result.backend
   eventLog = new Map()
   setStatus(mergeEvents(result.events) ?? result.status)
   emit()

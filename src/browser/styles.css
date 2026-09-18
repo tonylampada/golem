@@ -8,3 +8,5 @@
 [data-golem-theme='dark'] .golem-browser-enter { background-color: oklch(87% 0 0); color: oklch(14.5% 0 0); }
 [data-golem-theme='dark'] .golem-browser-error { color: oklch(70.4% .191 22.216); }
 [data-golem-theme='dark'] .golem-browser-theme-toggle { border-color: oklch(37.1% 0 0); }
+[data-golem-theme='dark'] .golem-browser-backend { border-color: oklch(37.1% 0 0); background-color: oklch(20.5% 0 0); color: oklch(98.5% 0 0); }
+[data-golem-theme='dark'] .golem-browser-new { border-color: oklch(37.1% 0 0); color: oklch(87% 0 0); }

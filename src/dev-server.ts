@@ -5,12 +5,15 @@ import { pathToFileURL } from 'node:url';
 import { buildBrowser, rebuild } from './browser-build.ts';
 import { createAppBackend, type AppBackend } from './backend/http.ts';
 import { serverUrl } from './config.ts';
-import { discoverAgents, runtimeState } from './runtime/discovery.ts';
+import { discoverAgents, runtimeState, type AgentName } from './runtime/discovery.ts';
+import { ClaudeBackend } from './runtime/claude.ts';
 import { CodexBackend, type SandboxMode } from './runtime/codex.ts';
 import { SessionManager, type Session, type SessionBackend } from './runtime/session.ts';
 import { ConversationState } from './runtime/state.ts';
 
 const appRoot = resolve(process.cwd());
+/** `backend` is omitted by older callers; it then means Codex. */
+type CreateBackend = (mode: SandboxMode, threadId?: string, backend?: AgentName) => SessionBackend;
 const root = pathToFileURL(`${process.cwd()}/dist/`);
 const types: Record<string, string> = {
   '.html': 'text/html; charset=utf-8',
@@ -22,14 +25,15 @@ const types: Record<string, string> = {
 // The CLI owns logging and signals; this server only serves the built browser shell.
 export async function startDevServer(
   port = 3000,
-  createBackend: (mode: SandboxMode, threadId?: string) => SessionBackend = (mode, threadId) => new CodexBackend(appRoot, mode, 'codex', [], threadId),
+  createBackend: CreateBackend = (mode, threadId, backend = 'codex') =>
+    backend === 'claude' ? new ClaudeBackend(appRoot, mode, 'claude', [], threadId) : new CodexBackend(appRoot, mode, 'codex', [], threadId),
   stateDirectory = join(appRoot, '.golem'),
   host = '127.0.0.1',
 ): Promise<Server> {
   await buildBrowser();
   const state = new ConversationState(stateDirectory);
   const sessions = new SessionManager((snapshots) => state.save(snapshots));
-  sessions.restore(await state.load(), (snapshot) => createBackend(snapshot.buildMode ? 'danger-full-access' : 'read-only', snapshot.threadId));
+  sessions.restore(await state.load(), (snapshot) => createBackend(snapshot.buildMode ? 'danger-full-access' : 'read-only', snapshot.threadId, snapshot.backend));
   const app = await createAppBackend(appRoot, join(stateDirectory, 'data'));
   const { accounts } = app;
   if (accounts) {
@@ -65,7 +69,7 @@ async function handleRequest(
   sessions: SessionManager,
   port: number,
   host: string,
-  createBackend: (mode: SandboxMode, threadId?: string) => SessionBackend,
+  createBackend: CreateBackend,
   app: AppBackend,
 ): Promise<void> {
     const url = new URL(request.url ?? '/', 'http://127.0.0.1');
@@ -141,7 +145,7 @@ async function handleApi(
   response: import('node:http').ServerResponse,
   url: URL,
   sessions: SessionManager,
-  createBackend: (mode: SandboxMode) => SessionBackend,
+  createBackend: CreateBackend,
   app: AppBackend,
 ): Promise<void> {
   const reloadServer = app.reload;
@@ -164,11 +168,11 @@ async function handleApi(
     if (!mutationAllowed(request)) return json(response, 403, { error: 'Cross-origin mutations are not allowed' });
     try {
       const input = await body(request) as { backend?: string; intent?: string };
-      if (input.backend !== 'codex') return json(response, 400, { error: 'Only the connected Codex backend can start a session' });
+      if (input.backend !== 'codex' && input.backend !== 'claude') return json(response, 400, { error: 'backend must be claude or codex' });
       // Server-owned: only an explicit build intent grants filesystem access. Omitted intent stays read-only.
       // danger-full-access, not app-root-confined — see CodexBackend's doc comment for why.
       const buildMode = input.intent === 'build';
-      const session = await sessions.start('codex', createBackend(buildMode ? 'danger-full-access' : 'read-only'), buildMode, owner);
+      const session = await sessions.start(input.backend, createBackend(buildMode ? 'danger-full-access' : 'read-only', undefined, input.backend), buildMode, owner);
       json(response, 201, { id: session.id, backend: session.backend, status: session.status });
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);

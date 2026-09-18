@@ -202,3 +202,20 @@ test('a native EventSource reconnect refreshes late durable receipts below the S
   await new Promise((resolve) => setImmediate(resolve))
   assert.equal(seen.at(-1).filter(({ text }) => text === 'reconnected receipt').length, 1)
 })
+
+test('the chosen backend starts the session and a restored conversation reports its own backend', async () => {
+  let stored = null
+  globalThis.window = { sessionStorage: { getItem: () => stored, setItem(_key, value) { stored = value }, removeItem() { stored = null } }, localStorage: { getItem: () => null, setItem() {} } }
+  const posted = []
+  globalThis.fetch = async (url, options = {}) => {
+    if (url === '/api/sessions' && options.method === 'POST') { posted.push(JSON.parse(options.body)); return { ok: true, json: async () => ({ id: 'claude-session', backend: 'claude' }) } }
+    if (url === '/api/sessions/claude-session/history') return { ok: true, status: 200, json: async () => ({ events: [], status: 'ready', backend: 'claude' }) }
+    throw new Error(`unexpected fetch ${url}`)
+  }
+  const first = await import(`../src/browser/adapters.ts?backend-start=${Date.now()}`)
+  assert.deepEqual(await first.startBrowserSession('claude'), { id: 'claude-session', backend: 'claude' })
+  assert.deepEqual(posted, [{ backend: 'claude', intent: 'build' }])
+  const reloaded = await import(`../src/browser/adapters.ts?backend-restore=${Date.now()}`)
+  assert.equal(await reloaded.restoreBrowserSession(), true)
+  assert.equal(reloaded.currentBrowserBackend(), 'claude')
+})
