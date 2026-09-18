@@ -185,7 +185,7 @@ test('a late durable receipt is merged after higher interrupt events and on reco
   assert.equal(seen.at(-1).filter(({ text }) => text === 'durable receipt').length, 1)
 })
 
-test('a reconnect refreshes late durable receipts below the SSE cursor', async () => {
+test('a native EventSource reconnect refreshes late durable receipts below the SSE cursor', async () => {
   const sources = []
   globalThis.window = { sessionStorage: { getItem: () => 'session', setItem() {}, removeItem() {} }, localStorage: { getItem: () => null, setItem() {} } }
   globalThis.EventSource = class {
@@ -198,8 +198,7 @@ test('a reconnect refreshes late durable receipts below the SSE cursor', async (
   const seen = []
   chat.subscribe((messages) => seen.push(messages))
   sources[0].onmessage({ data: JSON.stringify({ sequence: 2, type: 'interrupted', reason: 'stopped' }) })
-  sources[0].readyState = 2
-  sources[0].onerror()
+  sources[0].onopen()
   await new Promise((resolve) => setImmediate(resolve))
   assert.equal(seen.at(-1).filter(({ text }) => text === 'reconnected receipt').length, 1)
 })

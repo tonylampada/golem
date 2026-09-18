@@ -188,6 +188,15 @@ export const chat: ChatAdapter & { retry(messageId: string): Promise<void> } = {
         subscribedSource = nextSource
         source = nextSource
         nextSource.onmessage = (event) => applyEvent(JSON.parse(event.data))
+        nextSource.onopen = () => {
+          void fetch(`/api/sessions/${subscribedSession}/history`).then(async (response) => {
+            if (!response.ok || source !== nextSource || sessionId !== subscribedSession) return
+            const result = await response.json() as { events: Array<{ sequence: number; type: string; text?: string; reason?: string; clientMessageId?: string; attachments?: ChatAttachment[] }>; status: string }
+            if (source !== nextSource || sessionId !== subscribedSession) return
+            setStatus(mergeEvents(result.events) ?? result.status)
+            emit()
+          }).catch(() => {})
+        }
         nextSource.onerror = () => {
           if (source === nextSource && nextSource.readyState === EventSource.CLOSED && sessionId === subscribedSession) {
             void chat.history().catch(() => {}).finally(connect)
