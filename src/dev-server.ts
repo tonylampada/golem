@@ -4,6 +4,7 @@ import { extname, join, normalize, resolve } from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { buildBrowser, rebuild } from './browser-build.ts';
 import { createAppBackend, type AppBackend } from './backend/http.ts';
+import { ordinaryChat, type OrdinaryChat } from './chat.ts';
 import { serverUrl } from './config.ts';
 import { discoverAgents, runtimeState, type AgentName } from './runtime/discovery.ts';
 import { ClaudeBackend } from './runtime/claude.ts';
@@ -33,8 +34,12 @@ export async function startDevServer(
   await buildBrowser();
   const state = new ConversationState(stateDirectory);
   const sessions = new SessionManager((snapshots) => state.save(snapshots));
-  sessions.restore(await state.load(), (snapshot) => createBackend(snapshot.buildMode ? 'danger-full-access' : 'read-only', snapshot.threadId, snapshot.backend));
   const app = await createAppBackend(appRoot, join(stateDirectory, 'data'));
+  const chat = ordinaryChat(app);
+  // Restored conversations wait for their next message; nothing is re-run.
+  sessions.restore(await state.load(), (snapshot) => snapshot.backend === 'anthropic'
+    ? chat.backend(snapshot.transcript)
+    : createBackend(snapshot.buildMode ? 'danger-full-access' : 'read-only', snapshot.threadId, snapshot.backend));
   const { accounts } = app;
   if (accounts) {
     // Printed to the terminal that owns the data, never served: a fresh store, or a deliberate recovery.
@@ -44,6 +49,12 @@ export async function startDevServer(
     accounts.changes.on('change', (accountId: string) => {
       for (const session of sessions.all()) {
         if (session.owner !== accountId || !session.snapshot().active) continue;
+        // A chat turn acts as the browser session that sent it; it stops once that session ends.
+        if (session.backend === 'anthropic') {
+          const turn = session.activeContext;
+          if (turn) void app.app.refresh(turn.principal).then(() => {}, () => session.interrupt());
+          continue;
+        }
         void accounts.resolveAccount(accountId)
           .then(async (principal) => accounts.canBuild(principal) && await accounts.signedIn(accountId), () => false)
           .then((allowed) => { if (!allowed) return session.interrupt(); });
@@ -51,7 +62,7 @@ export async function startDevServer(
     });
   }
   const server = createServer((request, response) => {
-    void (request.url?.startsWith('/api/app/') || request.url?.startsWith('/api/auth/') ? app.handle(request, response) : handleRequest(request, response, sessions, port, host, createBackend, app)).catch((error) => {
+    void (request.url?.startsWith('/api/app/') || request.url?.startsWith('/api/auth/') ? app.handle(request, response) : handleRequest(request, response, sessions, port, host, createBackend, app, chat)).catch((error) => {
       if (!response.headersSent) json(response, 400, { error: error instanceof Error ? error.message : 'Malformed request' });
       else response.destroy();
     });
@@ -71,11 +82,12 @@ async function handleRequest(
   host: string,
   createBackend: CreateBackend,
   app: AppBackend,
+  chat: OrdinaryChat,
 ): Promise<void> {
     const url = new URL(request.url ?? '/', 'http://127.0.0.1');
     decodeURIComponent(url.pathname);
     if (url.pathname.startsWith('/api/')) {
-      await handleApi(request, response, url, sessions, createBackend, app);
+      await handleApi(request, response, url, sessions, createBackend, app, chat);
       return;
     }
     let pathname: string;
@@ -147,6 +159,7 @@ async function handleApi(
   sessions: SessionManager,
   createBackend: CreateBackend,
   app: AppBackend,
+  chat: OrdinaryChat,
 ): Promise<void> {
   const reloadServer = app.reload;
   const { accounts } = app;
@@ -154,14 +167,35 @@ async function handleApi(
   // With accounts, every build route needs a signed-in account allowed to build, and a
   // conversation belongs to the account that started it. Ownerless (older) ones go to managers.
   const principal = await app.app.resolvePrincipal(request);
-  if (accounts && !accounts.canBuild(principal)) {
+  // Ordinary chat never touches the build routes below: its conversations belong to one owner.
+  const chatOwner = chat.owner(request, principal);
+  const mayChat = !(accounts && !accounts.config.guests && principal.kind === 'anonymous');
+  if (url.pathname === '/api/chat') {
+    if (!mayChat) return json(response, 401, { error: 'Sign in to chat.' });
+    if (request.method === 'GET') {
+      const latest = chatOwner ? sessions.latest((session) => session.backend === 'anthropic' && session.owner === chatOwner) : undefined;
+      return json(response, 200, { available: chat.available, detail: chat.detail, latest: latest && { id: latest.id, status: latest.status } });
+    }
+    if (request.method !== 'POST') return json(response, 404, { error: 'Unknown API route' });
+    if (!mutationAllowed(request)) return json(response, 403, { error: 'Cross-origin mutations are not allowed' });
+    if (!chat.available) return json(response, 503, { error: chat.detail });
+    const issued = chatOwner ? undefined : chat.issue();
+    const session = await sessions.start('anthropic', chat.backend(), false, chatOwner ?? issued!.owner);
+    if (issued) response.setHeader('Set-Cookie', issued.header);
+    return json(response, 201, { id: session.id, backend: session.backend, status: session.status });
+  }
+  const sessionMatch = url.pathname.match(/^\/api\/sessions\/([^/]+)/);
+  const chatSession = sessionMatch && sessions.get(sessionMatch[1])?.backend === 'anthropic';
+  if (!chatSession && accounts && !accounts.canBuild(principal)) {
     return json(response, principal.kind === 'anonymous' ? 401 : 403, { error: principal.kind === 'anonymous' ? 'Sign in to build.' : 'Your account may not build this app.' });
   }
   const owner = accounts && principal.kind === 'user' ? principal.id : undefined;
-  const visible = (session: Session) => !accounts || session.owner === owner || (!session.owner && accounts.manages(principal));
+  const visible = (session: Session) => session.backend === 'anthropic'
+    ? mayChat && chatOwner !== null && session.owner === chatOwner
+    : !accounts || session.owner === owner || (!session.owner && accounts.manages(principal));
   if (request.method === 'GET' && url.pathname === '/api/runtime') {
     const discoveries = await discoverAgents();
-    json(response, 200, { discoveries, state: runtimeState(discoveries) });
+    json(response, 200, { discoveries, state: runtimeState(discoveries), builder: app.config.agents?.builder });
     return;
   }
   if (request.method === 'POST' && url.pathname === '/api/sessions') {
@@ -181,7 +215,7 @@ async function handleApi(
     return;
   }
   if (request.method === 'GET' && url.pathname === '/api/sessions/latest') {
-    const latest = sessions.latest(visible);
+    const latest = sessions.latest((session) => session.buildMode && visible(session));
     if (!latest) return json(response, 404, { error: 'No saved build conversation' });
     json(response, 200, { id: latest.id, backend: latest.backend, status: latest.status });
     return;
@@ -204,7 +238,10 @@ async function handleApi(
     // Re-resolve this same request when its account changes; a reader who may no longer build loses the stream.
     const recheck = (accountId: string) => {
       if (accountId !== owner) return;
-      void app.app.resolvePrincipal(request).then((now) => { if (!accounts!.canBuild(now)) response.end(); }, () => response.end());
+      void app.app.resolvePrincipal(request).then((now) => {
+        const allowed = session.backend === 'anthropic' ? now.kind === 'user' && now.id === session.owner : accounts!.canBuild(now);
+        if (!allowed) response.end();
+      }, () => response.end());
     };
     accounts?.changes.on('change', recheck);
     request.on('close', () => { unsubscribe(); accounts?.changes.off('change', recheck); });
@@ -213,12 +250,15 @@ async function handleApi(
   if (request.method === 'POST' && !match[2]) {
     if (!mutationAllowed(request)) return json(response, 403, { error: 'Cross-origin mutations are not allowed' });
     try {
-      const input = await body(request) as { text?: unknown; clientMessageId?: unknown; attachments?: unknown };
+      const input = await body(request) as { text?: unknown; clientMessageId?: unknown; attachments?: unknown; view?: unknown };
       if (typeof input.text !== 'string' || !input.text.trim()) return json(response, 400, { error: 'text must be a non-empty string' });
       if (typeof input.clientMessageId !== 'string' || !input.clientMessageId) return json(response, 400, { error: 'clientMessageId is required' });
       const attachments = Array.isArray(input.attachments) && input.attachments.every((item) => item && typeof item.id === 'string' && typeof item.name === 'string' && (item.size === undefined || typeof item.size === 'number')) ? input.attachments : undefined;
       if (input.attachments !== undefined && !attachments) return json(response, 400, { error: 'attachments must contain a name and id' });
-      const accepted = await session.accept(input.text, input.clientMessageId, attachments);
+      // A chat message carries its sender, fixed here from this request; the turn acts as them.
+      if (input.view !== undefined && session.backend === 'anthropic') return json(response, 400, { error: 'This app has no views to target.' });
+      const context = session.backend === 'anthropic' ? { principal, owner: chatOwner!, conversation: session.id } : undefined;
+      const accepted = await session.accept(input.text, input.clientMessageId, attachments, context);
       json(response, 202, { status: session.status, duplicate: accepted.duplicate });
       if (!accepted.duplicate && accepted.completion) void accepted.completion.then(
         () => { if (session.buildMode) triggerRebuild(session, reloadServer); },

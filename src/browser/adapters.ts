@@ -75,12 +75,13 @@ function mergeEvents(events: Array<{ sequence: number; type: string; text?: stri
   return ordered.findLast((event) => event.type === 'status')?.status
 }
 
-function fromEvents(events: Array<{ type: string; sequence: number; text?: string; status?: string; reason?: string; clientMessageId?: string; attachments?: ChatAttachment[] }>): BrowserMessage[] {
+function fromEvents(events: Array<{ type: string; sequence: number; text?: string; ok?: boolean; status?: string; reason?: string; clientMessageId?: string; attachments?: ChatAttachment[] }>): BrowserMessage[] {
   return events.flatMap((event) => {
     if ((event.type === 'user' || event.type === 'message') && event.text) {
       return [{ id: event.type === 'user' && event.clientMessageId ? event.clientMessageId : `${event.sequence}`, role: event.type === 'user' ? 'user' : 'agent', text: event.text, attachments: event.attachments, at: new Date().toISOString() }]
     }
     if (event.type === 'error') return [{ id: `${event.sequence}`, role: 'agent', text: `Error: ${event.text ?? 'Agent failed.'}`, attachments: undefined, at: new Date().toISOString() }]
+    if (event.type === 'tool' && event.ok === false) return [{ id: `${event.sequence}`, role: 'agent', text: `An action failed: ${event.text ?? 'unknown error'}`, attachments: undefined, at: new Date().toISOString() }]
     if (event.type === 'interrupted') return [{ id: `${event.sequence}`, role: 'agent', text: `Interrupted${event.reason ? `: ${event.reason}` : '.'}`, attachments: undefined, at: new Date().toISOString() }]
     return []
   })
@@ -105,9 +106,18 @@ async function deliver(message: OutboxMessage): Promise<void> {
   }
 }
 
-/** The only session-starting call in the UI — declares build intent explicitly; the server decides permission from it. */
+/** The only build-starting call in the UI — declares build intent explicitly; the server decides permission from it. */
 export async function startBrowserSession(backend = 'codex'): Promise<{ id: string; backend: string }> {
-  const response = await fetch('/api/sessions', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ backend, intent: 'build' }) })
+  return begin('/api/sessions', { backend, intent: 'build' }, backend)
+}
+
+/** Starts an ordinary chat: an assistant limited to the app's listed actions, never a build. */
+export async function startChatSession(): Promise<{ id: string; backend: string }> {
+  return begin('/api/chat', {}, 'anthropic')
+}
+
+async function begin(url: string, body: object, backend: string): Promise<{ id: string; backend: string }> {
+  const response = await fetch(url, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) })
   const result = await response.json() as { id?: string; backend?: string; error?: string }
   if (!response.ok || !result.id) throw new Error(result.error ?? 'Unable to start session')
   source?.close()
@@ -132,19 +142,23 @@ export function forgetBrowserSession(): void {
   try { window.sessionStorage.removeItem(storageKey) } catch {}
 }
 
-export async function restoreBrowserSession(): Promise<boolean> {
+/** Reopens this tab's conversation, else the latest build (or, with `chat`, the latest chat) conversation. */
+export async function restoreBrowserSession(discover: 'build' | 'chat' = 'build'): Promise<boolean> {
   if (!sessionId) {
-    const discovered = await fetch('/api/sessions/latest')
+    const discovered = await fetch(discover === 'chat' ? '/api/chat' : '/api/sessions/latest')
     if (discovered.status === 404) return false
     if (!discovered.ok) throw new Error((await discovered.json()).error ?? 'Unable to discover a saved session')
-    sessionId = (await discovered.json() as { id: string }).id
+    const found = await discovered.json() as { id?: string; latest?: { id: string } }
+    const id = discover === 'chat' ? found.latest?.id : found.id
+    if (!id) return false
+    sessionId = id
     try { window.sessionStorage.setItem(storageKey, sessionId) } catch {}
   }
   const response = await fetch(`/api/sessions/${sessionId}/history`)
   if (response.status === 404) {
     sessionId = undefined
     try { window.sessionStorage.removeItem(storageKey) } catch {}
-    return restoreBrowserSession()
+    return restoreBrowserSession(discover)
   }
   if (!response.ok) throw new Error((await response.json()).error ?? 'Unable to restore session')
   const result = await response.json() as { events: Array<{ sequence: number; type: string; text?: string; reason?: string; clientMessageId?: string; attachments?: ChatAttachment[] }>; status: string; backend?: string }
@@ -225,7 +239,7 @@ export const chat: ChatAdapter & { retry(messageId: string): Promise<void> } = {
     return () => listeners.delete(listener)
   },
   async send(text, attachments) {
-    if (!sessionId) throw new Error('Enter build mode before sending a message')
+    if (!sessionId) throw new Error('Start a conversation before sending a message')
     const message: OutboxMessage = { id: messageId(), sessionId, text, attachments, delivery: 'pending', at: new Date().toISOString() }
     outbox.push(message)
     saveOutbox()

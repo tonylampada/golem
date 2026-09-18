@@ -1,18 +1,26 @@
 import { randomUUID } from 'node:crypto'
 import type { AgentName } from './discovery.ts'
+import type { TurnContext } from './assistant.ts'
+
+/** A terminal agent, or `anthropic`: the ordinary-use API agent. */
+export type BackendName = AgentName | 'anthropic'
 
 export type BackendEvent =
   | { type: 'message'; text: string }
   | { type: 'interrupted'; reason?: string }
   | { type: 'error'; message: string }
+  | { type: 'tool'; name: string; ok: boolean; text?: string }
 
 /** The runtime contract only; Claude/Codex process bridging is intentionally not implemented yet. */
 export type SessionBackend = {
   start(emit: (event: BackendEvent) => void): Promise<void>
-  send(text: string): Promise<void>
+  /** `context` is the sender of this message, when the server accepted it from a person. */
+  send(text: string, context?: TurnContext): Promise<void>
   shutdown(): Promise<void>
   interrupt?(): Promise<void>
   threadId?(): string | undefined
+  /** Conversation state a backend keeps itself, saved with the conversation and handed back on restore. */
+  transcript?(): unknown
 }
 
 export type SessionStatus = 'starting' | 'ready' | 'interrupted' | 'stopped' | 'failed'
@@ -20,10 +28,13 @@ export type SessionStatus = 'starting' | 'ready' | 'interrupted' | 'stopped' | '
 export type SessionEvent = {
   sequence: number
   sessionId: string
-  type: 'status' | 'user' | 'message' | 'interrupted' | 'error' | 'rebuilt'
+  type: 'status' | 'user' | 'message' | 'interrupted' | 'error' | 'rebuilt' | 'tool'
   status?: SessionStatus
   text?: string
   reason?: string
+  /** A tool event's operation name and whether the call succeeded. */
+  name?: string
+  ok?: boolean
   clientMessageId?: string
   attachments?: Array<{ id: string; name: string; size?: number }>
 }
@@ -33,13 +44,15 @@ export class Session {
   status: SessionStatus = 'starting'
   private readonly listeners = new Set<(event: SessionEvent) => void>()
   private sequence = 0
-  private readonly pending: Array<{ text: string; generation: number; resolve: () => void; reject: (error: Error) => void }> = []
+  private readonly pending: Array<{ text: string; context?: TurnContext; generation: number; resolve: () => void; reject: (error: Error) => void }> = []
   private active = false
   private dispatchScheduled = false
   private closed = false
   private shutdownPromise: Promise<void> | undefined
   private workerShutdownPromise: Promise<void> | undefined
   private activeReject: ((error: Error) => void) | undefined
+  /** The sender of the turn now running; revocation checks it. */
+  activeContext: TurnContext | undefined
   private workerStarted = false
   private persistence = Promise.resolve()
   private persistenceError: Error | undefined
@@ -47,7 +60,7 @@ export class Session {
   private requestGeneration = 0
   private updatedAt: string | undefined = new Date().toISOString()
   readonly id: string
-  readonly backend: AgentName
+  readonly backend: BackendName
   /** Server-owned: set once at creation from the request's explicit build intent, never inferred. */
   readonly buildMode: boolean
   /** The account that started this conversation when the app has accounts; only it may use it. */
@@ -56,7 +69,7 @@ export class Session {
   private readonly save?: (snapshot: SessionSnapshot) => Promise<void>
 
   constructor(
-    backend: AgentName,
+    backend: BackendName,
     worker: SessionBackend,
     id: string,
     buildMode = false,
@@ -101,7 +114,7 @@ export class Session {
   }
 
   snapshot(): SessionSnapshot {
-    return { id: this.id, backend: this.backend, buildMode: this.buildMode, ...(this.owner ? { owner: this.owner } : {}), status: this.status, active: this.active, history: [...this.history, ...[...this.pendingReceipts.values()].map(({ event }) => event)], threadId: this.worker.threadId?.(), updatedAt: this.updatedAt }
+    return { id: this.id, backend: this.backend, buildMode: this.buildMode, ...(this.owner ? { owner: this.owner } : {}), status: this.status, active: this.active, history: [...this.history, ...[...this.pendingReceipts.values()].map(({ event }) => event)], threadId: this.worker.threadId?.(), ...(this.worker.transcript ? { transcript: this.worker.transcript() } : {}), updatedAt: this.updatedAt }
   }
 
   async flush(): Promise<void> {
@@ -109,7 +122,8 @@ export class Session {
     if (this.persistenceError) throw this.persistenceError
   }
 
-  async accept(text: string, clientMessageId: string, attachments?: SessionEvent['attachments']): Promise<{ duplicate: boolean; completion?: Promise<void> }> {
+  /** `context` stays with this message through the queue; a duplicate keeps the first one's. */
+  async accept(text: string, clientMessageId: string, attachments?: SessionEvent['attachments'], context?: TurnContext): Promise<{ duplicate: boolean; completion?: Promise<void> }> {
     if (this.closed || (this.status !== 'ready' && this.status !== 'interrupted' && this.status !== 'failed')) {
       throw new Error(`Session ${this.status}`)
     }
@@ -124,7 +138,7 @@ export class Session {
     let resolve!: () => void
     let reject!: (error: Error) => void
     const completion = new Promise<void>((ok, fail) => { resolve = ok; reject = fail })
-    this.pending.push({ text, generation, resolve, reject })
+    this.pending.push({ text, context, generation, resolve, reject })
     this.pump()
     return { duplicate: false, completion }
   }
@@ -191,6 +205,7 @@ export class Session {
   private receive(event: BackendEvent): void {
     if (this.closed) return
     if (event.type === 'message') this.record({ type: 'message', text: event.text })
+    if (event.type === 'tool') this.record({ type: 'tool', name: event.name, ok: event.ok, text: event.text })
     if (event.type === 'interrupted') {
       const alreadyInterrupted = this.status === 'interrupted'
       if (!alreadyInterrupted) this.setStatus('interrupted')
@@ -240,8 +255,10 @@ export class Session {
             return
           }
           this.activeReject = next.reject
-          Promise.resolve(this.worker.send(next.text)).then(next.resolve, next.reject).finally(() => {
+          this.activeContext = next.context
+          Promise.resolve(this.worker.send(next.text, next.context)).then(next.resolve, next.reject).finally(() => {
             this.activeReject = undefined
+            this.activeContext = undefined
             this.active = false
             this.persist()
             this.pump()
@@ -329,13 +346,14 @@ export class Session {
 
 export type SessionSnapshot = {
   id: string
-  backend: AgentName
+  backend: BackendName
   buildMode: boolean
   owner?: string
   status: SessionStatus
   active: boolean
   history: SessionEvent[]
   threadId?: string
+  transcript?: unknown
   updatedAt?: string
 }
 
@@ -347,7 +365,7 @@ export class SessionManager {
 
   private persist = async (): Promise<void> => this.save?.([...this.sessions.values()].map((session) => session.snapshot()))
 
-  async start(backend: AgentName, worker: SessionBackend, buildMode = false, owner?: string): Promise<Session> {
+  async start(backend: BackendName, worker: SessionBackend, buildMode = false, owner?: string): Promise<Session> {
     const session = new Session(backend, worker, randomUUID(), buildMode, this.persist, owner)
     this.sessions.set(session.id, session)
     try {
@@ -364,11 +382,11 @@ export class SessionManager {
 
   all(): Session[] { return [...this.sessions.values()] }
 
-  /** The most recently active build conversation among those `visible` allows. */
-  latest(visible: (session: Session) => boolean = () => true): Session | undefined {
+  /** The most recently active conversation among those `visible` allows; build conversations by default. */
+  latest(visible: (session: Session) => boolean = (session) => session.buildMode): Session | undefined {
     let latest: Session | undefined
     for (const session of this.sessions.values()) {
-      if (!session.buildMode || !visible(session)) continue
+      if (!visible(session)) continue
       const candidate = session.snapshot().updatedAt
       const current = latest?.snapshot().updatedAt
       if (!latest || (candidate && (!current || candidate >= current)) || (!candidate && !current)) latest = session

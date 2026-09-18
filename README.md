@@ -40,4 +40,4 @@ See [the local CLI guide](docs/local-cli.md) for the complete command contract.
 
 ## Current scope
 
-Apps store records and files and define server operations as described in [the app backend guide](docs/app-backend.md). Builds run with Codex or Claude Code; see [the local CLI guide](docs/local-cli.md).
+Apps store records and files and define server operations as described in [the app backend guide](docs/app-backend.md). Builds run with Codex or Claude Code; see [the local CLI guide](docs/local-cli.md). An app can also offer ordinary chat: an assistant that uses the app's data as the person chatting, configured apart from the builder; see [the agents guide](docs/agents.md).

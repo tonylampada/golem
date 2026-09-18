@@ -42,16 +42,17 @@
     "test": "node --test --test-concurrency=1 test/*.test.mjs"
   },
   "dependencies": {
+    "@anthropic-ai/sdk": "0.127.0",
     "@types/node": "22.20.3",
     "@types/react": "19.2.2",
     "@types/react-dom": "19.2.1",
     "@vitejs/plugin-react": "5.0.4",
-    "typescript": "7.0.2",
-    "vite": "7.1.9",
-    "tsx": "4.23.13",
     "golem-ui": "0.1.1",
     "react": "19.2.0",
     "react-dom": "19.2.0",
+    "tsx": "4.23.13",
+    "typescript": "7.0.2",
+    "vite": "7.1.9",
     "zod": "4.6.5"
   }
 }
