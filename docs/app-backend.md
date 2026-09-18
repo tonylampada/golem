@@ -82,6 +82,48 @@ type OperationContext = { principal; via; records: RecordStore; files: FileStore
 - **authorize** runs once per call with the target `record` (or `null`), and again per row for `records.list` and `files.list`, where `false` hides the row. App operations that return lists filter with `context.permits(row)`; `context.records` and `context.files` are unfiltered.
 - **Builtin operations** back the adapters and go through the same hook: `records.list|get|create|update|remove`, `files.list|upload|read|caption|remove`. File metadata lives in the internal `_files` collection, so `authorize` sees it as `record` for file reads and writes.
 
+## Knowledge files
+
+Markdown the app keeps in its own folders, committed to Git with the code. Opt in from `src/server/index.ts`; only trusted server code names the folders:
+
+```ts
+export default {
+  knowledge: { handbook: 'knowledge' }, // root name → directory inside the app
+  authorize: ({ operation, principal, record }) =>
+    !operation.startsWith('knowledge.') || !record?.path?.startsWith('staff/') || principal.groups.includes('staff'),
+} satisfies AppServerModule
+```
+
+That adds four operations on the usual invoke path. `authorize` sees `record = { id: '<root>/<path>', root, path }` on every call, including for a file not created yet, and again per file for `list` and `search`, where `false` hides it.
+
+| Operation | Input | Result |
+| --- | --- | --- |
+| `knowledge.list` | `{ root, folder? }` | `{ rows: [{ id: path, path, title, type, version }] }` |
+| `knowledge.search` | `{ root, text, limit? }` | `[{ path, line, text }]`, lines are 1-based |
+| `knowledge.read` | `{ root, path }` | `{ id: path, root, path, body, version, sha256, type, title }` |
+| `knowledge.write` | `{ root, path, body, expectedVersion }` | the file as read; `expectedVersion: 0` creates |
+
+- **Paths** are relative `.md` paths. `..`, hidden segments, absolute paths and backslashes are refused. Symlinked files and folders are never read, written or listed. File text is data for the reader and the agent, never instructions to Golem.
+- **Versions**: `version` counts the contents Golem has seen, kept in the internal `_knowledge` collection. An edit made on disk shows up as a new version on the next read or save. A write sent with an older version is refused with `VersionConflictError` carrying the current file, so nothing is overwritten.
+- **Limit**: Golem's own writes are serialized per file and the disk bytes are compared again right before an atomic rename. An editor outside Golem is not locked: a save from it that lands in that last instant is overwritten. One server process per app.
+- `type` and `title` come from the file's frontmatter (see [the knowledge recipe](knowledge.md)); `title` falls back to the first `#` heading, then the file name.
+
+In the browser, `knowledge` from `golem-kit/client` is a golem-ui `RecordsAdapter`: `collection` is the root name, `id` the path, `body` the text. Use it with `Editor` (versioned saves; a conflicting save is merged line by line) and with `RecordList` for navigation:
+
+```tsx
+<Editor config={{ collection: 'handbook', id: 'guides/opening.md' }} adapters={{ records: knowledge, clock }} />
+```
+
+## Showing a source in the person's view
+
+An agent can offer to open a knowledge file with a passage highlighted. The person accepts or dismisses the offer; nothing moves until they accept, and only the view where they accepted moves.
+
+- **Conversations** belong to the agent runtime. It installs `app.views.useConversations({ owner(request, principal), owns(conversation, owner) })`: `owner` derives a trusted key from the real request and its server-resolved principal (an account id, or a key for the runtime's own browser cookie, which is how anonymous visitors are told apart), `null` to refuse; `owns` says whether that key owns the conversation. Until they are installed, no view opens and no offer is made.
+- **View**: each browser tab showing a conversation calls `openView(conversation, listener)` from `golem-kit/client`. The server issues an unguessable view id bound to the tab's principal and sign-in session, its owner key and that conversation. Every later call on the view checks all three again.
+- **Message**: before accepting a chat message that names a view, the runtime calls `app.views.bound(view, { principal, owner, conversation })` and refuses the message when it is `false`.
+- **Offer**: the runtime builds the agent's tools with `app.agentTools(principal, { owner, conversation, view })`, `view` being the one the message came from. With knowledge configured, this adds `view.actions` (the catalog, no data) and `view.request { action: 'source.open', input: { root, path, quote? | line?, endLine? } }`; the same call is `app.views.request({ principal, owner, conversation, view }, action, input)`. The server reads the file as the principal first; a denied or missing file refuses with the same `Cannot open that source`. The offer `{ id, conversation, input: { root, path, line, endLine } }` goes to that one view. Without `view` it is only returned (`delivered: false`) for the chat to show.
+- **Answer**: `answer(offer, true)` from the view checks the person and the file again, then sends `apply` to that view only. Consent is per offer; an unanswered offer expires after ten minutes, and a closed tab's view is dropped. Render the file with `Editor` and move to `line`–`endLine`.
+
 ## Accounts
 
 Optional local accounts: email and password, server sessions, roles and groups. Without `accounts` in `golem.config.ts` the app stays anonymous and nobody signs in.
