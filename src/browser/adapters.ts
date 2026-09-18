@@ -122,6 +122,12 @@ export async function startBrowserSession(): Promise<{ id: string; backend: stri
 
 export function currentBrowserSession(): string | undefined { return sessionId }
 
+/** Drops this tab's remembered build conversation, e.g. when a different person signs in. */
+export function forgetBrowserSession(): void {
+  sessionId = undefined
+  try { window.sessionStorage.removeItem(storageKey) } catch {}
+}
+
 export async function restoreBrowserSession(): Promise<boolean> {
   if (!sessionId) {
     const discovered = await fetch('/api/sessions/latest')

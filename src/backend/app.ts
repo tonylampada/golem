@@ -22,16 +22,30 @@ export type App = {
   /** Swaps in a new server module's operations and hooks; stores, change stream and callers stay. */
   use(module: AppServerModule): void
   invoke(name: string, input: unknown, principal: Principal, via: Via): Promise<unknown>
-  /** The operations as tools for an in-process agent acting for `principal`. */
+  /**
+   * The operations as tools for an in-process agent acting for `principal`. Each call first
+   * refreshes the principal, so a signed-out session or a changed role takes effect at once.
+   */
   agentTools(principal: Principal): AgentTool[]
   resolvePrincipal(request: IncomingMessage): Promise<Principal>
+  /** Re-reads a principal from trusted state; throws once its session has ended. Identity for anonymous-only apps. */
+  refresh(principal: Principal): Promise<Principal>
+  /** Server-owned work acting for a stored account (a scheduled job): its current roles and groups. */
+  resolveAccount(id: string): Promise<Principal>
   /** Emits `change` with a collection name after every record write, files included (`_files`). */
   changes: EventEmitter
 }
 
 const allowAll: Authorize = () => true
 
-export function createApp(stores: { records: RecordStore; files: (records: RecordStore) => FileStore }, module: AppServerModule = {}): App {
+/** Where principals come from when the app has local accounts; replaces the module's `resolvePrincipal`. */
+export type Identity = {
+  resolve(request: IncomingMessage): Promise<Principal>
+  refresh(principal: Principal): Promise<Principal>
+  resolveAccount(id: string): Promise<Principal>
+}
+
+export function createApp(stores: { records: RecordStore; files: (records: RecordStore) => FileStore }, module: AppServerModule = {}, identity?: Identity): App {
   const changes = new EventEmitter().setMaxListeners(0)
   const records = watched(stores.records, (collection) => changes.emit('change', collection))
   const files = stores.files(records)
@@ -57,12 +71,17 @@ export function createApp(stores: { records: RecordStore; files: (records: Recor
     invoke,
     changes,
     use(next) { current = compile(next) },
-    resolvePrincipal: async (request) => (await current.module.resolvePrincipal?.(request)) ?? anonymous,
+    resolvePrincipal: async (request) => identity ? identity.resolve(request) : (await current.module.resolvePrincipal?.(request)) ?? anonymous,
+    refresh: async (principal) => identity ? identity.refresh(principal) : principal,
+    resolveAccount: async (id) => {
+      if (!identity) throw new ForbiddenError('This app has no accounts')
+      return identity.resolveAccount(id)
+    },
     agentTools: (principal) => [...current.byName.values()].map((operation) => ({
       name: operation.name,
       description: operation.description,
       inputSchema: z.toJSONSchema(operation.input, { unrepresentable: 'any' }),
-      call: (input: unknown) => invoke(operation.name, input, principal, 'agent'),
+      call: async (input: unknown) => invoke(operation.name, input, identity ? await identity.refresh(principal) : principal, 'agent'),
     })),
   }
 }

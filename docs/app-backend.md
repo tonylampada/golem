@@ -73,14 +73,61 @@ type AppServerModule = {
   resolvePrincipal?: (request: IncomingMessage) => Principal | Promise<Principal>
 }
 type AuthorizeRequest = { operation: string; input: unknown; principal: Principal; via: 'http' | 'agent' | 'server'; record: Row | null }
-type Principal = { kind: 'anonymous' } | { kind: 'user'; id: string; roles: string[] }
+type Principal = { kind: 'anonymous' } | { kind: 'user'; id: string; name: string; roles: string[]; groups: string[]; session?: string }
 type OperationContext = { principal; via; records: RecordStore; files: FileStore; permits(record: Row): Promise<boolean> }
 ```
 
 - **One invoke path.** HTTP (`POST /api/app/operations/<name>`), the raw file routes and in-process agent tools (`app.agentTools(principal)`) all call the same `invoke`: validate input, load the `record` the operation names, `authorize`, run, validate output.
-- **Principal** comes from `resolvePrincipal` on the server, never from request input. Without one, every caller is `anonymous` and `authorize` defaults to allowing everything: the local single-person mode existing apps run in.
+- **Principal** comes from the server, never from request input: local accounts when `accounts` is configured (see below), else `resolvePrincipal`. Without either, every caller is `anonymous` and `authorize` defaults to allowing everything: the local single-person mode existing apps run in.
 - **authorize** runs once per call with the target `record` (or `null`), and again per row for `records.list` and `files.list`, where `false` hides the row. App operations that return lists filter with `context.permits(row)`; `context.records` and `context.files` are unfiltered.
 - **Builtin operations** back the adapters and go through the same hook: `records.list|get|create|update|remove`, `files.list|upload|read|caption|remove`. File metadata lives in the internal `_files` collection, so `authorize` sees it as `record` for file reads and writes.
+
+## Accounts
+
+Optional local accounts: email and password, server sessions, roles and groups. Without `accounts` in `golem.config.ts` the app stays anonymous and nobody signs in.
+
+```ts
+export default {
+  title: 'Field Notes',
+  accounts: {
+    guests: false,       // default: signed-out visitors see only the sign-in screen
+    allowSignUp: false,  // default: people join through invite links
+    roles: [             // golem-ui Auth roles; the first is what a plain sign-up gets
+      { id: 'member', label: 'Member' },
+      { id: 'builder', label: 'Builder' },
+      { id: 'admin', label: 'Admin', manages: true },
+    ],
+  },
+  origin: 'https://notes.example.test', // only when served behind a proxy or HTTPS; see below
+}
+```
+
+The roles above are the default. A role with `manages: true` may invite, change roles and groups, remove members, and build. The `builder` role may build. Every other role is for the app's own `authorize`. At least one role must manage, and the last member holding one cannot be demoted or removed.
+
+- **guests: false**: every signed-out `/api/app/*` call (operations, files, changes) answers 401, and the shell shows golem-ui's sign-in screen.
+- **guests: true**: signed-out callers run as `anonymous` through `authorize`. The default `authorize` allows everything, so write one that refuses what guests may not do.
+- **Policy** stays in `authorize`: check `principal.roles`, `principal.groups` and `record`. Without an `authorize`, every signed-in member may do everything.
+- **Build mode** needs a signed-in member who may build; `/api/runtime` and every `/api/sessions` route answer 401 or 403 to anyone else. A build conversation belongs to the member who started it. Conversations saved before accounts were enabled are visible to managers only. Losing build access, or signing out everywhere, interrupts a running build turn.
+- **Managing**: managers get a Members button in the shell: golem-ui's member list for invites, roles and removal, plus a groups editor. Apps can use `identity` and `setGroups` from `golem-kit/client`.
+- **Identity in the UI**: `identity` from `golem-kit/client` is golem-ui's `IdentityAdapter`. Pass it to `Auth.Guard` or `Timeline`. It exposes nothing a server rule trusts.
+
+### First admin and recovery
+
+When the store has no account yet, `./golem dev` prints a one-use admin invite link that expires in 24 hours. Open it and sign up. There are no default credentials. A running app never creates another admin link by itself. If every admin is locked out, stop the server and run `GOLEM_ADMIN_INVITE=1 ./golem dev`. It prints a fresh admin invite link to the terminal only. Anyone who can start the server already owns `.golem/data`.
+
+### Agents and jobs
+
+- `app.agentTools(principal)` refreshes the principal before every call. A principal with a `session` works only while that browser session is live; after sign-out its calls fail with `UnauthorizedError` and never fall back to anonymous.
+- Server-owned work that acts for a person (a scheduled job) stores the account id and calls `app.resolveAccount(id)` on every run. It gets the current roles and groups, no session, and `ForbiddenError` once the account is removed. Nothing a browser sends becomes a principal.
+
+### Security boundary
+
+- Passwords are hashed with Node's scrypt and a random salt.
+- The session cookie is a random 256-bit token. It is `HttpOnly` and `SameSite=Lax`, is `Secure` when `origin` is https, and expires after 14 days. The server stores only its SHA-256 in the reserved `_sessions` collection. Sign-out and member removal delete it.
+- Accounts, sessions and invites live in reserved `_` collections. The records operations refuse those collections, and the change stream never names them.
+- Five failed sign-ins lock that email, and separately that client address, for 15 minutes.
+- Browser writes must come from this origin. Without `origin`, the `Origin` header must match the `Host` header. Behind a proxy, set `origin` to the public origin; then it is the only one accepted. Forwarding headers such as `X-Forwarded-For` are never read, so behind a proxy the per-address lockout counts the proxy's address.
+- This protects one app's data between people who use it. It is not a hosted identity provider: there is no email verification, password reset (a manager removes and re-invites), external sign-in or two-factor. Server code and anyone with the data directory can read everything.
 
 ## Errors
 
@@ -89,6 +136,7 @@ Throw these from `golem-kit/server`; the HTTP status and the browser error follo
 | Error | Status | Meaning |
 | --- | --- | --- |
 | `InvalidError` | 400 | Bad input, name, id, folder or path segment |
+| `UnauthorizedError` | 401 | Not signed in, or the session ended |
 | `ForbiddenError` | 403 | `authorize` returned false |
 | `NotFoundError` | 404 | No such record, file or operation |
 | `VersionConflictError` | 409 | `expectedVersion` no longer matches; carries `current` |

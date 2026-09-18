@@ -50,6 +50,8 @@ export class Session {
   readonly backend: AgentName
   /** Server-owned: set once at creation from the request's explicit build intent, never inferred. */
   readonly buildMode: boolean
+  /** The account that started this conversation when the app has accounts; only it may use it. */
+  readonly owner: string | undefined
   private readonly worker: SessionBackend
   private readonly save?: (snapshot: SessionSnapshot) => Promise<void>
 
@@ -59,8 +61,10 @@ export class Session {
     id: string,
     buildMode = false,
     save?: (snapshot: SessionSnapshot) => Promise<void>,
+    owner?: string,
   ) {
     this.id = id
+    this.owner = owner
     this.backend = backend
     this.worker = worker
     this.buildMode = buildMode
@@ -86,7 +90,7 @@ export class Session {
   }
 
   static restore(snapshot: SessionSnapshot, worker: SessionBackend, save?: (snapshot: SessionSnapshot) => Promise<void>): Session {
-    const session = new Session(snapshot.backend, worker, snapshot.id, snapshot.buildMode, save)
+    const session = new Session(snapshot.backend, worker, snapshot.id, snapshot.buildMode, save, snapshot.owner)
     session.history.push(...snapshot.history)
     session.status = snapshot.status
     session.sequence = Math.max(-1, ...snapshot.history.map((event) => event.sequence)) + 1
@@ -97,7 +101,7 @@ export class Session {
   }
 
   snapshot(): SessionSnapshot {
-    return { id: this.id, backend: this.backend, buildMode: this.buildMode, status: this.status, active: this.active, history: [...this.history, ...[...this.pendingReceipts.values()].map(({ event }) => event)], threadId: this.worker.threadId?.(), updatedAt: this.updatedAt }
+    return { id: this.id, backend: this.backend, buildMode: this.buildMode, ...(this.owner ? { owner: this.owner } : {}), status: this.status, active: this.active, history: [...this.history, ...[...this.pendingReceipts.values()].map(({ event }) => event)], threadId: this.worker.threadId?.(), updatedAt: this.updatedAt }
   }
 
   async flush(): Promise<void> {
@@ -327,6 +331,7 @@ export type SessionSnapshot = {
   id: string
   backend: AgentName
   buildMode: boolean
+  owner?: string
   status: SessionStatus
   active: boolean
   history: SessionEvent[]
@@ -342,8 +347,8 @@ export class SessionManager {
 
   private persist = async (): Promise<void> => this.save?.([...this.sessions.values()].map((session) => session.snapshot()))
 
-  async start(backend: AgentName, worker: SessionBackend, buildMode = false): Promise<Session> {
-    const session = new Session(backend, worker, randomUUID(), buildMode, this.persist)
+  async start(backend: AgentName, worker: SessionBackend, buildMode = false, owner?: string): Promise<Session> {
+    const session = new Session(backend, worker, randomUUID(), buildMode, this.persist, owner)
     this.sessions.set(session.id, session)
     try {
       await session.start()
@@ -357,10 +362,13 @@ export class SessionManager {
 
   get(id: string): Session | undefined { return this.sessions.get(id) }
 
-  latest(): Session | undefined {
+  all(): Session[] { return [...this.sessions.values()] }
+
+  /** The most recently active build conversation among those `visible` allows. */
+  latest(visible: (session: Session) => boolean = () => true): Session | undefined {
     let latest: Session | undefined
     for (const session of this.sessions.values()) {
-      if (!session.buildMode) continue
+      if (!session.buildMode || !visible(session)) continue
       const candidate = session.snapshot().updatedAt
       const current = latest?.snapshot().updatedAt
       if (!latest || (candidate && (!current || candidate >= current)) || (!candidate && !current)) latest = session
