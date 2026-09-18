@@ -4,7 +4,8 @@ import { ForbiddenError, InvalidError, NotFoundError, UnauthorizedError, Version
 
 /** Something an agent offered to show; the person accepts it in one browser view, where alone it is applied. */
 export type ViewOffer = { id: string; conversation: string; action: 'source.open'; input: { root: string; path: string; line: number; endLine: number } }
-export type ViewEvent = { type: 'offer'; offer: ViewOffer } | { type: 'apply'; offer: ViewOffer } | { type: 'withdrawn'; id: string }
+/** `apply` carries the file `version` its lines were counted in: show them once the editor has that version. */
+export type ViewEvent = { type: 'offer'; offer: ViewOffer } | { type: 'apply'; offer: ViewOffer; version: number } | { type: 'withdrawn'; id: string }
 
 /** What an agent can discover: names, when to use them and their input, never data. */
 export type ViewActionDoc = { name: string; description: string; inputSchema: unknown }
@@ -111,9 +112,9 @@ export function createViews(app: {
   }
 
   /** Reads the file as `principal`; any failure is the same refusal, so a view never tells what exists. */
-  async function readable(principal: Principal, root: string, path: string): Promise<{ body: string; sha256: string }> {
+  async function readable(principal: Principal, root: string, path: string): Promise<{ body: string; sha256: string; version: number }> {
     try {
-      return (await app.invoke('knowledge.read', { root, path }, principal, 'agent')) as { body: string; sha256: string }
+      return (await app.invoke('knowledge.read', { root, path }, principal, 'agent')) as { body: string; sha256: string; version: number }
     } catch (error) {
       if ((error as Error).name === 'UnauthorizedError') throw error
       throw refused()
@@ -187,7 +188,7 @@ export function createViews(app: {
         if (!at) throw new VersionConflictError('That passage changed since it was offered; ask for it again', null)
         offer = { ...offer, input: { ...offer.input, line: at[0], endLine: at[1] } }
       }
-      channel.send?.({ type: 'apply', offer })
+      channel.send?.({ type: 'apply', offer, version: source.version })
     },
   }
 }
