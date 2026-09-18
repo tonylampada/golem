@@ -7,7 +7,7 @@ import {
 /** Reserved collections: the records operations refuse `_` names, so run state never leaks through them. */
 export const SCHEDULES = '_job_schedules'
 export const RUNS = '_job_runs'
-// ponytail: finished runs are kept forever; prune per job when a long-lived schedule makes the list heavy.
+// Finished runs are kept; there is no retention limit yet.
 /** The only name job state puts on the change stream; readers re-list through `jobs.runs`. */
 export const JOBS_CHANGE = '_jobs'
 
@@ -46,6 +46,14 @@ export function createJobs(deps: Deps) {
   const active = new Map<string, AbortController>()
   const timers = new Map<string, NodeJS.Timeout>()
   let closed = false
+  // Claims (a slot firing, a retry, an unschedule) read and write run state in one step, one at a time,
+  // so two callers never both see a run as unclaimed. Operations themselves run outside this queue.
+  let queue: Promise<unknown> = Promise.resolve()
+  const serial = <T>(step: () => Promise<T>): Promise<T> => {
+    const result = queue.then(step)
+    queue = result.catch(() => {})
+    return result
+  }
 
   async function all(collection: string, filter?: Record<string, string | null>): Promise<Row[]> {
     const rows: Row[] = []
@@ -127,7 +135,7 @@ export function createJobs(deps: Deps) {
     return run
   }
 
-  async function tick(scheduleId: string): Promise<void> {
+  const tick = (scheduleId: string) => serial(async () => {
     timers.delete(scheduleId)
     if (closed) return
     const schedule = await store.get(SCHEDULES, scheduleId)
@@ -135,7 +143,7 @@ export function createJobs(deps: Deps) {
     const slot = String(schedule.nextRunAt)
     if (Date.parse(slot) > Date.now()) return arm(schedule)
     await fire(schedule, slot, new Date())
-  }
+  })
 
   /**
    * One scheduled slot. Overlap is skipped: while a run of this schedule is still running (a
@@ -168,7 +176,7 @@ export function createJobs(deps: Deps) {
     for (const schedule of await all(SCHEDULES)) {
       const slot = String(schedule.nextRunAt)
       if (Date.parse(slot) > Date.now()) { arm(schedule); continue }
-      if (definition(String(schedule.job))?.missed === 'once') { await fire(schedule, slot, new Date()); continue }
+      if (definition(String(schedule.job))?.missed === 'once') { await serial(() => fire(schedule, slot, new Date())); continue }
       arm(await store.update(SCHEDULES, schedule.id, { nextRunAt: nextAfter(schedule, new Date()), lastMissedAt: slot }))
     }
     deps.emit()
@@ -225,13 +233,13 @@ export function createJobs(deps: Deps) {
     defineOperation({
       name: 'jobs.unschedule', description: 'Stop a schedule. Runs it already started are unaffected.',
       input: z.object({ id }), output: z.null(), record: scheduleRecord,
-      async run(request, { principal }) {
+      run: (request, { principal }) => serial(async () => {
         owned(await store.get(SCHEDULES, request.id), principal)
         clearTimeout(timers.get(request.id))
         timers.delete(request.id)
         await write(store.remove(SCHEDULES, request.id))
         return null
-      },
+      }),
     }),
     defineOperation({
       name: 'jobs.runs', description: 'Your recent job runs, newest first, with status, progress, result and error.',
@@ -262,15 +270,17 @@ export function createJobs(deps: Deps) {
     defineOperation({
       name: 'jobs.resolve', description: 'Settle an interrupted run: retry starts a new run with the same input and idempotency key; dismiss leaves it as is.',
       input: z.object({ id, action: z.enum(['retry', 'dismiss']) }), output: row, record: runRecord,
-      async run(request, { principal }) {
+      run: (request, { principal }) => serial(async () => {
         const run = owned(await store.get(RUNS, request.id), principal)
         if (run.status !== 'interrupted' || run.resolution) throw new RecordRefusedError('Only an unsettled interrupted run can be retried or dismissed')
+        if (request.action === 'dismiss') return write(store.update(RUNS, run.id, { resolution: 'dismissed' }))
         // Re-checks who may start the job now: the retry acts as the same account with its current roles.
-        if (request.action === 'retry') actor(unchanged(run), principal)
-        await write(store.update(RUNS, run.id, { resolution: request.action === 'retry' ? 'retried' : 'dismissed' }))
-        if (request.action === 'dismiss') return (await store.get(RUNS, run.id))!
-        return begin({ job: String(run.job), operation: String(run.operation), input: run.input, accountId: (run.accountId as string | null) ?? null, scheduleId: (run.scheduleId as string | null) ?? null, key: String(run.key), retryOf: run.id })
-      },
+        actor(unchanged(run), principal)
+        // The retry exists before the old run is marked settled: a stop in between leaves both visible, never neither.
+        const retry = await begin({ job: String(run.job), operation: String(run.operation), input: run.input, accountId: (run.accountId as string | null) ?? null, scheduleId: (run.scheduleId as string | null) ?? null, key: String(run.key), retryOf: run.id })
+        await write(store.update(RUNS, run.id, { resolution: 'retried', retryId: retry.id }))
+        return retry
+      }),
     }),
   ]
 
@@ -278,11 +288,15 @@ export function createJobs(deps: Deps) {
     operations,
     /** Resolves once interrupted runs are marked and schedules armed. */
     ready,
-    /** Stops the timers; runs still in flight are marked interrupted at the next start. */
+    /**
+     * Stops the timers and aborts every running operation's signal. Nothing more is recorded: those
+     * runs stay `running` and become `interrupted` at the next start, whatever their operations did meanwhile.
+     */
     close() {
       closed = true
       for (const timer of timers.values()) clearTimeout(timer)
       timers.clear()
+      for (const controller of active.values()) controller.abort(new Error('The server is stopping'))
     },
   }
 }

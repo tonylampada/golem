@@ -19,11 +19,12 @@ const until = async (check, ms = 5000) => {
 
 // A harmless job: writes `count` tally records keyed by the run's idempotency key, reporting progress.
 // `gate` holds it between writes so a test can cancel, stop the server, or let it finish.
-function tallyModule({ gate = () => Promise.resolve(), cooperative = true, operation = 'tally.fill', authorize } = {}) {
+function tallyModule({ gate = () => Promise.resolve(), cooperative = true, operation = 'tally.fill', authorize, calls = [] } = {}) {
   const fill = defineOperation({
     name: operation, description: 'Write numbered tally records.',
     input: z.object({ count: z.number().int().min(1).max(20) }), output: z.object({ written: z.number() }),
     async run(input, { records, job }) {
+      calls.push(job?.runId)
       let written = 0
       for (let index = 0; index < input.count; index++) {
         if (cooperative) job?.signal.throwIfAborted()
@@ -113,6 +114,84 @@ test('a run cut off by a stop is interrupted, pauses its schedule, and retries o
   assert.deepEqual((await records.list('tallies')).rows.map((row) => row.id).sort(), [`${run.key}-0`, `${run.key}-1`])
   assert.equal((await records.get('_job_runs', run.id)).resolution, 'retried')
   await assert.rejects(app.invoke('jobs.resolve', { id: run.id, action: 'dismiss' }, anonymous, 'http'), { name: 'RecordRefusedError' })
+  app.close()
+  await records.close()
+})
+
+// A store whose run-state writes are slow, so racing claims interleave at every await.
+const slowed = (store) => ({ ...store, native: store.native, list: store.list, get: store.get, create: store.create, remove: store.remove, close: store.close,
+  update: async (collection, id, patch, options) => {
+    const row = await store.update(collection, id, patch, options)
+    if (collection === '_job_runs' && 'resolution' in patch) await new Promise((resolve) => setTimeout(resolve, 1500))
+    return row
+  },
+})
+
+/** A per-second schedule whose first run wrote an effect and was cut off by a stop; reopened with `module`. */
+async function interruptedSchedule(module) {
+  const dir = temp()
+  let records = await sqliteStore(join(dir, 'records.sqlite'))
+  let app = createApp({ records, files: noFiles }, tallyModule({ gate: () => new Promise(() => {}) }))
+  const schedule = await app.invoke('jobs.schedule', { job: 'tally', input: { count: 2 }, cron: '* * * * * *', timezone: 'UTC' }, anonymous, 'http')
+  const run = await until(async () => (await app.invoke('jobs.runs', {}, anonymous, 'http'))[0])
+  await until(async () => (await records.get('tallies', `${run.key}-0`)))
+  app.close()
+  await records.close()
+  records = await sqliteStore(join(dir, 'records.sqlite'))
+  app = createApp({ records: slowed(records), files: noFiles }, module)
+  await until(async () => (await records.get('_job_runs', run.id)).status === 'interrupted')
+  return { app, records, schedule, run }
+}
+
+test('two retries of one interrupted run: exactly one is accepted and runs once', async () => {
+  const calls = []
+  const { app, records, schedule, run } = await interruptedSchedule(tallyModule({ calls }))
+  await app.invoke('jobs.unschedule', { id: schedule.id }, anonymous, 'http')
+  const results = await Promise.allSettled([1, 2].map(() => app.invoke('jobs.resolve', { id: run.id, action: 'retry' }, anonymous, 'http')))
+  assert.deepEqual(results.map((result) => result.status).sort(), ['fulfilled', 'rejected'])
+  assert.equal(results.find((result) => result.status === 'rejected').reason.name, 'RecordRefusedError')
+  const retry = results.find((result) => result.status === 'fulfilled').value
+  await until(async () => (await records.get('_job_runs', retry.id)).status === 'succeeded')
+  assert.deepEqual(calls, [retry.id])
+  assert.equal((await records.get('_job_runs', run.id)).retryId, retry.id)
+  app.close()
+  await records.close()
+})
+
+test('a slot firing while a retry is being claimed does not start a second run', async () => {
+  const calls = []
+  let release
+  const held = new Promise((resolve) => { release = resolve })
+  const { app, records, schedule, run } = await interruptedSchedule(tallyModule({ calls, gate: () => held }))
+  // Slots come every second; the claim takes 1.5 s after the old run is marked settled, and the retry then stays running.
+  const retry = await app.invoke('jobs.resolve', { id: run.id, action: 'retry' }, anonymous, 'http')
+  await new Promise((resolve) => setTimeout(resolve, 2500))
+  assert.deepEqual(calls, [retry.id])
+  assert.ok((await records.get('_job_schedules', schedule.id)).lastSkippedAt)
+  assert.deepEqual((await app.invoke('jobs.runs', {}, anonymous, 'http')).map((one) => one.id).sort(), [run.id, retry.id].sort())
+  await app.invoke('jobs.unschedule', { id: schedule.id }, anonymous, 'http')
+  release()
+  await until(async () => (await records.get('_job_runs', retry.id)).status === 'succeeded')
+  app.close()
+  await records.close()
+})
+
+test('stopping aborts running operations; their runs are interrupted at the next start', async () => {
+  const dir = temp()
+  let records = await jsonlStore(join(dir, 'records'))
+  let signal
+  const module = tallyModule({ gate: () => new Promise(() => {}) })
+  const run = module.operations[0].run
+  module.operations[0].run = (input, context) => { signal = context.job?.signal; return run(input, context) }
+  let app = createApp({ records, files: noFiles }, module)
+  const started = await app.invoke('jobs.start', { job: 'tally', input: { count: 1 } }, anonymous, 'http')
+  await until(() => signal)
+  app.close()
+  assert.equal(signal.aborted, true)
+  await records.close()
+  records = await jsonlStore(join(dir, 'records'))
+  app = createApp({ records, files: noFiles }, tallyModule())
+  await until(async () => (await records.get('_job_runs', started.id)).status === 'interrupted')
   app.close()
   await records.close()
 })
