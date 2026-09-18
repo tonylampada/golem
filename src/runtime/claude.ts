@@ -16,8 +16,9 @@ type StreamEvent = {
  * preserves continuity. The prompt goes over stdin so no variadic flag can swallow it.
  *
  * Build mode uses `--permission-mode bypassPermissions`: like Codex's `danger-full-access`, it runs
- * with the account's ordinary permissions and is not an app-root boundary. Read-only removes every
- * built-in tool except Read/Grep/Glob and auto-denies anything that would prompt.
+ * with the account's ordinary permissions and is not an app-root boundary. Read-only keeps only the
+ * Read/Grep/Glob built-ins, loads no MCP servers (`--tools` alone leaves configured MCP tools), and
+ * auto-denies anything that would prompt. Hooks and settings still come from the user's profile.
  */
 export class ClaudeBackend extends CliBackend {
   protected readonly label = 'Claude Code'
@@ -32,7 +33,7 @@ export class ClaudeBackend extends CliBackend {
       '--append-system-prompt', builderInstructions(this.cwd),
       ...(this.mode === 'danger-full-access'
         ? ['--permission-mode', 'bypassPermissions']
-        : ['--permission-mode', 'dontAsk', '--tools', 'Read,Grep,Glob']),
+        : ['--permission-mode', 'dontAsk', '--tools', 'Read,Grep,Glob', '--strict-mcp-config', '--mcp-config', '{"mcpServers":{}}']),
       ...(this.nativeThreadId ? ['--resume', this.nativeThreadId] : []),
     ]
   }

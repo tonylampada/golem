@@ -22,7 +22,7 @@ test('Claude backend streams native JSON, resumes its session, and sends builder
     if (!a.includes('-p') || flag('--output-format') !== 'stream-json') process.exit(3)
     const guide = flag('--append-system-prompt')
     if (!guide || !guide.includes("Golem's in-app builder") || !guide.includes(${JSON.stringify(appRoot)})) process.exit(5)
-    if (flag('--permission-mode') !== 'bypassPermissions' || a.includes('--tools') || process.cwd() !== ${JSON.stringify(appRoot)}) process.exit(4)
+    if (flag('--permission-mode') !== 'bypassPermissions' || a.includes('--tools') || a.includes('--strict-mcp-config') || process.cwd() !== ${JSON.stringify(appRoot)}) process.exit(4)
     const resumed = flag('--resume')
     if (resumed && resumed !== 'native-1') process.exit(6)
     out({ type: 'system', subtype: 'init', session_id: 'native-1' })
@@ -39,9 +39,10 @@ test('Claude backend streams native JSON, resumes its session, and sends builder
   await backend.shutdown()
 })
 
-test('Claude read-only sessions can only use read tools', async () => {
+test('Claude read-only sessions get only read built-ins and no MCP servers', async () => {
   const backend = fake(script(`
     if (flag('--tools') !== 'Read,Grep,Glob' || flag('--permission-mode') !== 'dontAsk' || a.includes('bypassPermissions')) process.exit(4)
+    if (!a.includes('--strict-mcp-config') || flag('--mcp-config') !== '{"mcpServers":{}}') process.exit(7)
     out({ type: 'assistant', session_id: 's', message: { content: [{ type: 'text', text: 'RO' }] } })
   `), 'read-only')
   const events = []
