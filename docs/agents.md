@@ -50,3 +50,12 @@ With knowledge roots (see `knowledge.md`) and `view.actions` and `view.request` 
 - Chats are saved in `.golem/` with the model's context, tool results included, and restored after a restart. Nothing runs again by itself: a turn cut off by a restart or **Interrupt** stays stopped, and a tool call whose outcome is unknown is reported to the model as unknown.
 - **Interrupt** during a tool call lets that call finish; the model is not called again for that turn.
 - Provider failures appear in the chat as a plain message. They never include the key.
+
+## Provider
+
+Ordinary chat calls the Anthropic Messages API through `@anthropic-ai/sdk` with a manual tool loop: each listed operation is a client tool (`.` becomes `__`, since tool names must match `^[a-zA-Z0-9_-]{1,128}$`), and each call is answered with a `tool_result`, marked `is_error` when the operation refuses.
+
+- Tool use: https://platform.claude.com/docs/en/agents-and-tools/tool-use/overview and https://platform.claude.com/docs/en/agents-and-tools/tool-use/define-tools
+- Models (`claude-opus-5`): https://platform.claude.com/docs/en/about-claude/models/overview
+
+The tests run against a scripted stand-in for this API, `test/fixtures/messages-api.mjs`; point `ANTHROPIC_BASE_URL` at it to try chat without a key.
