@@ -133,8 +133,9 @@ async function handle({ app, accounts, config, cookie }: Server, request: Incomi
       const recheck = (accountId: string) => {
         if (principal.kind !== 'user' || accountId !== principal.id) return
         void app.resolvePrincipal(request).then((now) => {
+          // Tell the page first, so a signed-out tab drops what it shows instead of waiting for a reload.
+          response.write(`data: ${JSON.stringify({ identity: true })}\n\n`)
           if (now.kind === 'anonymous' && !accounts?.config.guests) response.end()
-          else response.write(`data: ${JSON.stringify({ identity: true })}\n\n`)
         }, () => response.end())
       }
       app.changes.on('change', write)

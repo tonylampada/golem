@@ -46,6 +46,8 @@ export function App() {
     }))
   }, [])
   const canBuild = me?.canBuild === true
+  // Losing build access closes the open conversation; its history stays on the server for later.
+  useEffect(() => { if (me && !canBuild) setMode(false) }, [me, canBuild])
   useEffect(() => {
     if (!canBuild) return
     fetch('/api/runtime').then((response) => response.json()).then((result) => {

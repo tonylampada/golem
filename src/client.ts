@@ -31,6 +31,11 @@ function connect(): void {
       if (data.identity) void reloadIdentity()
       else listeners.get(data.collection ?? '')?.forEach((one) => one())
     },
+    // The server refused or ended the stream for good (e.g. signed out elsewhere): re-read identity
+    // once. No reconnect here, so a 401 cannot loop; a new identity reconnects through reloadIdentity.
+    onerror: () => {
+      if (changes?.readyState === EventSource.CLOSED) void me?.then((known) => { if (known.user) void reloadIdentity(false) }, () => {})
+    },
   })
 }
 
@@ -84,11 +89,11 @@ export function currentSession(): Promise<Me> {
 }
 
 /** Re-reads the session after sign-in, sign-out or a role change; open lists re-read what they may now see. */
-async function reloadIdentity(): Promise<Me> {
+async function reloadIdentity(reconnect = true): Promise<Me> {
   me = undefined
   const next = await currentSession()
   identityListeners.forEach((listener) => listener(next.user))
-  if (changes) connect()
+  if (changes && reconnect) connect()
   listeners.forEach((set) => set.forEach((listener) => listener()))
   return next
 }
@@ -122,6 +127,9 @@ export const identity: IdentityAdapter = {
   removeMember: async (userId) => { await auth(`members/${encodeURIComponent(userId)}/remove`); await reloadIdentity() },
   setRole: async (userId, role) => { await auth(`members/${encodeURIComponent(userId)}/role`, { role }); await reloadIdentity() },
 }
+
+/** Re-reads who is signed in and tells identity subscribers; for callers that saw a 401 or 403. */
+export async function refreshIdentity(): Promise<void> { await reloadIdentity() }
 
 /** Replaces a member's groups. Accounts that manage members only. */
 export async function setGroups(userId: string, groups: string[]): Promise<void> {

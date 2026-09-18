@@ -1,3 +1,4 @@
+import { refreshIdentity } from '../client.ts'
 import type { ChatAdapter, ChatAttachment, ChatMessage, IdentityAdapter, NavigationAdapter, Route, User } from 'golem-ui'
 
 const unavailable = () => Promise.reject(new Error('No agent or identity service is connected.'))
@@ -204,9 +205,14 @@ export const chat: ChatAdapter & { retry(messageId: string): Promise<void> } = {
           }).catch(() => {})
         }
         nextSource.onerror = () => {
-          if (source === nextSource && nextSource.readyState === EventSource.CLOSED && sessionId === subscribedSession) {
-            connect()
-          }
+          if (source !== nextSource || nextSource.readyState !== EventSource.CLOSED || sessionId !== subscribedSession) return
+          // Reconnect only while this conversation is still ours to read; a 401/403 means access
+          // changed, so let identity decide instead of retrying into the same refusal.
+          void fetch(`/api/sessions/${subscribedSession}/history`).then((response) => {
+            if (source !== nextSource || sessionId !== subscribedSession) return
+            if (response.status === 401 || response.status === 403) void refreshIdentity()
+            else connect()
+          }, () => { if (source === nextSource) connect() })
         }
       }
       connect()
