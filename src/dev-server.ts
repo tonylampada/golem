@@ -236,8 +236,15 @@ async function handleApi(
   if (request.method === 'GET' && match[2] === 'events') {
     const after = Number(url.searchParams.get('after') ?? request.headers['last-event-id'] ?? '-1');
     if (!Number.isInteger(after)) return json(response, 400, { error: 'after must be an integer sequence' });
+    // A chat tab's source view rides on this stream (browsers allow few connections per host):
+    // it opens with the tab's id as a `view` event, and closes with the stream.
+    const view = session.backend === 'anthropic' && url.searchParams.get('view') === '1' && chat.views()
+      ? await app.app.views.open(request, principal, session.id) : undefined;
+    const closeView = view && await app.app.views.connect(request, principal, view.id, (event) => response.write(`event: view\ndata: ${JSON.stringify(event)}\n\n`));
     response.writeHead(200, { 'Content-Type': 'text/event-stream; charset=utf-8', 'Cache-Control': 'no-cache', Connection: 'keep-alive' });
     response.flushHeaders();
+    if (view) response.write(`event: view\ndata: ${JSON.stringify({ type: 'view', id: view.id })}\n\n`);
+    request.on('close', () => closeView?.());
     const write = (event: { sequence: number }) => response.write(`id: ${event.sequence}\ndata: ${JSON.stringify(event)}\n\n`);
     const unsubscribe = session.subscribeFrom(after, write);
     // Re-resolve this same request when its account changes; a reader who may no longer build loses the stream.

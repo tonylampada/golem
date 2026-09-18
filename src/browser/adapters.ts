@@ -1,4 +1,4 @@
-import { refreshIdentity } from '../client.ts'
+import { refreshIdentity, type ViewEvent } from '../client.ts'
 import type { ChatAdapter, ChatAttachment, ChatMessage, IdentityAdapter, NavigationAdapter, Route, User } from 'golem-ui'
 
 const unavailable = () => Promise.reject(new Error('No agent or identity service is connected.'))
@@ -89,9 +89,20 @@ function fromEvents(events: Array<{ type: string; sequence: number; text?: strin
 
 function refresh(): void { mergeEvents([]); emit() }
 
-// This tab's view of the open chat: sent with each message so the assistant's offers come here.
+// This tab's view of the open chat, from its event stream: sent with each message so the
+// assistant's offers come here, and used to answer them.
 let chatView: string | undefined
-export function setChatView(id: string | undefined): void { chatView = id }
+type ViewStreamEvent = ViewEvent | { type: 'view'; id: string }
+const viewListeners = new Set<(event: ViewStreamEvent) => void>()
+export function subscribeChatView(listener: (event: ViewStreamEvent) => void): () => void {
+  viewListeners.add(listener)
+  return () => viewListeners.delete(listener)
+}
+export async function answerOffer(offer: string, accept: boolean): Promise<void> {
+  if (!chatView) throw new Error('This tab is not connected to the chat.')
+  const response = await fetch(`/api/app/views/${chatView}/answer`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ offer, accept }) })
+  if (!response.ok) throw new Error((await response.json()).error ?? 'Unable to answer the offer')
+}
 function messageId(): string { return globalThis.crypto?.randomUUID?.() ?? `${Date.now()}-${Math.random()}` }
 function findOutbox(id: string): OutboxMessage | undefined { return outbox.find((message) => message.id === id && message.sessionId === sessionId) }
 
@@ -213,10 +224,15 @@ export const chat: ChatAdapter & { retry(messageId: string): Promise<void> } = {
       const subscribedSession = sessionId
       let subscribedSource: EventSource
       const connect = () => {
-        const nextSource = new EventSource(`/api/sessions/${subscribedSession}/events?after=${cursor}`)
+        const nextSource = new EventSource(`/api/sessions/${subscribedSession}/events?after=${cursor}${sessionBackend === 'anthropic' ? '&view=1' : ''}`)
         subscribedSource = nextSource
         source = nextSource
         nextSource.onmessage = (event) => applyEvent(JSON.parse(event.data))
+        if (sessionBackend === 'anthropic') nextSource.addEventListener('view', (event) => {
+          const data = JSON.parse((event as MessageEvent).data) as ViewStreamEvent
+          if (data.type === 'view') chatView = data.id
+          viewListeners.forEach((listener) => listener(data))
+        })
         nextSource.onopen = () => {
           void fetch(`/api/sessions/${subscribedSession}/history`).then(async (response) => {
             if (!response.ok || source !== nextSource || sessionId !== subscribedSession) return

@@ -125,8 +125,8 @@ export function App() {
             <div className="p-4 text-sm">
               {chatInfo && (
                 <div className="mb-4">
-                  <button className="golem-browser-chat rounded bg-neutral-900 px-3 py-2 text-white disabled:opacity-40" disabled={!chatInfo.available} onClick={startChat}>Start a chat</button>
-                  {chatInfo.detail && <p className="golem-browser-chat-detail mt-2 text-neutral-600">{chatInfo.detail}</p>}
+                  <button className="golem-browser-chat golem-browser-enter rounded bg-neutral-900 px-3 py-2 text-white disabled:opacity-40" disabled={!chatInfo.available} onClick={startChat}>Start a chat</button>
+                  {chatInfo.detail && <p className="golem-browser-chat-detail golem-browser-runtime mt-2 text-neutral-600">{chatInfo.detail}</p>}
                 </div>
               )}
               {me && !canBuild && <p className="golem-browser-build-denied mb-3 text-neutral-600">{me.user ? 'Your account may not build this app.' : 'Sign in with an account that may build.'}</p>}

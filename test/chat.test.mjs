@@ -230,6 +230,11 @@ test('ordinary chat: an API agent acting as the sender through listed operations
     assert.equal((await member.post(`/api/app/views/${tab}/answer`, { offer: offered.offer.id, accept: true })).status, 200)
     await until(() => tabEvents.events.some((event) => event.type === 'apply' && event.offer.input.line === 7), 'the apply event')
     await tabEvents.close()
+    // The shell's chat stream carries the tab's view, so a tab needs no extra connection for it.
+    const shell = member.stream(`/api/sessions/${id}/events?after=-1&view=1`)
+    const shellView = (await until(() => shell.events.find((event) => event.type === 'view'), 'the shell view')).id
+    assert.equal((await member.post(`/api/sessions/${id}`, { text: 'Hello from the shell tab.', clientMessageId: 'k2', view: shellView })).status, 202)
+    await shell.close()
     await visitorEvents.close()
 
     // Interrupted while a tool runs: the tool finishes once, the model is not called again for that turn.
