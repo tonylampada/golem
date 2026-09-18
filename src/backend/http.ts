@@ -9,7 +9,7 @@ import { diskFiles } from './files.ts'
 import { jsonlStore } from './jsonl.ts'
 
 const maxJson = 1_000_000
-// ponytail: uploads are buffered in memory; stream to disk if apps need files past this size.
+// Uploads are buffered in memory; stream to disk if apps need files past this size.
 const maxUpload = 25_000_000
 
 export type AppBackend = { app: App; handle(request: IncomingMessage, response: ServerResponse): Promise<void>; close(): Promise<void> }
@@ -20,10 +20,10 @@ export async function createAppBackend(appRoot: string, dataDirectory: string): 
   const records: RecordStore = storage === 'sqlite'
     ? (await import('./sqlite.ts')).sqliteStore(join(dataDirectory, 'records.sqlite'))
     : await jsonlStore(join(dataDirectory, 'records'))
-  const files = await diskFiles(join(dataDirectory, 'files'), records)
   const entry = join(appRoot, 'src/server/index.ts')
   const module = existsSync(entry) ? (await import(pathToFileURL(entry).href)).default as AppServerModule : {}
-  const app = createApp({ records, files: () => files }, module)
+  // FileStore writes metadata through the app's watched store, so file changes reach subscribers.
+  const app = createApp({ records, files: (watched) => diskFiles(join(dataDirectory, 'files'), watched) }, module)
   return { app, handle: (request, response) => handle(app, request, response), close: () => records.close() }
 }
 

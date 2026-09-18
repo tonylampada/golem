@@ -105,7 +105,7 @@ const builtins: Operation[] = [
     async run(input, { records, permits }) {
       const page = await records.list(input.collection, input.query)
       const visible = await Promise.all(page.rows.map(permits))
-      // ponytail: hidden rows make a page short; nextCursor still continues correctly.
+      // Hidden rows make a page short; nextCursor still continues correctly.
       return { rows: page.rows.filter((_, index) => visible[index]), nextCursor: page.nextCursor }
     },
   }),

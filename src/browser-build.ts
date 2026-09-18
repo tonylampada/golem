@@ -30,7 +30,7 @@ export async function buildBrowser(): Promise<void> {
   });
   execFileSync(tsc, [
     '--ignoreConfig', '--noEmit', '--jsx', 'react-jsx', '--module', 'ESNext',
-    '--moduleResolution', 'Bundler', '--skipLibCheck', '--types', 'node,react,react-dom',
+    '--moduleResolution', 'Bundler', '--skipLibCheck', '--allowImportingTsExtensions', '--types', 'node,react,react-dom',
     '--typeRoots', typeRoots,
     resolve(process.cwd(), 'src/app.tsx'), resolve(process.cwd(), 'golem.config.ts'),
     ...[resolve(process.cwd(), 'src/server/index.ts')].filter(existsSync),

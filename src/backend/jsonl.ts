@@ -8,7 +8,7 @@ type Entry = { put: Row } | { remove: string }
 
 /**
  * One append-only JSONL log per collection, replayed into memory on first use and fsynced per write.
- * ponytail: single-process only and one write at a time; use the SQLite store for anything busier.
+ * Single-process only and one write at a time; use the SQLite store for anything busier.
  */
 export async function jsonlStore(directory: string): Promise<RecordStore & { native: string }> {
   await mkdir(directory, { recursive: true })

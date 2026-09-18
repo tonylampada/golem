@@ -131,12 +131,17 @@ test('HTTP and agent tool callers share one invoke and authorize path', async ()
     assert.equal((await fetch(`${base}/api/app/files?folder=../x&name=a`, { method: 'PUT', body: 'x' })).status, 400)
     assert.equal((await fetch(`${base}/api/app/operations/records.list`, { method: 'POST', headers: { origin: 'http://evil.example' }, body: '{}' })).status, 403)
 
+    const changed = []
+    backend.app.changes.on('change', (collection) => changed.push(collection))
     const upload = await fetch(`${base}/api/app/files?folder=attachments&name=gate.html`, { method: 'PUT', headers: { 'Content-Type': 'text/html' }, body: '<script>1</script>' })
     const ref = (await upload.json()).result
     const download = await fetch(`${base}/api/app/files/${ref.id}`)
     assert.equal(await download.text(), '<script>1</script>')
     assert.equal(download.headers.get('content-security-policy'), 'sandbox')
     assert.deepEqual((await http('files.list', { folder: 'attachments' })).body.result.map((one) => one.id), [ref.id])
+    await http('files.caption', { id: ref.id, caption: 'Gate' })
+    await http('files.remove', { id: ref.id })
+    assert.deepEqual(changed, ['_files', '_files', '_files'])
   } finally {
     server.close()
     await backend.close()

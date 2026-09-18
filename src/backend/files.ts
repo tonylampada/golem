@@ -1,5 +1,6 @@
 import { randomUUID } from 'node:crypto'
-import { mkdir, readFile, rename, unlink, writeFile } from 'node:fs/promises'
+import { mkdirSync } from 'node:fs'
+import { readFile, rename, unlink, writeFile } from 'node:fs/promises'
 import { join } from 'node:path'
 import { InvalidError, NotFoundError, validFolder, validId, type FileRef, type FileStore, type RecordStore, type Row } from '../operations.ts'
 
@@ -7,8 +8,8 @@ import { InvalidError, NotFoundError, validFolder, validId, type FileRef, type F
 export const FILES_COLLECTION = '_files'
 
 /** Bytes named by id under one root directory, so no caller-supplied string ever becomes a path. */
-export async function diskFiles(directory: string, records: RecordStore): Promise<FileStore> {
-  await mkdir(directory, { recursive: true })
+export function diskFiles(directory: string, records: RecordStore): FileStore {
+  mkdirSync(directory, { recursive: true })
   const path = (id: string) => join(directory, validId(id))
   const meta = async (id: string) => {
     const row = await records.get(FILES_COLLECTION, id)
