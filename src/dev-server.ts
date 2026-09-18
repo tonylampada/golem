@@ -7,7 +7,6 @@ import { discoverAgents, runtimeState } from './runtime/discovery.ts';
 import { CodexBackend, type SandboxMode } from './runtime/codex.ts';
 import { SessionManager, type Session, type SessionBackend } from './runtime/session.ts';
 import { ConversationState } from './runtime/state.ts';
-import { serverUrl } from './config.ts';
 
 const appRoot = resolve(process.cwd());
 const root = pathToFileURL(`${process.cwd()}/dist/`);
@@ -53,7 +52,7 @@ async function handleRequest(
     const url = new URL(request.url ?? '/', 'http://127.0.0.1');
     decodeURIComponent(url.pathname);
     if (url.pathname.startsWith('/api/')) {
-      await handleApi(request, response, url, sessions, port, host, createBackend);
+      await handleApi(request, response, url, sessions, createBackend);
       return;
     }
     let pathname: string;
@@ -115,9 +114,16 @@ function triggerRebuild(session: Session): void {
   );
 }
 
-function mutationAllowed(request: import('node:http').IncomingMessage, port: number, host: string): boolean {
+function mutationAllowed(request: import('node:http').IncomingMessage): boolean {
   const origin = request.headers.origin;
-  return !origin || origin === serverUrl(host, port).slice(0, -1) || (host === '127.0.0.1' && origin === `http://localhost:${port}`);
+  if (!origin) return true;
+  const authority = request.headers.host;
+  if (!authority) return false;
+  try {
+    return origin === new URL(origin).origin && origin === new URL(`http://${authority}`).origin;
+  } catch {
+    return false;
+  }
 }
 
 async function handleApi(
@@ -125,8 +131,6 @@ async function handleApi(
   response: import('node:http').ServerResponse,
   url: URL,
   sessions: SessionManager,
-  port: number,
-  host: string,
   createBackend: (mode: SandboxMode) => SessionBackend,
 ): Promise<void> {
   if (request.method === 'GET' && url.pathname === '/api/runtime') {
@@ -135,7 +139,7 @@ async function handleApi(
     return;
   }
   if (request.method === 'POST' && url.pathname === '/api/sessions') {
-    if (!mutationAllowed(request, port, host)) return json(response, 403, { error: 'Cross-origin mutations are not allowed' });
+    if (!mutationAllowed(request)) return json(response, 403, { error: 'Cross-origin mutations are not allowed' });
     try {
       const input = await body(request) as { backend?: string; intent?: string };
       if (input.backend !== 'codex') return json(response, 400, { error: 'Only the connected Codex backend can start a session' });
@@ -169,7 +173,7 @@ async function handleApi(
     return;
   }
   if (request.method === 'POST' && !match[2]) {
-    if (!mutationAllowed(request, port, host)) return json(response, 403, { error: 'Cross-origin mutations are not allowed' });
+    if (!mutationAllowed(request)) return json(response, 403, { error: 'Cross-origin mutations are not allowed' });
     try {
       const input = await body(request) as { text?: unknown };
       if (typeof input.text !== 'string' || !input.text.trim()) return json(response, 400, { error: 'text must be a non-empty string' });
@@ -184,7 +188,7 @@ async function handleApi(
     return;
   }
   if (request.method === 'POST' && match[2] === 'interrupt') {
-    if (!mutationAllowed(request, port, host)) return json(response, 403, { error: 'Cross-origin mutations are not allowed' });
+    if (!mutationAllowed(request)) return json(response, 403, { error: 'Cross-origin mutations are not allowed' });
     await session.interrupt();
     await session.flush();
     json(response, 200, { status: session.status });

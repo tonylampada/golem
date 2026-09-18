@@ -30,10 +30,10 @@ the dev server. The terminal prints the usable address.
 
 ## Local source development
 
-Use an installed package by default, or opt into a durable checkout while developing Golem:
+Use an installed package by default, or put a durable checkout in the app's uncommitted `.env.local` while developing Golem:
 
 ```sh
-GOLEM_SOURCE=/path/to/golem ./golem dev
+GOLEM_SOURCE=/path/to/golem
 ```
 
 See [the local CLI guide](docs/local-cli.md) for the complete command contract.

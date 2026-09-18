@@ -31,6 +31,8 @@ test('Codex backend parses native JSONL, pins the requested sandbox mode and cwd
   const backend = fake(`
     const a = process.argv.slice(1)
     const resume = a.includes('resume')
+    const instruction = a.find((value) => value.startsWith('developer_instructions='))
+    if (!instruction || !instruction.includes("Golem's in-app builder") || !instruction.includes(${JSON.stringify(appRoot)})) process.exit(5)
     const sandboxOk = resume
       ? (a.includes('-c') && a.includes('sandbox_mode="danger-full-access"'))
       : (a.includes('-s') && a.includes('danger-full-access') && a.includes('-C') && a[a.indexOf('-C') + 1] === ${JSON.stringify(appRoot)})

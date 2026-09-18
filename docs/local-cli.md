@@ -3,15 +3,17 @@
 Use Node.js >=22.18.0 (native TypeScript execution) and pnpm 10.28.2.
 Run `pnpm install`, then `./golem help`. The executable wrapper resolves the
 project-local CLI relative to itself, including when invoked from another directory.
-The browser shell uses the local Vite build and the published `golem-ui` package.
+The browser shell uses the local Vite build and the published `golem-ui` package. Before every
+command, the wrapper optionally loads the app-local `.env.local` using Node's standard dotenv-file
+support. Values already exported in the shell win; a missing file is ignored.
 
 ## Source resolution seam
 
-The root wrapper explicitly selects `src/cli.ts` relative to the wrapper's own
+The root wrapper explicitly selects `src/entry.mjs` relative to the wrapper's own
 directory. This is the sole CLI entrypoint resolution point today; there is no
-package-name lookup or resolution configuration. Generated app wrappers add an
-explicit `GOLEM_SOURCE=/path/to/golem` opt-in for running a framework checkout
-while keeping the app cwd. Unset it to use the installed pinned package.
+package-name lookup or resolution configuration. Generated app wrappers load `.env.local` before
+selecting `GOLEM_SOURCE`, so a local checkout can be selected while keeping the app cwd. An invalid
+source path fails clearly; unset it to use the installed pinned package.
 
 The CLI imports `./dev-server.ts` relative to the wrapper. The server serves built `dist/`
 files and does not resolve packages or depend on
@@ -53,17 +55,19 @@ and rebuilds the shared `dist/` directory; requires port 3000).
 ## Generated projects
 
 `golem-kit init` creates `package.json`, `golem.config.ts`, `src/app.tsx`,
-`docs/domain.md`, and an executable `./golem`. Normal initialization writes the
+`docs/domain.md`, a small `AGENTS.md` pointer, and an executable `./golem`. Normal initialization writes the
 pinned npm dependency `golem-kit@<framework version>` and installs it with pnpm.
 For local packed-tarball acceptance only, set `GOLEM_KIT_TARBALL=/path/to/golem-kit.tgz`.
 An existing package is supported only when it already declares `golem-kit`; its
-metadata is preserved. Other nonempty destinations are refused.
+metadata is preserved. It adds `.golem/` and `.env.local` to an existing `.gitignore` without
+removing its content. Other nonempty destinations are refused.
 
 Two-checkout development:
 
 ```sh
-GOLEM_SOURCE=/path/to/golem /path/to/app/golem build
-GOLEM_SOURCE=/path/to/golem /path/to/app/golem dev
+printf '%s\n' 'GOLEM_SOURCE=/path/to/golem' > /path/to/app/.env.local
+/path/to/app/golem build
+/path/to/app/golem dev
 ```
 
 The wrapper changes into the app first, so `src/` and `dist/` remain app-owned.
