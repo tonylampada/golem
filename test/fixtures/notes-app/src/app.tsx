@@ -11,7 +11,7 @@ export default function App() {
   const [editing, setEditing] = useState<string>()
   const [message, setMessage] = useState<string>()
   const archive = async () => {
-    try { await invoke('notes.archive', { id: editing }); setMessage('Archived.') }
+    try { setMessage((await invoke<{ message: string }>('notes.archive', { id: editing })).message) }
     catch (error) { setMessage(error instanceof Error ? error.message : String(error)) }
   }
   return (

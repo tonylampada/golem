@@ -1,8 +1,9 @@
 import { existsSync } from 'node:fs'
 import type { IncomingMessage, ServerResponse } from 'node:http'
-import { join } from 'node:path'
+import { isAbsolute, join } from 'node:path'
 import { pathToFileURL } from 'node:url'
 import { loadAppConfig } from '../config.ts'
+import { build } from 'vite'
 import { AppError, type RecordStore } from '../operations.ts'
 import { createApp, type App, type AppServerModule } from './app.ts'
 import { diskFiles } from './files.ts'
@@ -12,7 +13,13 @@ const maxJson = 1_000_000
 // Uploads are buffered in memory; stream to disk if apps need files past this size.
 const maxUpload = 25_000_000
 
-export type AppBackend = { app: App; handle(request: IncomingMessage, response: ServerResponse): Promise<void>; close(): Promise<void> }
+export type AppBackend = {
+  app: App
+  handle(request: IncomingMessage, response: ServerResponse): Promise<void>
+  /** Re-reads src/server/index.ts and its local imports; on failure the running module stays. */
+  reload(): Promise<void>
+  close(): Promise<void>
+}
 
 /** Loads golem.config.ts storage and the optional app-owned src/server/index.ts, and serves /api/app/*. */
 export async function createAppBackend(appRoot: string, dataDirectory: string): Promise<AppBackend> {
@@ -20,11 +27,41 @@ export async function createAppBackend(appRoot: string, dataDirectory: string): 
   const records: RecordStore = storage === 'sqlite'
     ? (await import('./sqlite.ts')).sqliteStore(join(dataDirectory, 'records.sqlite'))
     : await jsonlStore(join(dataDirectory, 'records'))
-  const entry = join(appRoot, 'src/server/index.ts')
-  const module = existsSync(entry) ? (await import(pathToFileURL(entry).href)).default as AppServerModule : {}
+  // One load at a time: each rebuilds the same output directory.
+  let loading: Promise<unknown> = Promise.resolve()
+  const load = () => {
+    const next = loading.then(() => loadServerModule(appRoot, join(dataDirectory, '..', 'server')))
+    loading = next.catch(() => {})
+    return next
+  }
   // FileStore writes metadata through the app's watched store, so file changes reach subscribers.
-  const app = createApp({ records, files: (watched) => diskFiles(join(dataDirectory, 'files'), watched) }, module)
-  return { app, handle: (request, response) => handle(app, request, response), close: () => records.close() }
+  const app = createApp({ records, files: (watched) => diskFiles(join(dataDirectory, 'files'), watched) }, await load())
+  return {
+    app,
+    handle: (request, response) => handle(app, request, response),
+    reload: async () => app.use(await load()),
+    close: () => records.close(),
+  }
+}
+
+let generation = 0
+
+/**
+ * Bundles the app's own server files into one module and imports it under a fresh URL, so an edit
+ * to any local file is picked up. Packages stay external and shared with the running server.
+ */
+async function loadServerModule(appRoot: string, outDir: string): Promise<AppServerModule> {
+  const entry = join(appRoot, 'src/server/index.ts')
+  if (!existsSync(entry)) return {}
+  await build({
+    configFile: false, root: appRoot, logLevel: 'silent',
+    build: {
+      ssr: entry, outDir, emptyOutDir: true, minify: false,
+      rollupOptions: { external: (id) => !id.startsWith('.') && !isAbsolute(id) && !id.startsWith('\0'), output: { entryFileNames: 'index.mjs' } },
+    },
+  })
+  const loaded = (await import(`${pathToFileURL(join(outDir, 'index.mjs')).href}?generation=${++generation}`)).default as AppServerModule | undefined
+  return loaded ?? {}
 }
 
 async function handle(app: App, request: IncomingMessage, response: ServerResponse): Promise<void> {
@@ -69,13 +106,18 @@ async function handle(app: App, request: IncomingMessage, response: ServerRespon
     }
     send(response, 404, { error: 'Unknown API route' })
   } catch (error) {
-    if (error instanceof AppError) {
-      const { current, fields } = error as AppError & { current?: unknown; fields?: unknown }
-      return send(response, error.status, { error: error.message, name: error.name, current, fields })
+    const status = error instanceof Error ? statuses[error.name] ?? (error instanceof AppError && error.status === 413 ? 413 : undefined) : undefined
+    if (status) {
+      const { current, fields } = error as Error & { current?: unknown; fields?: unknown }
+      return send(response, status, { error: (error as Error).message, name: (error as Error).name, current, fields })
     }
-    send(response, 500, { error: error instanceof Error ? error.message : String(error) })
+    console.error(error)
+    send(response, 500, { error: 'The operation failed on the server; see the server log.' })
   }
 }
+
+// By name, not class: app code bundled at reload has its own copies of these error classes.
+const statuses: Record<string, number> = { InvalidError: 400, ForbiddenError: 403, NotFoundError: 404, VersionConflictError: 409, RecordRefusedError: 422 }
 
 export function mutationAllowed(request: IncomingMessage): boolean {
   const origin = request.headers.origin

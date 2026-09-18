@@ -1,11 +1,12 @@
 import assert from 'node:assert/strict'
-import { appendFileSync, cpSync, mkdtempSync, readFileSync, writeFileSync } from 'node:fs'
+import { appendFileSync, mkdtempSync, readFileSync } from 'node:fs'
 import { createServer } from 'node:http'
 import { tmpdir } from 'node:os'
 import { join, resolve } from 'node:path'
 import { test } from 'node:test'
 import { anonymous, createApp, diskFiles, jsonlStore, sqliteStore } from '../src/backend/index.ts'
 import { createAppBackend } from '../src/backend/http.ts'
+import { fixtureApp } from './fixtures/app.mjs'
 
 const temp = () => mkdtempSync(join(tmpdir(), 'golem-backend-'))
 const adapters = {
@@ -92,10 +93,7 @@ test('jsonl store drops a torn trailing write and keeps everything acknowledged'
 
 test('HTTP and agent tool callers share one invoke and authorize path', async () => {
   const root = temp()
-  cpSync(resolve(import.meta.dirname, 'fixtures/notes-app'), root, { recursive: true })
-  // The copied server module resolves golem-kit from this checkout, as an installed app would from node_modules.
-  const source = readFileSync(join(root, 'src/server/index.ts'), 'utf8')
-  writeFileSync(join(root, 'src/server/index.ts'), source.replace("'golem-kit/server'", JSON.stringify(resolve(import.meta.dirname, '../src/backend/index.ts'))))
+  fixtureApp(root)
   const backend = await createAppBackend(root, join(root, '.golem/data'))
   const server = createServer((request, response) => void backend.handle(request, response))
   await new Promise((done) => server.listen(0, '127.0.0.1', done))
@@ -111,9 +109,9 @@ test('HTTP and agent tool callers share one invoke and authorize path', async ()
     const viaAgent = await agent['records.create'].call({ collection: 'notes', data: { title: 'Locked', locked: true } })
 
     const archivedByHttp = await http('notes.archive', { id: open.id })
-    assert.deepEqual(archivedByHttp, { status: 200, body: { result: { id: open.id, archived: true, version: 2 } } })
+    assert.deepEqual(archivedByHttp, { status: 200, body: { result: { id: open.id, archived: true, version: 2, message: 'Archived.' } } })
     const second = await agent['records.create'].call({ collection: 'notes', data: { title: 'Second' } })
-    assert.deepEqual(await agent['notes.archive'].call({ id: second.id }), { id: second.id, archived: true, version: 2 })
+    assert.deepEqual(await agent['notes.archive'].call({ id: second.id }), { id: second.id, archived: true, version: 2, message: 'Archived.' })
 
     assert.deepEqual(await http('notes.archive', { id: viaAgent.id }), { status: 403, body: { error: 'Not allowed: notes.archive', name: 'ForbiddenError' } })
     await assert.rejects(agent['notes.archive'].call({ id: viaAgent.id }), { name: 'ForbiddenError', message: 'Not allowed: notes.archive' })

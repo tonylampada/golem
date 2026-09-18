@@ -18,7 +18,9 @@ export type AppServerModule = {
 export type AgentTool = { name: string; description: string; inputSchema: unknown; call(input: unknown): Promise<unknown> }
 
 export type App = {
-  operations: Operation[]
+  readonly operations: Operation[]
+  /** Swaps in a new server module's operations and hooks; stores, change stream and callers stay. */
+  use(module: AppServerModule): void
   invoke(name: string, input: unknown, principal: Principal, via: Via): Promise<unknown>
   /** The operations as tools for an in-process agent acting for `principal`. */
   agentTools(principal: Principal): AgentTool[]
@@ -33,15 +35,10 @@ export function createApp(stores: { records: RecordStore; files: (records: Recor
   const changes = new EventEmitter().setMaxListeners(0)
   const records = watched(stores.records, (collection) => changes.emit('change', collection))
   const files = stores.files(records)
-  const authorize = module.authorize ?? allowAll
-  const operations = [...builtins, ...(module.operations ?? [])]
-  const byName = new Map<string, Operation>()
-  for (const operation of operations) {
-    if (byName.has(operation.name)) throw new Error(`Operation ${operation.name} is defined twice`)
-    byName.set(operation.name, operation)
-  }
+  let current = compile(module)
 
   async function invoke(name: string, raw: unknown, principal: Principal, via: Via): Promise<unknown> {
+    const { byName, authorize } = current
     const operation = byName.get(name)
     if (!operation) throw new NotFoundError(`Unknown operation: ${name}`)
     const parsed = operation.input.safeParse(raw)
@@ -56,17 +53,30 @@ export function createApp(stores: { records: RecordStore; files: (records: Recor
   }
 
   return {
-    operations,
+    get operations() { return [...current.byName.values()] },
     invoke,
     changes,
-    resolvePrincipal: async (request) => (await module.resolvePrincipal?.(request)) ?? anonymous,
-    agentTools: (principal) => operations.map((operation) => ({
+    use(next) { current = compile(next) },
+    resolvePrincipal: async (request) => (await current.module.resolvePrincipal?.(request)) ?? anonymous,
+    agentTools: (principal) => [...current.byName.values()].map((operation) => ({
       name: operation.name,
       description: operation.description,
       inputSchema: z.toJSONSchema(operation.input, { unrepresentable: 'any' }),
       call: (input: unknown) => invoke(operation.name, input, principal, 'agent'),
     })),
   }
+}
+
+/** Validates a server module into the lookup `invoke` reads; throws before anything is swapped. */
+function compile(module: AppServerModule) {
+  if (!module || typeof module !== 'object') throw new Error('src/server/index.ts must default-export an object')
+  const byName = new Map<string, Operation>()
+  for (const operation of [...builtins, ...(module.operations ?? [])]) {
+    if (!operation?.name || typeof operation.run !== 'function') throw new Error('Every operation needs a name and a run function')
+    if (byName.has(operation.name)) throw new Error(`Operation ${operation.name} is defined twice`)
+    byName.set(operation.name, operation)
+  }
+  return { module, byName, authorize: module.authorize ?? allowAll }
 }
 
 function watched(store: RecordStore, emit: (collection: string) => void): RecordStore {
