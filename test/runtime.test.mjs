@@ -225,6 +225,56 @@ test('cancellation while worker startup yields never dispatches the old send', a
   }
 })
 
+test('duplicate receipts wait for the original durable save and never leak uncommitted history', async () => {
+  let release
+  const gate = new Promise((resolve) => { release = resolve })
+  let fail = false
+  let hold = false
+  const backend = new FakeBackend()
+  const session = new Session('codex', backend, 'durable', false, async () => { if (hold) await gate; if (fail) throw new Error('disk full') })
+  await session.start()
+  hold = true
+  const first = session.accept('one', 'same')
+  await new Promise((resolve) => setImmediate(resolve))
+  const replay = []
+  session.subscribeFrom(-1, (event) => replay.push(event))
+  assert.ok(!replay.some((event) => event.type === 'user'))
+  const duplicate = session.accept('one', 'same')
+  fail = true
+  release()
+  await assert.rejects(first, /disk full/)
+  await assert.rejects(duplicate, /disk full/)
+  assert.equal(backend.events.length, 0)
+})
+
+test('an accepted turn persists active work before dispatch and restores as interrupted', async () => {
+  const backend = new PendingBackend()
+  const session = await new SessionManager().start('codex', backend)
+  await session.accept('hold', 'active')
+  await new Promise((resolve) => setImmediate(resolve))
+  const restored = Session.restore(session.snapshot(), new FakeBackend())
+  assert.equal(restored.status, 'interrupted')
+})
+
+test('an interrupt cannot revive an acceptance that was waiting for durability', async () => {
+  let hold = false
+  let release
+  const gate = new Promise((resolve) => { release = resolve })
+  const backend = new FakeBackend()
+  const session = new Session('codex', backend, 'generation', false, async () => { if (hold) await gate })
+  await session.start()
+  hold = true
+  const old = session.accept('old', 'old')
+  await new Promise((resolve) => setImmediate(resolve))
+  await session.interrupt()
+  const fresh = session.accept('fresh', 'fresh')
+  release()
+  await assert.rejects(old, /Session ready/)
+  await fresh
+  await new Promise((resolve) => setImmediate(resolve))
+  assert.deepEqual(backend.events, ['send:fresh'])
+})
+
 test('conversation state rejects corrupt and unwritable files without replacing them', async () => {
   const directory = mkdtempSync(join(tmpdir(), 'golem-state-'))
   await writeFile(join(directory, 'conversations.json'), '{not json')

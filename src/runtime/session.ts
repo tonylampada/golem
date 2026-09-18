@@ -43,6 +43,8 @@ export class Session {
   private workerStarted = false
   private persistence = Promise.resolve()
   private persistenceError: Error | undefined
+  private readonly pendingReceipts = new Map<string, { event: SessionEvent; receipt: Promise<void> }>()
+  private requestGeneration = 0
   private updatedAt = new Date().toISOString()
   readonly id: string
   readonly backend: AgentName
@@ -95,7 +97,7 @@ export class Session {
   }
 
   snapshot(): SessionSnapshot {
-    return { id: this.id, backend: this.backend, buildMode: this.buildMode, status: this.status, active: this.active, history: this.history, threadId: this.worker.threadId?.(), updatedAt: this.updatedAt }
+    return { id: this.id, backend: this.backend, buildMode: this.buildMode, status: this.status, active: this.active, history: [...this.history, ...[...this.pendingReceipts.values()].map(({ event }) => event)], threadId: this.worker.threadId?.(), updatedAt: this.updatedAt }
   }
 
   async flush(): Promise<void> {
@@ -109,9 +111,12 @@ export class Session {
     }
     if (!clientMessageId) throw new Error('clientMessageId is required')
     if (this.history.some((event) => event.type === 'user' && event.clientMessageId === clientMessageId)) return { duplicate: true }
+    const pending = this.pendingReceipts.get(clientMessageId)
+    if (pending) { await pending.receipt; return { duplicate: true } }
     if (this.status === 'interrupted' || this.status === 'failed') this.setStatus('ready')
+    const generation = this.requestGeneration
     await this.recordDurably({ type: 'user', text, clientMessageId, attachments })
-    if (this.closed || this.status !== 'ready') throw new Error(`Session ${this.status}`)
+    if (generation !== this.requestGeneration || this.closed || this.status !== 'ready') throw new Error(`Session ${this.status}`)
     let resolve!: () => void
     let reject!: (error: Error) => void
     const completion = new Promise<void>((ok, fail) => { resolve = ok; reject = fail })
@@ -138,6 +143,7 @@ export class Session {
   async shutdown(): Promise<void> {
     if (this.shutdownPromise) return this.shutdownPromise
     this.closed = true
+    this.requestGeneration++
     this.setStatus('stopped')
     this.rejectPending(new Error('Session stopped'))
     this.shutdownPromise = this.closeWorker()
@@ -148,6 +154,7 @@ export class Session {
 
   abandon(): void {
     if (!this.active || this.closed) return
+    this.requestGeneration++
     this.setStatus('interrupted')
     this.record({ type: 'interrupted', reason: 'server restarted during this turn' })
     this.activeReject?.(new Error('Session interrupted'))
@@ -156,6 +163,7 @@ export class Session {
   async interrupt(): Promise<void> {
     if (this.closed || this.status === 'stopped') return
     if (this.status !== 'ready') return
+    this.requestGeneration++
     this.setStatus('interrupted')
     this.record({ type: 'interrupted', reason: 'interrupted by user' })
     this.activeReject?.(new Error('Session interrupted'))
@@ -206,6 +214,13 @@ export class Session {
         }
         this.pending.shift()
         this.active = true
+        this.persist()
+        try { await this.flush() } catch (error) {
+          this.active = false
+          next.reject(error instanceof Error ? error : new Error(String(error)))
+          this.pump()
+          return
+        }
         if (this.closed || this.status !== 'ready') {
           this.active = false
           next.reject(new Error(`Session ${this.status}`))
@@ -274,16 +289,24 @@ export class Session {
   /** A user receipt is not externally visible until it is durable. */
   private async recordDurably(event: Omit<SessionEvent, 'sequence' | 'sessionId'>): Promise<void> {
     const complete = { ...event, sequence: this.sequence++, sessionId: this.id }
-    this.history.push(complete)
     this.updatedAt = new Date().toISOString()
+    let resolve!: () => void
+    let reject!: (error: Error) => void
+    const receipt = new Promise<void>((ok, fail) => { resolve = ok; reject = fail })
+    void receipt.catch(() => {})
+    this.pendingReceipts.set(complete.clientMessageId!, { event: complete, receipt })
     this.persist()
     try {
       await this.flush()
+      this.pendingReceipts.delete(complete.clientMessageId!)
+      this.history.push(complete)
+      this.listeners.forEach((listener) => listener(complete))
+      resolve()
     } catch (error) {
-      this.history.splice(this.history.indexOf(complete), 1)
+      this.pendingReceipts.delete(complete.clientMessageId!)
+      reject(error instanceof Error ? error : new Error(String(error)))
       throw error
     }
-    this.listeners.forEach((listener) => listener(complete))
   }
 
   private persist(): void {

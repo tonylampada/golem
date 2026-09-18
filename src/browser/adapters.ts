@@ -39,7 +39,7 @@ let sessionId: string | undefined = (() => {
 type BrowserMessage = ChatMessage & { delivery?: 'pending' | 'failed' }
 type OutboxMessage = { id: string; sessionId: string; text: string; attachments?: ChatAttachment[]; delivery?: 'pending' | 'failed'; at: string }
 let outbox: OutboxMessage[] = (() => {
-  try { return JSON.parse(window.localStorage.getItem(outboxKey) ?? '[]') as OutboxMessage[] } catch { return [] }
+  try { return (JSON.parse(window.localStorage.getItem(outboxKey) ?? '[]') as OutboxMessage[]).map((message) => ({ ...message, delivery: message.delivery === 'pending' ? 'failed' : message.delivery })) } catch { return [] }
 })()
 let messages: BrowserMessage[] = []
 let cursor = -1
@@ -51,8 +51,14 @@ const statusListeners = new Set<(status: string) => void>()
 const emit = () => listeners.forEach((listener) => listener([...messages]))
 const setStatus = (next: string) => { status = next; statusListeners.forEach((listener) => listener(status)) }
 
-function saveOutbox(): void {
-  try { window.localStorage.setItem(outboxKey, JSON.stringify(outbox)) } catch { /* Delivery still works for this page. */ }
+function saveOutbox(confirmed = new Set<string>()): void {
+  try {
+    const stored = JSON.parse(window.localStorage.getItem(outboxKey) ?? '[]') as OutboxMessage[]
+    const merged = new Map(stored.filter((message) => !confirmed.has(message.id)).map((message) => [message.id, message]))
+    for (const message of outbox) if (!confirmed.has(message.id)) merged.set(message.id, message)
+    outbox = [...merged.values()]
+    window.localStorage.setItem(outboxKey, JSON.stringify(outbox))
+  } catch { /* Delivery still works for this page. */ }
 }
 
 function mergeEvents(events: Array<{ sequence: number; type: string; text?: string; status?: string; reason?: string; clientMessageId?: string; attachments?: ChatAttachment[] }>): string | undefined {
@@ -62,7 +68,7 @@ function mergeEvents(events: Array<{ sequence: number; type: string; text?: stri
   const confirmed = fromEvents(ordered)
   const ids = new Set(confirmed.map((message) => message.id))
   outbox = outbox.filter((message) => message.sessionId !== sessionId || !ids.has(message.id))
-  saveOutbox()
+  saveOutbox(ids)
   messages = [...confirmed, ...outbox.filter((message) => message.sessionId === sessionId).map((message) => ({ ...message, role: 'user' as const }))]
   return ordered.findLast((event) => event.type === 'status')?.status
 }

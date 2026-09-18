@@ -142,3 +142,27 @@ test('failed optimistic messages remain retryable until matching history confirm
   await chat.history()
   assert.equal(seen.at(-1).filter(({ text }) => text === 'keep me').length, 1)
 })
+
+test('restored pending messages become retryable when history has no receipt', async () => {
+  const stored = JSON.stringify([{ id: 'stalled', sessionId: 'session', text: 'retry me', delivery: 'pending', at: 'now' }])
+  globalThis.window = {
+    sessionStorage: { getItem: () => 'session', setItem() {}, removeItem() {} },
+    localStorage: { getItem: () => stored, setItem() {} },
+  }
+  globalThis.fetch = async () => ({ ok: true, json: async () => ({ events: [], status: 'ready' }) })
+  const { chat } = await import(`../src/browser/adapters.ts?stalled=${Date.now()}`)
+  assert.equal((await chat.history())[0].delivery, 'failed')
+})
+
+test('a stale tab history merge preserves another tab’s stored outbox message', async () => {
+  const values = new Map()
+  globalThis.window = {
+    sessionStorage: { getItem: () => 'session', setItem() {}, removeItem() {} },
+    localStorage: { getItem: (key) => values.get(key) ?? null, setItem(key, value) { values.set(key, value) } },
+  }
+  globalThis.fetch = async () => ({ ok: true, json: async () => ({ events: [], status: 'ready' }) })
+  const { chat } = await import(`../src/browser/adapters.ts?stale-tab=${Date.now()}`)
+  values.set('golem.browser.outbox', JSON.stringify([{ id: 'from-a', sessionId: 'session', text: 'from A', delivery: 'pending', at: 'now' }]))
+  await chat.history()
+  assert.equal(JSON.parse(values.get('golem.browser.outbox')).filter(({ id }) => id === 'from-a').length, 1)
+})
