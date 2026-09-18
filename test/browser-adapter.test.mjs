@@ -166,3 +166,40 @@ test('a stale tab history merge preserves another tab’s stored outbox message'
   await chat.history()
   assert.equal(JSON.parse(values.get('golem.browser.outbox')).filter(({ id }) => id === 'from-a').length, 1)
 })
+
+test('a late durable receipt is merged after higher interrupt events and on reconnect replay', async () => {
+  const sources = []
+  globalThis.window = { sessionStorage: { getItem: () => 'session', setItem() {}, removeItem() {} }, localStorage: { getItem: () => null, setItem() {} } }
+  globalThis.EventSource = class { constructor() { sources.push(this) } close() {} }
+  globalThis.fetch = async () => ({ ok: true, json: async () => ({}) })
+  const { chat } = await import(`../src/browser/adapters.ts?late=${Date.now()}`)
+  const seen = []
+  chat.subscribe((messages) => seen.push(messages))
+  for (const event of [
+    { sequence: 2, type: 'status', status: 'interrupted' },
+    { sequence: 3, type: 'interrupted', reason: 'stopped' },
+    { sequence: 1, type: 'user', text: 'durable receipt', clientMessageId: 'late-id' },
+  ]) sources[0].onmessage({ data: JSON.stringify(event) })
+  assert.deepEqual(seen.at(-1).map(({ text }) => text), ['durable receipt', 'Interrupted: stopped'])
+  sources[0].onmessage({ data: JSON.stringify({ sequence: 1, type: 'user', text: 'durable receipt', clientMessageId: 'late-id' }) })
+  assert.equal(seen.at(-1).filter(({ text }) => text === 'durable receipt').length, 1)
+})
+
+test('a reconnect refreshes late durable receipts below the SSE cursor', async () => {
+  const sources = []
+  globalThis.window = { sessionStorage: { getItem: () => 'session', setItem() {}, removeItem() {} }, localStorage: { getItem: () => null, setItem() {} } }
+  globalThis.EventSource = class {
+    static CLOSED = 2
+    constructor() { this.readyState = 1; sources.push(this) }
+    close() { this.readyState = 2 }
+  }
+  globalThis.fetch = async (url) => ({ ok: true, json: async () => url.includes('/history') ? ({ events: [{ sequence: 1, type: 'user', text: 'reconnected receipt', clientMessageId: 'reconnect-id' }, { sequence: 2, type: 'interrupted', reason: 'stopped' }], status: 'interrupted' }) : ({}) })
+  const { chat } = await import(`../src/browser/adapters.ts?reconnect=${Date.now()}`)
+  const seen = []
+  chat.subscribe((messages) => seen.push(messages))
+  sources[0].onmessage({ data: JSON.stringify({ sequence: 2, type: 'interrupted', reason: 'stopped' }) })
+  sources[0].readyState = 2
+  sources[0].onerror()
+  await new Promise((resolve) => setImmediate(resolve))
+  assert.equal(seen.at(-1).filter(({ text }) => text === 'reconnected receipt').length, 1)
+})

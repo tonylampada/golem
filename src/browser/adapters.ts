@@ -156,10 +156,10 @@ export async function interruptBrowserSession(): Promise<void> {
   if (!response.ok) throw new Error((await response.json()).error ?? 'Unable to interrupt session')
 }
 
-function applyEvent(event: { sessionId?: string; sequence: number; type: string; text?: string; status?: string; reason?: string }): void {
+function applyEvent(event: { sessionId?: string; sequence: number; type: string; text?: string; status?: string; reason?: string; clientMessageId?: string; attachments?: ChatAttachment[] }): void {
   if (event.sessionId && event.sessionId !== sessionId) return
-  if (event.sequence <= cursor) return
-  cursor = event.sequence
+  if (eventLog.has(event.sequence)) return
+  cursor = Math.max(cursor, event.sequence)
   if (event.status) setStatus(event.status)
   // Live-only: a replayed 'rebuilt' from history/reload restoration must never re-trigger this.
   if (event.type === 'rebuilt') { window.location.reload(); return }
@@ -190,7 +190,7 @@ export const chat: ChatAdapter & { retry(messageId: string): Promise<void> } = {
         nextSource.onmessage = (event) => applyEvent(JSON.parse(event.data))
         nextSource.onerror = () => {
           if (source === nextSource && nextSource.readyState === EventSource.CLOSED && sessionId === subscribedSession) {
-            connect()
+            void chat.history().catch(() => {}).finally(connect)
           }
         }
       }
