@@ -17,6 +17,7 @@ Usage: ./golem <command>
   dev     Serve the browser shell using golem.config.ts (127.0.0.1:3000 by default).
           Restart after changing settings. Uses local Claude Code or Codex from the browser.
   build   Build the browser shell into dist/.
+  lint    Check the app's architecture rules from eslint.config.mjs.
   doctor  Report local shell and backend readiness.
 
 Requires Node.js >=22.18.0. Commands accept no additional arguments.
@@ -25,7 +26,7 @@ Exit codes: 0 success/clean shutdown, 1 unavailable or failed, 2 invalid usage.
 
 const [command = 'help', ...args] = process.argv.slice(2);
 
-if (args.length || !['help', 'init', 'dev', 'build', 'doctor'].includes(command)) {
+if (args.length || !['help', 'init', 'dev', 'build', 'lint', 'doctor'].includes(command)) {
   console.error('Invalid command or arguments. Run ./golem help.');
   process.exitCode = 2;
 } else {
@@ -54,6 +55,21 @@ The dev server defaults to 127.0.0.1:3000 and uses optional host/port from golem
         await buildBrowser();
       } catch (error) {
         console.error(`Cannot build Golem browser shell: ${error instanceof Error ? error.message : String(error)}`);
+        process.exitCode = 1;
+      }
+      break;
+    case 'lint':
+      try {
+        const { ESLint } = await import('eslint');
+        const eslint = new ESLint();
+        const results = await eslint.lintFiles(['.']);
+        const report = await (await eslint.loadFormatter('stylish')).format(results);
+        if (report) console.log(report);
+        if (results.some((result) => result.errorCount)) process.exitCode = 1;
+        else console.log('Architecture lint passed.');
+      } catch (error) {
+        console.error(`Cannot lint Golem app: ${error instanceof Error ? error.message : String(error)}
+See node_modules/golem-kit/docs/architecture.md to add eslint.config.mjs.`);
         process.exitCode = 1;
       }
       break;
@@ -86,7 +102,7 @@ The dev server defaults to 127.0.0.1:3000 and uses optional host/port from golem
 
 function initProject(): void {
   const root = resolve(process.cwd());
-  const files = ['golem.config.ts', 'src/app.tsx', 'docs/domain.md', 'AGENTS.md', 'golem'];
+  const files = ['golem.config.ts', 'eslint.config.mjs', 'src/app.tsx', 'docs/domain.md', 'AGENTS.md', 'CLAUDE.md', 'golem'];
   const existing = files.filter((file) => existsSync(resolve(root, file)));
   if (existing.length) throw new Error(`refusing to overwrite existing files: ${existing.join(', ')}`);
   const packagePath = resolve(root, 'package.json');
@@ -96,7 +112,7 @@ function initProject(): void {
     if (!current.dependencies?.['golem-kit']) throw new Error('refusing to overwrite existing package.json');
   }
   const frameworkRoot = resolve(dirname(fileURLToPath(import.meta.url)), '..');
-  const framework = JSON.parse(readFileSync(resolve(frameworkRoot, 'package.json'), 'utf8')) as { version: string };
+  const framework = JSON.parse(readFileSync(resolve(frameworkRoot, 'package.json'), 'utf8')) as { version: string; dependencies: Record<string, string> };
   mkdirSync(resolve(root, 'src'), { recursive: true });
   mkdirSync(resolve(root, 'docs'), { recursive: true });
   if (!existsSync(packagePath)) {
@@ -118,15 +134,45 @@ function initProject(): void {
   )
 }
 `);
-  writeFileSync(resolve(root, 'docs/domain.md'), '# App intent\n\nDescribe the people this app helps, the problem it solves, and the important concepts and rules. Discuss meaningful workflows and contracts with the builder before asking it to implement a major feature.\n');
-  writeFileSync(resolve(root, 'AGENTS.md'), '# Golem app\n\nRead `node_modules/golem-kit/docs/builder.md` before changing this app. Keep this file and `docs/domain.md` for app-specific intent; framework guidance stays in the installed Golem package.\n');
+  writeFileSync(resolve(root, 'eslint.config.mjs'), `import golem from 'golem-kit/eslint'
+
+// Architecture checks for \`./golem lint\`. To adapt or disable them, see
+// node_modules/golem-kit/docs/architecture.md.
+export default golem()
+`);
+  writeFileSync(resolve(root, 'docs/domain.md'), `# App DNA
+
+What this app is for and the rules its code must honor. Update it in the same change as the code it describes.
+
+## Purpose
+
+Who the app helps and the problem it solves.
+
+## Concepts
+
+The words people use for the things this app manages, what each means, and how they relate.
+
+## Operations
+
+What people and the system do: each operation's inputs, result, and the rules it enforces.
+
+## Decisions
+
+Choices already made and why, so later changes keep them or revisit them on purpose.
+`);
+  writeFileSync(resolve(root, 'AGENTS.md'), `# Golem app
+
+Before changing this app, read \`docs/domain.md\` (this app's DNA) and the installed framework guide \`node_modules/golem-kit/docs/builder.md\`.
+`);
+  writeFileSync(resolve(root, 'CLAUDE.md'), '@AGENTS.md\n');
   const ignorePath = resolve(root, '.gitignore');
   const ignore = existsSync(ignorePath) ? readFileSync(ignorePath, 'utf8') : '';
   const additions = ['.golem/', '.env.local'].filter((entry) => !ignore.split(/\r?\n/).includes(entry));
   if (additions.length) writeFileSync(ignorePath, `${ignore}${ignore && !ignore.endsWith('\n') ? '\n' : ''}${additions.join('\n')}\n`);
   if (!packageExisted) {
     const packageSpec = process.env.GOLEM_KIT_TARBALL ?? `golem-kit@${framework.version}`;
-    execFileSync('pnpm', ['add', '--save-exact', packageSpec], { cwd: root, stdio: 'inherit' });
+    // App code imports golem-ui directly, so pin the same version golem-kit builds with.
+    execFileSync('pnpm', ['add', '--save-exact', packageSpec, `golem-ui@${framework.dependencies['golem-ui']}`], { cwd: root, stdio: 'inherit' });
   }
   writeFileSync(resolve(root, 'golem'), '#!/bin/sh\nset -eu\ncd -- "$(dirname -- "$0")"\nexec node --env-file-if-exists=.env.local node_modules/golem-kit/src/entry.mjs "$@"\n', { mode: 0o755 });
 }
