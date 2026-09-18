@@ -136,3 +136,23 @@ export async function setGroups(userId: string, groups: string[]): Promise<void>
   await auth(`members/${encodeURIComponent(userId)}/groups`, { groups })
   await reloadIdentity()
 }
+
+/** A job run as its owner sees it through `jobs.runs`. */
+export type JobRun = {
+  id: string; job: string; status: 'running' | 'succeeded' | 'failed' | 'cancelled' | 'interrupted'
+  progress: { done?: number; total?: number; message?: string } | null; result?: unknown; error?: string
+  cancelRequested: boolean; resolution?: 'retried' | 'dismissed'; scheduleId: string | null; key: string; startedAt: string; finishedAt?: string
+}
+export type JobSchedule = { id: string; job: string; every?: number; cron?: string; timezone?: string; nextRunAt: string; lastRunAt?: string; lastSkippedAt?: string; error?: string | null }
+
+/** The app's server-side jobs. Runs keep going when this page closes; `subscribe` fires whenever one of them changes. */
+export const jobs = {
+  list: () => invoke<{ jobs: Array<{ name: string; description: string }>; schedules: JobSchedule[] }>('jobs.list'),
+  start: (job: string, input?: unknown) => invoke<JobRun>('jobs.start', { job, input }),
+  schedule: (job: string, when: { every: number } | { cron: string; timezone: string }, input?: unknown) => invoke<JobSchedule>('jobs.schedule', { job, input, ...when }),
+  unschedule: async (id: string) => { await invoke('jobs.unschedule', { id }) },
+  runs: (query: { job?: string; scheduleId?: string; limit?: number } = {}) => invoke<JobRun[]>('jobs.runs', query),
+  cancel: (id: string) => invoke<JobRun>('jobs.cancel', { id }),
+  resolve: (id: string, action: 'retry' | 'dismiss') => invoke<JobRun>('jobs.resolve', { id, action }),
+  subscribe: (listener: () => void) => watch('_jobs', listener),
+}
