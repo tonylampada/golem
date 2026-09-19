@@ -94,6 +94,12 @@ export class TmuxBackend implements SessionBackend {
       extraArgs: this.agent === 'codex' ? ['-c', 'check_for_update_on_startup=false', '-c', 'disable_paste_burst=true', '-c', 'notice.hide_rate_limit_model_nudge=true'] : [],
     }
     try {
+      // A ref saved under an older naming (`golem-<uuid>`) comes back in the app's fixed session: only
+      // resumeId carries continuity, and the stray session, if still up, would break one-session-per-app.
+      if (this.ref && this.ref.session !== opts.session) {
+        await this.harness.kill(this.ref)
+        this.ref = { ...this.ref, session: opts.session, window: opts.window }
+      }
       // A conversation saved before windows existed owned the whole session: pin it to its window first.
       if (this.ref && !this.ref.window && opts.window) this.ref = (await this.harness.adoptWindow?.(this.ref, opts.window)) ?? this.ref
       this.ref = this.ref ? await this.harness.resume(this.ref, opts) : await this.harness.spawn(this.cwd, this.opts.instructions ?? builderInstructions(this.cwd), opts)

@@ -61,3 +61,24 @@ test('one agent per app: starting a second conversation parks the first, whose s
   assert.equal(first.snapshot().harness.resumeId, ref.resumeId, 'resumed with its own id, not the last agent\'s')
   assert.equal(fake.transcript(ref).at(-1), 'and this')
 })
+
+test('a legacy ref (golem-<uuid>, no window) resumes into the app\'s fixed session and window, keeping its resume id', async () => {
+  fake.reset()
+  const cwd = '/tmp/my.app'
+  const first = new TmuxBackend(cwd, 'claude', undefined, { harness: fake, api: 'http://127.0.0.1:1' })
+  const session = new Session('claude', first, 'abc', true)
+  await session.start()
+  await session.send('remember this')
+  const legacy = { ...session.snapshot().harness, session: 'golem-0f3e2a1c-legacy' }
+  delete legacy.window
+  await session.dispose()
+
+  const restored = Session.restore({ ...session.snapshot(), harness: legacy }, new TmuxBackend(cwd, 'claude', legacy, { harness: fake, window: 'builder' }))
+  await restored.send('again')
+  const ref = restored.snapshot().harness
+  assert.equal(ref.session, 'golem-my-app')
+  assert.equal(ref.window, 'builder')
+  assert.equal(ref.resumeId, legacy.resumeId)
+  assert.equal(fake.transcript(ref).at(-1), 'again')
+  assert.equal(await fake.alive(legacy), false, 'the stray legacy session is gone')
+})
