@@ -57,10 +57,10 @@ The dev server defaults to 127.0.0.1:3000 and uses optional host/port from golem
         const text = args[0] === '--file' && args[1] ? readFileSync(args[1], 'utf8') : args.join(' ');
         const { GOLEM_SESSION: session, GOLEM_API: api } = process.env;
         if (!text.trim() || !session || !api) throw new Error('usage: golem say <text> | --file <f>, inside a Golem agent session (GOLEM_SESSION, GOLEM_API)');
-        const response = await fetch(`${api}/api/sessions/${session}/say`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ text }) });
+        const response = await fetch(`${api.replace(/\/$/, '')}/api/sessions/${session}/say`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ text }) });
         if (!response.ok) throw new Error(`${response.status} ${((await response.json().catch(() => ({}))) as { error?: string }).error ?? ''}`.trim());
       } catch (error) {
-        console.error(`Cannot say: ${error instanceof Error ? error.message : String(error)}`);
+        console.error(`Cannot say: ${error instanceof Error ? error.message : String(error)}${error instanceof Error && error.cause ? ` (${String(error.cause)})` : ""}`);
         process.exitCode = 1;
       }
       break;

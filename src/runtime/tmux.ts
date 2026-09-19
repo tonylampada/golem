@@ -65,6 +65,9 @@ export class TmuxBackend implements SessionBackend {
       stateDir: this.opts.stateDir ?? resolve(this.cwd, '.golem/harness'),
       session: `golem-${sessionId}`,
       env: { GOLEM_SESSION: sessionId, GOLEM_API: this.opts.api ?? 'http://127.0.0.1:3000' },
+      // codex 0.155: the update prompt at launch would take the typed brief as its answer, and the
+      // paste-burst fold swallows the first Enter of a long line. Both off; replayed on resume.
+      extraArgs: this.agent === 'codex' ? ['-c', 'check_for_update_on_startup=false', '-c', 'disable_paste_burst=true'] : [],
     }
     try {
       this.ref = this.ref ? await this.harness.resume(this.ref, opts) : await this.harness.spawn(this.cwd, builderInstructions(this.cwd), opts)

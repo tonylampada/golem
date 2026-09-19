@@ -170,7 +170,17 @@ async function composerState(target) {
   const row = cy.trim();
   const raw = await tryTmux('capture-pane', '-e', '-p', '-t', target, '-S', row, '-E', row);
   if (raw === null) return 'unknown';
-  return classifyComposerLine(raw);
+  const state = classifyComposerLine(raw);
+  if (state !== 'empty') return state;
+  // golem: codex 0.155 folds a long paste into "[Pasted Content N chars]" and turns the first
+  // Enter into a newline INSIDE it, leaving the cursor on an empty line under a full composer.
+  // The last prompt-glyph line in the tail is the truth: text after the glyph = still pending.
+  const tail = await tryTmux('capture-pane', '-e', '-p', '-t', target, '-S', '-8');
+  if (tail === null) return state;
+  const lines = tail.split('\n').map((l) => stripGhost(l).replace(/[│┃|]/g, '').trim()).filter(Boolean);
+  const glyphLine = lines.findLast((l) => PROMPT_GLYPHS.has(l[0]));
+  if (glyphLine && glyphLine.length > 1 && !BUSY_RE.test(glyphLine)) return 'pending';
+  return state;
 }
 
 // paneIsBusy(target) — do the last few non-blank lines of the pane show a
