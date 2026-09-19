@@ -24,6 +24,8 @@ export type SessionEvent = {
   status?: SessionStatus
   text?: string
   reason?: string
+  clientMessageId?: string
+  attachments?: Array<{ id: string; name: string; size?: number }>
 }
 
 export class Session {
@@ -31,7 +33,7 @@ export class Session {
   status: SessionStatus = 'starting'
   private readonly listeners = new Set<(event: SessionEvent) => void>()
   private sequence = 0
-  private readonly pending: Array<{ text: string; resolve: () => void; reject: (error: Error) => void }> = []
+  private readonly pending: Array<{ text: string; generation: number; resolve: () => void; reject: (error: Error) => void }> = []
   private active = false
   private dispatchScheduled = false
   private closed = false
@@ -41,6 +43,9 @@ export class Session {
   private workerStarted = false
   private persistence = Promise.resolve()
   private persistenceError: Error | undefined
+  private readonly pendingReceipts = new Map<string, { event: SessionEvent; receipt: Promise<void> }>()
+  private requestGeneration = 0
+  private updatedAt: string | undefined = new Date().toISOString()
   readonly id: string
   readonly backend: AgentName
   /** Server-owned: set once at creation from the request's explicit build intent, never inferred. */
@@ -85,13 +90,14 @@ export class Session {
     session.history.push(...snapshot.history)
     session.status = snapshot.status
     session.sequence = Math.max(-1, ...snapshot.history.map((event) => event.sequence)) + 1
+    session.updatedAt = snapshot.updatedAt
     session.closed = snapshot.status === 'stopped'
     if (snapshot.active) session.recoverInterrupted()
     return session
   }
 
   snapshot(): SessionSnapshot {
-    return { id: this.id, backend: this.backend, buildMode: this.buildMode, status: this.status, active: this.active, history: this.history, threadId: this.worker.threadId?.() }
+    return { id: this.id, backend: this.backend, buildMode: this.buildMode, status: this.status, active: this.active, history: [...this.history, ...[...this.pendingReceipts.values()].map(({ event }) => event)], threadId: this.worker.threadId?.(), updatedAt: this.updatedAt }
   }
 
   async flush(): Promise<void> {
@@ -99,15 +105,29 @@ export class Session {
     if (this.persistenceError) throw this.persistenceError
   }
 
-  send(text: string): Promise<void> {
+  async accept(text: string, clientMessageId: string, attachments?: SessionEvent['attachments']): Promise<{ duplicate: boolean; completion?: Promise<void> }> {
     if (this.closed || (this.status !== 'ready' && this.status !== 'interrupted' && this.status !== 'failed')) {
-      return Promise.reject(new Error(`Session ${this.status}`))
+      throw new Error(`Session ${this.status}`)
     }
+    if (!clientMessageId) throw new Error('clientMessageId is required')
+    if (this.history.some((event) => event.type === 'user' && event.clientMessageId === clientMessageId)) return { duplicate: true }
+    const pending = this.pendingReceipts.get(clientMessageId)
+    if (pending) { await pending.receipt; return { duplicate: true } }
     if (this.status === 'interrupted' || this.status === 'failed') this.setStatus('ready')
-    return new Promise((resolve, reject) => {
-      this.pending.push({ text, resolve, reject })
-      this.pump()
-    })
+    const generation = this.requestGeneration
+    await this.recordDurably({ type: 'user', text, clientMessageId, attachments })
+    if (generation !== this.requestGeneration || this.closed || this.status !== 'ready') throw new Error(`Session ${this.status}`)
+    let resolve!: () => void
+    let reject!: (error: Error) => void
+    const completion = new Promise<void>((ok, fail) => { resolve = ok; reject = fail })
+    this.pending.push({ text, generation, resolve, reject })
+    this.pump()
+    return { duplicate: false, completion }
+  }
+
+  async send(text: string): Promise<void> {
+    const accepted = await this.accept(text, randomUUID())
+    await accepted.completion
   }
 
   subscribe(listener: (event: SessionEvent) => void): () => void {
@@ -123,6 +143,7 @@ export class Session {
   async shutdown(): Promise<void> {
     if (this.shutdownPromise) return this.shutdownPromise
     this.closed = true
+    this.requestGeneration++
     this.setStatus('stopped')
     this.rejectPending(new Error('Session stopped'))
     this.shutdownPromise = this.closeWorker()
@@ -133,6 +154,7 @@ export class Session {
 
   abandon(): void {
     if (!this.active || this.closed) return
+    this.requestGeneration++
     this.setStatus('interrupted')
     this.record({ type: 'interrupted', reason: 'server restarted during this turn' })
     this.activeReject?.(new Error('Session interrupted'))
@@ -141,6 +163,7 @@ export class Session {
   async interrupt(): Promise<void> {
     if (this.closed || this.status === 'stopped') return
     if (this.status !== 'ready') return
+    this.requestGeneration++
     this.setStatus('interrupted')
     this.record({ type: 'interrupted', reason: 'interrupted by user' })
     this.activeReject?.(new Error('Session interrupted'))
@@ -185,14 +208,20 @@ export class Session {
     Promise.resolve()
       .then(async () => {
         this.dispatchScheduled = false
-        if (this.closed || this.status !== 'ready' || this.pending[0] !== next) {
+        if (next.generation !== this.requestGeneration || this.closed || this.status !== 'ready' || this.pending[0] !== next) {
           this.pump()
           return
         }
         this.pending.shift()
         this.active = true
-        this.record({ type: 'user', text: next.text })
-        if (this.closed || this.status !== 'ready') {
+        this.persist()
+        try { await this.flush() } catch (error) {
+          this.active = false
+          next.reject(error instanceof Error ? error : new Error(String(error)))
+          this.pump()
+          return
+        }
+        if (next.generation !== this.requestGeneration || this.closed || this.status !== 'ready') {
           this.active = false
           next.reject(new Error(`Session ${this.status}`))
           this.pump()
@@ -200,7 +229,7 @@ export class Session {
         }
         try {
           await this.startWorker()
-          if (this.closed || this.status !== 'ready') {
+          if (next.generation !== this.requestGeneration || this.closed || this.status !== 'ready') {
             this.active = false
             next.reject(new Error(`Session ${this.status}`))
             this.pump()
@@ -252,8 +281,32 @@ export class Session {
   private record(event: Omit<SessionEvent, 'sequence' | 'sessionId'>): void {
     const complete = { ...event, sequence: this.sequence++, sessionId: this.id }
     this.history.push(complete)
+    this.updatedAt = new Date().toISOString()
     this.listeners.forEach((listener) => listener(complete))
     this.persist()
+  }
+
+  /** A user receipt is not externally visible until it is durable. */
+  private async recordDurably(event: Omit<SessionEvent, 'sequence' | 'sessionId'>): Promise<void> {
+    const complete = { ...event, sequence: this.sequence++, sessionId: this.id }
+    this.updatedAt = new Date().toISOString()
+    let resolve!: () => void
+    let reject!: (error: Error) => void
+    const receipt = new Promise<void>((ok, fail) => { resolve = ok; reject = fail })
+    void receipt.catch(() => {})
+    this.pendingReceipts.set(complete.clientMessageId!, { event: complete, receipt })
+    this.persist()
+    try {
+      await this.flush()
+      this.pendingReceipts.delete(complete.clientMessageId!)
+      this.history.push(complete)
+      this.listeners.forEach((listener) => listener(complete))
+      resolve()
+    } catch (error) {
+      this.pendingReceipts.delete(complete.clientMessageId!)
+      reject(error instanceof Error ? error : new Error(String(error)))
+      throw error
+    }
   }
 
   private persist(): void {
@@ -278,6 +331,7 @@ export type SessionSnapshot = {
   active: boolean
   history: SessionEvent[]
   threadId?: string
+  updatedAt?: string
 }
 
 export class SessionManager {
@@ -302,6 +356,17 @@ export class SessionManager {
   }
 
   get(id: string): Session | undefined { return this.sessions.get(id) }
+
+  latest(): Session | undefined {
+    let latest: Session | undefined
+    for (const session of this.sessions.values()) {
+      if (!session.buildMode) continue
+      const candidate = session.snapshot().updatedAt
+      const current = latest?.snapshot().updatedAt
+      if (!latest || (candidate && (!current || candidate >= current)) || (!candidate && !current)) latest = session
+    }
+    return latest
+  }
 
   restore(snapshots: SessionSnapshot[], createWorker: (snapshot: SessionSnapshot) => SessionBackend): void {
     for (const snapshot of snapshots) this.sessions.set(snapshot.id, Session.restore(snapshot, createWorker(snapshot), this.persist))

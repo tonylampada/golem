@@ -2,7 +2,7 @@ import { useEffect, useRef, useState } from 'react'
 import { Chat, Shell } from 'golem-ui'
 import UserApp from '@golem/app'
 import projectConfig from '@golem/config'
-import { anonymousIdentity, chat, interruptBrowserSession, navigation, restoreBrowserSession, startBrowserSession, subscribeBrowserStatus } from './adapters'
+import { anonymousIdentity, chat, currentBrowserSession, interruptBrowserSession, navigation, restoreBrowserSession, startBrowserSession, subscribeBrowserStatus } from './adapters'
 
 const shellAdapters = { identity: anonymousIdentity, navigation }
 const chatAdapters = { chat }
@@ -34,7 +34,7 @@ export function App() {
   useEffect(() => {
     const unsubscribe = subscribeBrowserStatus(setSessionStatus)
     restoreBrowserSession().then((restored) => {
-      if (restored) { setSession(window.sessionStorage.getItem('golem.browser.session') ?? undefined); setMode(true) }
+      if (restored) { setSession(currentBrowserSession()); setMode(true) }
     }).catch((cause) => setError(cause instanceof Error ? cause.message : String(cause)))
     return unsubscribe
   }, [])

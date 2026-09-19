@@ -2,6 +2,7 @@ import assert from 'node:assert/strict'
 import { request as httpRequest } from 'node:http'
 import { test } from 'node:test'
 import { mkdtempSync } from 'node:fs'
+import { writeFile } from 'node:fs/promises'
 import { join } from 'node:path'
 import { tmpdir } from 'node:os'
 import { startDevServer } from '../src/dev-server.ts'
@@ -50,6 +51,23 @@ test('HTTP transport validates mutations and isolates server-owned sessions', { 
   }
 })
 
+test('legacy saved conversations discover the last saved build session without inventing activity time', { timeout: 30000 }, async () => {
+  const state = mkdtempSync(join(tmpdir(), 'golem-state-'))
+  await writeFile(join(state, 'conversations.json'), JSON.stringify({ version: 1, sessions: [
+    { id: 'legacy-first', backend: 'codex', buildMode: true, status: 'ready', active: false, history: [] },
+    { id: 'legacy-last', backend: 'codex', buildMode: true, status: 'ready', active: false, history: [] },
+  ] }))
+  let starts = 0
+  const server = await startDevServer(3216, () => ({ async start() { starts++ }, async send() {}, async shutdown() {} }), state)
+  try {
+    const latest = await (await fetch('http://127.0.0.1:3216/api/sessions/latest')).json()
+    assert.equal(latest.id, 'legacy-last')
+    assert.equal(starts, 0)
+  } finally {
+    await new Promise((resolve) => server.close(resolve))
+  }
+})
+
 test('a configured bind address accepts the request hostname origin and rejects unrelated origins', { timeout: 30000 }, async () => {
   const port = 3217
   const host = '127.0.0.2'
@@ -84,6 +102,15 @@ async function waitForHistory(port, id, predicate, timeout = 20_000) {
   throw new Error('timed out waiting for history')
 }
 
+async function waitFor(predicate, timeout = 2_000) {
+  const until = Date.now() + timeout
+  while (Date.now() < until) {
+    if (predicate()) return
+    await new Promise((resolve) => setTimeout(resolve, 10))
+  }
+  throw new Error('timed out waiting for condition')
+}
+
 test('a successful build-mode turn triggers a rebuild and notifies the browser', { timeout: 30000 }, async () => {
   const server = await start(3230, () => new InstantBackend())
   try {
@@ -91,7 +118,7 @@ test('a successful build-mode turn triggers a rebuild and notifies the browser',
       method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ backend: 'codex', intent: 'build' }),
     })).json()
     const send = await fetch(`http://127.0.0.1:3230/api/sessions/${created.id}`, {
-      method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ text: 'edit it' }),
+      method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ text: 'edit it', clientMessageId: 'edit-it' }),
     })
     assert.equal(send.status, 202)
     const history = await waitForHistory(3230, created.id, (events) => events.some((event) => event.type === 'rebuilt'))
@@ -108,7 +135,7 @@ test('back-to-back build-mode turns coalesce their rebuilds instead of racing', 
       method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ backend: 'codex', intent: 'build' }),
     })).json()
     const send = (text) => fetch(`http://127.0.0.1:3231/api/sessions/${created.id}`, {
-      method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ text }),
+      method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ text, clientMessageId: text }),
     })
     const [first, second] = await Promise.all([send('one'), send('two')])
     assert.equal(first.status, 202)
@@ -134,10 +161,10 @@ test('build intent is server-owned: omitted intent stays read-only and never reb
     assert.deepEqual(modes, ['read-only', 'danger-full-access'])
 
     await fetch(`http://127.0.0.1:3232/api/sessions/${readOnly.id}`, {
-      method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ text: 'hi' }),
+      method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ text: 'hi', clientMessageId: 'read-only-hi' }),
     })
     await fetch(`http://127.0.0.1:3232/api/sessions/${build.id}`, {
-      method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ text: 'hi' }),
+      method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ text: 'hi', clientMessageId: 'build-hi' }),
     })
 
     const buildHistory = await waitForHistory(3232, build.id, (events) => events.some((event) => event.type === 'rebuilt'))
@@ -175,9 +202,9 @@ test('SSE cursor replays a response after disconnecting during work', { timeout:
     const initial = new TextDecoder().decode((await reader.read()).value)
     assert.match(initial, /id: 0/)
     const send = fetch(`http://127.0.0.1:3219/api/sessions/${created.id}`, {
-      method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ text: 'delayed' }),
+      method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ text: 'delayed', clientMessageId: 'delayed' }),
     })
-    await new Promise((resolve) => setImmediate(resolve))
+    await waitFor(() => backend.pending)
     const user = new TextDecoder().decode((await reader.read()).value)
     assert.match(user, /id: 1/)
     await reader.cancel()
@@ -189,6 +216,33 @@ test('SSE cursor replays a response after disconnecting during work', { timeout:
     assert.match(replay, /id: 2/)
     assert.match(replay, /reconnected reply/)
     await reconnectReader.cancel()
+  } finally {
+    await new Promise((resolve) => server.close(resolve))
+  }
+})
+
+test('a receipt is durable and idempotent before a delayed backend turn completes', { timeout: 30000 }, async () => {
+  const backend = new DelayedBackend()
+  const server = await start(3228, () => backend)
+  try {
+    const created = await (await fetch('http://127.0.0.1:3228/api/sessions', {
+      method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ backend: 'codex', intent: 'build' }),
+    })).json()
+    const request = (id) => fetch(`http://127.0.0.1:3228/api/sessions/${created.id}`, {
+      method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ text: 'keep this', clientMessageId: id }),
+    })
+    const first = await request('stable-message')
+    assert.equal(first.status, 202)
+    assert.equal((await first.json()).duplicate, false)
+    await waitFor(() => backend.pending)
+    assert.equal(backend.pending.text, 'keep this')
+    const repeated = await request('stable-message')
+    assert.equal(repeated.status, 202)
+    assert.equal((await repeated.json()).duplicate, true)
+    assert.equal(backend.pending.text, 'keep this')
+    const history = await (await fetch(`http://127.0.0.1:3228/api/sessions/${created.id}/history`)).json()
+    assert.deepEqual(history.events.filter((event) => event.type === 'user').map((event) => event.clientMessageId), ['stable-message'])
+    backend.reply('done')
   } finally {
     await new Promise((resolve) => server.close(resolve))
   }
@@ -209,18 +263,23 @@ test('saved sessions survive restart without starting a backend, and resume thei
     stale = (await (await fetch('http://127.0.0.1:3225/api/sessions', {
       method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ backend: 'codex', intent: 'build' }),
     })).json()).id
-    await fetch(`http://127.0.0.1:3225/api/sessions/${stale}`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ text: 'first' }) })
+    await fetch(`http://127.0.0.1:3225/api/sessions/${stale}`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ text: 'first', clientMessageId: 'first' }) })
+    await waitForHistory(3225, stale, (events) => events.some((event) => event.text === 'echo:native-thread:first'))
   } finally {
     await new Promise((resolve) => firstServer.close(resolve))
   }
   const secondServer = await startDevServer(3225, makeBackend, state)
   try {
     assert.equal(backends.at(-1).started, undefined, 'recovery must not start an agent')
+    const latest = await (await fetch('http://127.0.0.1:3225/api/sessions/latest')).json()
+    assert.equal(latest.id, stale, 'fresh browsers discover the persisted build conversation without starting it')
+    assert.equal(backends.at(-1).started, undefined, 'discovery must not start an agent')
     const history = await (await fetch(`http://127.0.0.1:3225/api/sessions/${stale}/history`)).json()
     assert.equal(history.status, 'ready')
     assert.deepEqual(history.events.filter((event) => event.type === 'user' || event.type === 'message').map((event) => event.text), ['first', 'echo:native-thread:first'])
-    const followup = await fetch(`http://127.0.0.1:3225/api/sessions/${stale}`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ text: 'followup' }) })
+    const followup = await fetch(`http://127.0.0.1:3225/api/sessions/${stale}`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ text: 'followup', clientMessageId: 'followup' }) })
     assert.equal(followup.status, 202)
+    await waitFor(() => backends.at(-1).started)
     assert.equal(backends.at(-1).savedThread, 'native-thread')
     assert.equal(backends.at(-1).started, true)
   } finally {
