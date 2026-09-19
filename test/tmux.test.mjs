@@ -109,3 +109,32 @@ test('launch profile: the chat window runs read-only and never prompts; the buil
   assert.equal(seen.permissions, 'readonly')
   await backend.shutdown()
 })
+
+test('/reset after a restart: a restored, unresumed conversation still holds its window; the new agent takes it over (MNC-185)', async () => {
+  fake.reset()
+  const cwd = '/tmp/my.app'
+  const backend = (ref) => new TmuxBackend(cwd, 'claude', ref, { harness: fake, api: 'http://127.0.0.1:1', window: 'chat', instructions: 'chat brief' })
+  const before = new SessionManager()
+  const old = await before.start('claude', backend(), false)
+  await old.send('remember this')
+  const ref = old.snapshot().harness
+  await before.disposeAll() // server restart: tmux and the window survive, nothing is resumed yet
+
+  const manager = new SessionManager()
+  manager.restore([old.snapshot()], (snapshot) => backend(snapshot.harness))
+  const restored = manager.get(old.id)
+  assert.equal(restored.live, false)
+  assert.equal(await fake.alive(ref), true)
+  // /reset, first thing: park, then start a fresh agent in the same window.
+  await manager.parkOthers(false)
+  const fresh = await manager.start('claude', backend(), false)
+  assert.equal(fresh.status, 'ready')
+  assert.notEqual(fresh.snapshot().harness.resumeId, ref.resumeId)
+  assert.deepEqual(fake.transcript(fresh.snapshot().harness), ['chat brief'], 'exactly one agent in the window, freshly launched')
+  // The parked conversation still resumes with its own id when messaged.
+  await manager.parkOthers(false, restored.id)
+  await restored.send('and this')
+  assert.equal(restored.status, 'ready')
+  assert.equal(restored.snapshot().harness.resumeId, ref.resumeId, 'resumed with its own id')
+  assert.equal(fake.transcript(ref).at(-1), 'and this')
+})

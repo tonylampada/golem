@@ -107,6 +107,10 @@ export class TmuxBackend implements SessionBackend {
       }
       // A conversation saved before windows existed owned the whole session: pin it to its window first.
       if (this.ref && !this.ref.window && opts.window) this.ref = (await this.harness.adoptWindow?.(this.ref, opts.window)) ?? this.ref
+      // Whoever starts in a window owns it. A previous occupant without a live Session (parked before the
+      // last restart, never resumed since) still holds `session:window` in tmux; it resumes through its own
+      // ref later, so clearing the window here loses nothing and spares spawn the "already exists" error.
+      if (!this.ref && opts.window) await this.harness.kill({ harness: this.agent, session: opts.session, cwd: this.cwd, window: opts.window })
       this.ref = this.ref ? await this.harness.resume(this.ref, opts) : await this.harness.spawn(this.cwd, this.opts.instructions ?? builderInstructions(this.cwd), opts)
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error)
