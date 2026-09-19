@@ -1,5 +1,6 @@
 import { createRoot } from 'react-dom/client'
 import 'golem-ui/styles.css'
+import './styles.css'
 import { App } from './app'
 
 document.documentElement.style.height = '100%'
