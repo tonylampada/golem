@@ -40,12 +40,15 @@ test('HTTP transport validates mutations and isolates server-owned sessions', { 
     const create = async () => (await (await fetch('http://127.0.0.1:3218/api/sessions', {
       method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ backend: 'codex' }),
     })).json()).id
-    const [one, two] = await Promise.all([create(), create()])
+    const one = await create()
+    const two = await create()
     assert.notEqual(one, two)
+    // One live agent per app: the newer conversation parks the older one, which stays resumable.
     const history = await (await fetch(`http://127.0.0.1:3218/api/sessions/${one}/history`)).json()
     assert.equal(history.backend, 'codex')
-    assert.deepEqual(history.events.map((event) => event.type), ['status'])
-    assert.equal((await fetch(`http://127.0.0.1:3218/api/sessions/${two}/history`)).status, 200)
+    assert.deepEqual(history.events.map((event) => event.status), ['ready', 'stopped'])
+    const newer = await (await fetch(`http://127.0.0.1:3218/api/sessions/${two}/history`)).json()
+    assert.deepEqual(newer.events.map((event) => event.type), ['status'])
     // `golem say` lands as an ordinary agent message
     const said = await fetch(`http://127.0.0.1:3218/api/sessions/${one}/say`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ text: 'pong' }) })
     assert.equal(said.status, 202)

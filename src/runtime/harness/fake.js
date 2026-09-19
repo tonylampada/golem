@@ -254,7 +254,8 @@ async function resume(ref) {
     return { ...out, cwd: s.cwd };
   }
   // No matching memory: fresh session under the same name (transcript lost).
-  out.resumeId = crypto.randomUUID();
+  // golem: `claude --resume <id>` keeps that id even when its transcript is gone, so a ref's id survives.
+  out.resumeId = ref.resumeId || crypto.randomUUID();
   sessions.set(key, {
     alive: true,
     cwd: ref.cwd,

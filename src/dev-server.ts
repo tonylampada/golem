@@ -310,6 +310,7 @@ async function handleApi(
       if (input.backend !== 'codex' && input.backend !== 'claude') return json(response, 400, { error: 'backend must be claude or codex' });
       // Every agent session runs with the CLI's own bypass flags in the app root, the way Bridge Commander runs its workers.
       const buildMode = input.intent === 'build';
+      await sessions.parkOthers(); // one agent per app: the new one takes the tmux session
       const session = await sessions.start(input.backend, await createBackend(input.backend), buildMode, owner);
       json(response, 201, { id: session.id, backend: session.backend, status: session.status });
     } catch (error) {
@@ -391,6 +392,8 @@ async function handleApi(
       if (input.view !== undefined && !(session.backend === 'anthropic' && typeof input.view === 'string' && await app.app.views.bound(input.view, context!))) {
         return json(response, 400, { error: 'That view does not belong to this conversation.' });
       }
+      // A parked conversation takes the app's tmux session back before its agent resumes there.
+      if (session.backend !== 'anthropic' && !session.live) await sessions.parkOthers(session.id);
       const accepted = await session.accept(input.text, input.clientMessageId, attachments, context);
       json(response, 202, { status: session.status, duplicate: accepted.duplicate });
       if (!accepted.duplicate && accepted.completion) void accepted.completion.then(

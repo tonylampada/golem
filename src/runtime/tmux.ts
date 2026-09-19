@@ -1,6 +1,6 @@
 import { existsSync } from 'node:fs'
 import { createRequire } from 'node:module'
-import { dirname, resolve } from 'node:path'
+import { basename, dirname, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import type { AgentName } from './discovery.ts'
 import type { BackendEvent, PaneAccess, SessionBackend } from './session.ts'
@@ -41,9 +41,13 @@ export const brainInstructions = 'This app has a brain: `brain/` is an Open Know
 
 export type TmuxOptions = { harness?: Harness; stateDir?: string; api?: string }
 
+/** The one tmux session of an app's build mode: `tmux attach -t golem-<app dir>` is always the place to look. */
+export const tmuxSessionName = (cwd: string): string => `golem-${basename(cwd).replace(/[^A-Za-z0-9_-]/g, '-')}`
+
 /**
- * One persistent agent session per conversation, in tmux session `golem-<sessionId>` (attach to watch
- * or take over). `send` types the message with verified submit and resolves at the agent's turn end
+ * One agent per app, in the fixed tmux session `golem-<app dir>` (attach to watch or take over). A
+ * conversation whose agent was killed to make room for another resumes it there on its next message
+ * (`SessionManager.parkOthers`). `send` types the message with verified submit and resolves at the agent's turn end
  * (Stop hook / codex notify); the reply itself arrives through `golem say`, never from the pane.
  */
 export class TmuxBackend implements SessionBackend {
@@ -69,7 +73,7 @@ export class TmuxBackend implements SessionBackend {
     this.emit = emit
     const opts = {
       stateDir: this.opts.stateDir ?? resolve(this.cwd, '.golem/harness'),
-      session: `golem-${sessionId}`,
+      session: tmuxSessionName(this.cwd),
       env: { GOLEM_SESSION: sessionId, GOLEM_API: this.opts.api ?? 'http://127.0.0.1:3000' },
       // codex 0.155: the update prompt at launch would take the typed brief as its answer, and the
       // paste-burst fold swallows the first Enter of a long line. Both off; replayed on resume.
@@ -110,6 +114,8 @@ export class TmuxBackend implements SessionBackend {
 
   async shutdown(): Promise<void> {
     this.unsubscribe?.()
+    this.turnEnded?.() // a send cut short by the kill still resolves; its reply will never come
+    this.turnEnded = undefined
     if (this.ref) await this.harness.kill(this.ref)
   }
 

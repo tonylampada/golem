@@ -123,7 +123,8 @@ export class Session {
     session.status = snapshot.status
     session.sequence = Math.max(-1, ...snapshot.history.map((event) => event.sequence)) + 1
     session.updatedAt = snapshot.updatedAt
-    session.closed = snapshot.status === 'stopped'
+    // A stopped session with a harness ref was parked, not closed: its next message resumes the agent.
+    session.closed = snapshot.status === 'stopped' && !snapshot.harness
     if (snapshot.active) session.recoverInterrupted()
     return session
   }
@@ -139,14 +140,12 @@ export class Session {
 
   /** `context` stays with this message through the queue; a duplicate keeps the first one's. */
   async accept(text: string, clientMessageId: string, attachments?: SessionEvent['attachments'], context?: TurnContext): Promise<{ duplicate: boolean; completion?: Promise<void> }> {
-    if (this.closed || (this.status !== 'ready' && this.status !== 'interrupted' && this.status !== 'failed')) {
-      throw new Error(`Session ${this.status}`)
-    }
+    if (this.closed || this.status === 'starting') throw new Error(`Session ${this.status}`)
     if (!clientMessageId) throw new Error('clientMessageId is required')
     if (this.history.some((event) => event.type === 'user' && event.clientMessageId === clientMessageId)) return { duplicate: true }
     const pending = this.pendingReceipts.get(clientMessageId)
     if (pending) { await pending.receipt; return { duplicate: true } }
-    if (this.status === 'interrupted' || this.status === 'failed') this.setStatus('ready')
+    if (this.status !== 'ready') this.setStatus('ready')
     const generation = this.requestGeneration
     await this.recordDurably({ type: 'user', text, clientMessageId, attachments })
     if (generation !== this.requestGeneration || this.closed || this.status !== 'ready') throw new Error(`Session ${this.status}`)
@@ -181,6 +180,23 @@ export class Session {
     this.rejectPending(new Error('Session stopped'))
     this.shutdownPromise = this.closeWorker()
     return this.shutdownPromise
+  }
+
+  /** The agent is running: a tmux session exists for this conversation. */
+  get live(): boolean { return this.workerStarted && !this.closed }
+
+  /**
+   * Kills the worker but keeps the conversation: history and the harness ref (with its resume id) stay
+   * in the snapshot, and the next message resumes the agent the way a server restart does.
+   */
+  async park(): Promise<void> {
+    if (!this.live) return
+    this.requestGeneration++
+    this.workerStarted = false
+    this.setStatus('stopped')
+    this.activeReject?.(new Error('Session parked'))
+    this.rejectPending(new Error('Session parked'))
+    await this.worker.shutdown()
   }
 
   async dispose(): Promise<void> { await (this.worker.detach ? this.worker.detach() : this.closeWorker()) }
@@ -412,6 +428,11 @@ export class SessionManager {
 
   restore(snapshots: SessionSnapshot[], createWorker: (snapshot: SessionSnapshot) => SessionBackend): void {
     for (const snapshot of snapshots) this.sessions.set(snapshot.id, Session.restore(snapshot, createWorker(snapshot), this.persist))
+  }
+
+  /** One agent per app, in one tmux session: parks every terminal-agent session but `id` before another starts or resumes there. */
+  async parkOthers(id?: string): Promise<void> {
+    await Promise.all(this.all().filter((session) => session.id !== id && session.backend !== 'anthropic').map((session) => session.park()))
   }
 
   async shutdownAll(): Promise<void> {

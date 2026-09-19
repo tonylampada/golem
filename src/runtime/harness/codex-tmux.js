@@ -193,11 +193,15 @@ async function resume(ref, opts = {}) {
   const stateDir = s.stateDirOf(opts);
   const key = s.stateKey(ref.session, ref.window);
   let resumeId = ref.resumeId;
-  try {
-    const rec = fs.readFileSync(path.join(stateDir, `${key}.session-id`), 'utf8').trim();
-    if (rec) resumeId = rec;
-  } catch {
-    // no recorded id — fall back to the ref's
+  // golem: every conversation of an app shares one tmux name, so the recorded id is whichever
+  // agent ran there last; a ref that knows its own id wins over the file.
+  if (!resumeId) {
+    try {
+      const rec = fs.readFileSync(path.join(stateDir, `${key}.session-id`), 'utf8').trim();
+      if (rec) resumeId = rec;
+    } catch {
+      // no recorded id — fall back to the ref's
+    }
   }
   await s.killPane(ref.session, ref.window); // clear any dead pane still holding the name
 
