@@ -1,14 +1,18 @@
 import { useEffect, useRef, useState } from 'react'
 import { ansiToHtml } from './ansi'
+import { keyForEvent } from './panekeys'
 
-// The Terminal popup: the agent's live tmux screen (whole-screen frames over SSE, replaced not appended)
-// and a line to type into it. Ported from Bridge Commander's ui/js/pane.js, minus per-keystroke typing:
-// one input line, Enter sends the text then an Enter key. Ctrl-C has its own button.
+// Interrupts skip the send queue: Ctrl-C exists to arrive when the pane is not keeping up.
+const JUMPS_QUEUE = new Set(['C-c', 'C-d', 'C-z', 'C-\\'])
+
+// The Terminal popup, a port of Bridge Commander's ui/js/pane.js: the agent's live tmux screen (whole-screen
+// frames over SSE, replaced not appended) that is itself focusable. Keys go straight to the pane, paste is a
+// literal paste, text stays selectable. No terminal emulator: keys go out, frames come back.
 export function Terminal({ session, onClose }: { session: string; onClose: () => void }) {
   const preRef = useRef<HTMLPreElement>(null)
   const [message, setMessage] = useState<string>()
   const [live, setLive] = useState(false)
-  const [line, setLine] = useState('')
+  const [typing, setTyping] = useState(false)
   const [flash, setFlash] = useState<string>()
   const base = `/api/sessions/${encodeURIComponent(session)}/pane/`
   useEffect(() => {
@@ -33,37 +37,52 @@ export function Terminal({ session, onClose }: { session: string; onClose: () =>
     es.onerror = () => setLive(false)
     return () => es.close()
   }, [base])
+  // Escape closes the overlay only while the screen is NOT focused; focused, it belongs to the agent
+  // (the pane's own keydown stops propagation before it gets here).
   useEffect(() => {
     const onKey = (event: KeyboardEvent) => { if (event.key === 'Escape') onClose() }
     window.addEventListener('keydown', onKey)
     return () => window.removeEventListener('keydown', onKey)
   }, [onClose])
-  // Sends are chained so two quick payloads (text, then Enter) can never arrive out of order.
+  // One POST per keystroke, chained: same-origin fetches can complete out of order, and out-of-order
+  // keystrokes scramble typed text ("abc" → "acb"). Each hop is bounded by a timeout so one stall cannot wedge the rest.
   const chain = useRef(Promise.resolve())
+  const flashTimer = useRef<ReturnType<typeof setTimeout> | undefined>(undefined)
+  const post = (payload: { text?: string; key?: string }) => fetch(`${base}input`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(payload), signal: AbortSignal.timeout(5000) })
+    .then(async (response) => { if (!response.ok) throw new Error((await response.json().catch(() => ({}))).error ?? `HTTP ${response.status}`) })
+    // A rejected keystroke was preventDefaulted away from the browser: it must not vanish in silence.
+    .catch((error: unknown) => { setFlash(error instanceof Error ? error.message : String(error)); clearTimeout(flashTimer.current); flashTimer.current = setTimeout(() => setFlash(undefined), 4000) })
   const send = (payload: { text?: string; key?: string }) => {
-    chain.current = chain.current.then(() => fetch(`${base}input`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(payload), signal: AbortSignal.timeout(5000) })
-      .then(async (response) => { if (!response.ok) throw new Error((await response.json().catch(() => ({}))).error ?? `HTTP ${response.status}`) })
-      .catch((error: unknown) => { setFlash(error instanceof Error ? error.message : String(error)); setTimeout(() => setFlash(undefined), 4000) }))
+    if (payload.key && JUMPS_QUEUE.has(payload.key)) { void post(payload); return }
+    chain.current = chain.current.then(() => post(payload))
   }
-  const submit = () => { if (line) send({ text: line }); send({ key: 'Enter' }); setLine('') }
+  const onKeyDown = (event: React.KeyboardEvent) => {
+    const payload = keyForEvent(event)
+    if (!payload) return // browser/OS chord: leave it alone (Ctrl-V, ⌘W, F5…)
+    event.preventDefault()
+    event.stopPropagation()
+    send(payload)
+  }
+  // Paste rides the literal path: the harness switches to a bracketed paste for multi-line text.
+  const onPaste = (event: React.ClipboardEvent) => {
+    event.preventDefault()
+    const text = event.clipboardData.getData('text')
+    if (text) send({ text })
+  }
+  const hint = flash ? `⚠ ${flash}` : typing ? 'typing — keys go to the pane · Esc too · ✕ or click outside to close' : 'click the screen to type'
   return (
     <div className="golem-terminal-overlay fixed inset-0 z-50 flex items-center justify-center p-4" onClick={(event) => { if (event.target === event.currentTarget) onClose() }}>
-      <div className="golem-terminal flex h-full w-full max-w-5xl flex-col overflow-hidden rounded-lg border shadow-xl" role="dialog" aria-label="Agent terminal">
-        <div className="golem-terminal-head flex items-center gap-2 border-b px-3 py-2 text-xs">
-          <span className={`golem-browser-status-dot ${live ? 'golem-browser-status-connected' : 'golem-browser-status-disconnected'}`} aria-hidden="true" />
-          <span className="font-medium">Terminal</span>
-          <span className="opacity-60">{session.slice(0, 8)}</span>
-          {flash && <span className="golem-terminal-flash truncate">⚠ {flash}</span>}
-          <button type="button" className="golem-terminal-ctrlc ml-auto rounded border px-2 py-0.5" title="Send Ctrl-C" onClick={() => send({ key: 'C-c' })}>Ctrl-C</button>
-          <button type="button" className="golem-terminal-close rounded border px-2 py-0.5" title="Close (Esc)" onClick={onClose}>✕</button>
+      <div className="golem-terminal flex h-full w-full max-w-5xl flex-col overflow-hidden rounded-xl border shadow-xl" role="dialog" aria-label="Agent terminal">
+        <div className="golem-terminal-head flex items-center gap-2 border-b px-3.5 py-2.5 text-xs">
+          <span className={`golem-terminal-live ${live ? 'on' : ''}`} title={live ? 'live' : 'not streaming'} aria-hidden="true" />
+          <span className="golem-terminal-title min-w-0 flex-1 truncate font-mono font-semibold">{session}</span>
+          {!message && <span className={`golem-terminal-hint whitespace-nowrap ${flash ? 'flash' : typing ? 'on' : ''}`}>{hint}</span>}
+          <button type="button" className="golem-terminal-close px-1.5" title="Close" onClick={onClose}>✕</button>
         </div>
         {message
           ? <div className="golem-terminal-msg flex flex-1 items-center justify-center p-6 text-sm">{message}</div>
-          : <pre ref={preRef} className="golem-terminal-screen m-0 min-h-0 flex-1 overflow-auto p-3 text-xs leading-snug">connecting…</pre>}
-        <form className="golem-terminal-input flex items-center gap-2 border-t px-3 py-2" onSubmit={(event) => { event.preventDefault(); submit() }}>
-          <span className="golem-terminal-prompt font-mono text-xs">›</span>
-          <input autoFocus className="min-w-0 flex-1 bg-transparent font-mono text-xs outline-none" placeholder="type a line, Enter sends it to the agent" value={line} disabled={!!message} onChange={(event) => setLine(event.target.value)} />
-        </form>
+          : <pre ref={preRef} tabIndex={0} className={`golem-terminal-screen m-0 min-h-0 flex-1 overflow-auto px-3.5 py-3 outline-none ${typing ? 'typing' : ''}`}
+              onFocus={() => setTyping(true)} onBlur={() => setTyping(false)} onKeyDown={onKeyDown} onPaste={onPaste}>connecting…</pre>}
       </div>
     </div>
   )

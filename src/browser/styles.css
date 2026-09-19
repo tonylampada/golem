@@ -12,19 +12,23 @@
 .golem-browser-header button { line-height: 1.25; }
 .golem-browser-status-dot { display: inline-block; width: .45em; height: .45em; margin-right: .35em; border-radius: 9999px; background-color: currentColor; flex-shrink: 0; }
 [data-golem-theme='dark'] .golem-browser-status-disconnected .golem-browser-status-dot { opacity: .6; }
-/* Terminal popup: neutral surfaces matching the header, the screen itself always dark (its ANSI palette is tuned for one). */
-.golem-terminal-overlay { background-color: rgb(0 0 0 / .45); }
-.golem-terminal { border-color: oklch(87% 0 0); background-color: #fff; color: oklch(20.5% 0 0); }
-.golem-terminal-head, .golem-terminal-input { border-color: oklch(92.2% 0 0); }
-.golem-terminal-head button { border-color: oklch(87% 0 0); }
-.golem-terminal-head button:hover { background-color: oklch(97% 0 0); }
-.golem-terminal-screen { background-color: #0c1016; color: #e5e5e5; font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; }
-.golem-terminal-msg, .golem-terminal-prompt { color: oklch(55.6% 0 0); }
-.golem-terminal-flash { color: oklch(57.7% .245 27.325); }
-[data-golem-theme='dark'] .golem-terminal { border-color: oklch(37.1% 0 0); background-color: oklch(14.5% 0 0); color: oklch(87% 0 0); }
-[data-golem-theme='dark'] .golem-terminal-head, [data-golem-theme='dark'] .golem-terminal-input { border-color: oklch(26.9% 0 0); }
-[data-golem-theme='dark'] .golem-terminal-head button { border-color: oklch(37.1% 0 0); color: oklch(87% 0 0); }
-[data-golem-theme='dark'] .golem-terminal-head button:hover { background-color: oklch(20.5% 0 0); }
-[data-golem-theme='dark'] .golem-terminal-msg, [data-golem-theme='dark'] .golem-terminal-prompt { color: oklch(70.8% 0 0); }
-[data-golem-theme='dark'] .golem-terminal-flash { color: oklch(70.4% .191 22.216); }
-[data-golem-theme='dark'] .golem-terminal-input input { color: oklch(98.5% 0 0); }
+/* Terminal popup: Bridge Commander's pane overlay one for one. A dark surface in both themes (the ANSI palette is tuned for one). */
+.golem-terminal-overlay { background-color: rgb(4 7 11 / .6); backdrop-filter: blur(2px); }
+.golem-terminal { max-height: min(660px, 86vh); border-color: oklch(37.1% 0 0); background-color: #0a0c11; color: #c9d4e0; }
+.golem-terminal-head { border-color: oklch(26.9% 0 0); background-color: oklch(14.5% 0 0); }
+.golem-terminal-title { font-size: 12.5px; }
+.golem-terminal-live { width: 8px; height: 8px; border-radius: 50%; background: oklch(45% 0 0); flex: none; transition: background .2s; }
+.golem-terminal-live.on { background: oklch(79.2% .209 151.711); box-shadow: 0 0 7px oklch(79.2% .209 151.711); }
+/* the hint doubles as the focus indicator and as the only place the way out is written down */
+.golem-terminal-hint { flex: none; color: oklch(55.6% 0 0); font-size: 10.5px; }
+.golem-terminal-hint.on { color: oklch(70.7% .165 254.624); }
+.golem-terminal-hint.flash { color: oklch(70.4% .191 22.216); }
+.golem-terminal-close { color: oklch(70.8% 0 0); font-size: 15px; line-height: 1; }
+.golem-terminal-close:hover { color: #fff; }
+.golem-terminal-screen {
+  color: #c9d4e0; font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; font-size: 11.5px; line-height: 1.4;
+  white-space: pre; user-select: text; cursor: text; overscroll-behavior: contain; border-top: 2px solid transparent;
+}
+/* focused == typing: unmistakable, because a pane that silently swallows keystrokes is worse than a read-only one */
+.golem-terminal-screen.typing { border-top-color: oklch(70.7% .165 254.624); background-color: #0c1016; }
+.golem-terminal-msg { color: oklch(70.8% 0 0); }
