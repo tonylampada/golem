@@ -3,7 +3,7 @@ import { Auth, Chat, Shell } from 'golem-ui'
 import UserApp from '@golem/app'
 import projectConfig from '@golem/config'
 import { currentSession, identity, type Me } from '../client'
-import { anonymousIdentity, chat, currentBrowserBackend, currentBrowserSession, forgetBrowserSession, interruptBrowserSession, navigation, restoreBrowserSession, startBrowserSession, startChatSession, subscribeBrowserStatus } from './adapters'
+import { anonymousIdentity, chat, currentBrowserBackend, currentBrowserSession, forgetBrowserSession, navigation, restoreBrowserSession, startBrowserSession, startChatSession, subscribeBrowserStatus } from './adapters'
 import { Groups } from './groups'
 import { SourcePanel, SourceReturn, useSourceView, type OpenSource } from './sources'
 
@@ -107,9 +107,6 @@ export function App() {
     try { const started = await startChatSession(); setSession(started.id); setSessionBackend(started.backend); setMode(true) }
     catch (cause) { setError(cause instanceof Error ? cause.message : String(cause)) }
   }
-  const interrupt = async () => {
-    try { await interruptBrowserSession() } catch (cause) { setError(cause instanceof Error ? cause.message : String(cause)) }
-  }
   return (
     <Shell
       config={{ title: projectConfig.title, chatSide: 'left', breakpoint: 768 }}
@@ -122,10 +119,7 @@ export function App() {
               <span className="golem-browser-status-dot" aria-hidden="true" />
               <span className="truncate">{mode ? <>{sessionStatus} <span className="opacity-60">{session?.slice(0, 8)}</span></> : 'Not connected'}</span>
             </span>
-            {mode && <span className="ml-auto flex shrink-0 gap-1">
-              <button className="golem-browser-new rounded-full border border-neutral-300 px-2 py-1" title="New conversation" onClick={() => setMode(false)}>New</button>
-              {(sessionStatus === 'ready' || sessionStatus === 'starting') && <button className="golem-browser-interrupt rounded-full border border-red-300 px-2 py-1 text-red-700" onClick={interrupt}>Interrupt</button>}
-            </span>}
+            {mode && <button className="golem-browser-new ml-auto shrink-0 rounded-full border border-neutral-300 px-2 py-1" title="New conversation" onClick={() => setMode(false)}>New</button>}
           </div>
           {!mode ? (
             <div className="p-4 text-sm">

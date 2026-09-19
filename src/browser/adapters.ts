@@ -207,7 +207,9 @@ function applyEvent(event: { sessionId?: string; sequence: number; type: string;
   emit()
 }
 
-export const chat: ChatAdapter & { retry(messageId: string): Promise<void> } = {
+// interrupt is declared here too so the object still typechecks against a golem-ui whose ChatAdapter predates it.
+export const chat: ChatAdapter & { retry(messageId: string): Promise<void>; interrupt(): Promise<void> } = {
+  interrupt: interruptBrowserSession,
   history: async () => {
     if (!sessionId) return []
     const response = await fetch(`/api/sessions/${sessionId}/history`)
