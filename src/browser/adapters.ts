@@ -1,4 +1,4 @@
-import { refreshIdentity } from '../client.ts'
+import { refreshIdentity, type ViewEvent } from '../client.ts'
 import type { ChatAdapter, ChatAttachment, ChatMessage, IdentityAdapter, NavigationAdapter, Route, User } from 'golem-ui'
 
 const unavailable = () => Promise.reject(new Error('No agent or identity service is connected.'))
@@ -43,6 +43,7 @@ let outbox: OutboxMessage[] = (() => {
   try { return (JSON.parse(window.localStorage.getItem(outboxKey) ?? '[]') as OutboxMessage[]).map((message) => ({ ...message, delivery: message.delivery === 'pending' ? 'failed' : message.delivery })) } catch { return [] }
 })()
 let messages: BrowserMessage[] = []
+let sessionBackend: string | undefined
 let cursor = -1
 let eventLog = new Map<number, { sequence: number; type: string; text?: string; status?: string; reason?: string; clientMessageId?: string; attachments?: ChatAttachment[] }>()
 let status = 'starting'
@@ -74,24 +75,40 @@ function mergeEvents(events: Array<{ sequence: number; type: string; text?: stri
   return ordered.findLast((event) => event.type === 'status')?.status
 }
 
-function fromEvents(events: Array<{ type: string; sequence: number; text?: string; status?: string; reason?: string; clientMessageId?: string; attachments?: ChatAttachment[] }>): BrowserMessage[] {
+function fromEvents(events: Array<{ type: string; sequence: number; text?: string; ok?: boolean; status?: string; reason?: string; clientMessageId?: string; attachments?: ChatAttachment[] }>): BrowserMessage[] {
   return events.flatMap((event) => {
     if ((event.type === 'user' || event.type === 'message') && event.text) {
       return [{ id: event.type === 'user' && event.clientMessageId ? event.clientMessageId : `${event.sequence}`, role: event.type === 'user' ? 'user' : 'agent', text: event.text, attachments: event.attachments, at: new Date().toISOString() }]
     }
     if (event.type === 'error') return [{ id: `${event.sequence}`, role: 'agent', text: `Error: ${event.text ?? 'Agent failed.'}`, attachments: undefined, at: new Date().toISOString() }]
+    if (event.type === 'tool' && event.ok === false) return [{ id: `${event.sequence}`, role: 'agent', text: `An action failed: ${event.text ?? 'unknown error'}`, attachments: undefined, at: new Date().toISOString() }]
     if (event.type === 'interrupted') return [{ id: `${event.sequence}`, role: 'agent', text: `Interrupted${event.reason ? `: ${event.reason}` : '.'}`, attachments: undefined, at: new Date().toISOString() }]
     return []
   })
 }
 
 function refresh(): void { mergeEvents([]); emit() }
+
+// This tab's view of the open chat, from its event stream: sent with each message so the
+// assistant's offers come here, and used to answer them.
+let chatView: string | undefined
+type ViewStreamEvent = ViewEvent | { type: 'view'; id: string }
+const viewListeners = new Set<(event: ViewStreamEvent) => void>()
+export function subscribeChatView(listener: (event: ViewStreamEvent) => void): () => void {
+  viewListeners.add(listener)
+  return () => viewListeners.delete(listener)
+}
+export async function answerOffer(offer: string, accept: boolean): Promise<void> {
+  if (!chatView) throw new Error('This tab is not connected to the chat.')
+  const response = await fetch(`/api/app/views/${chatView}/answer`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ offer, accept }) })
+  if (!response.ok) throw new Error((await response.json()).error ?? 'Unable to answer the offer')
+}
 function messageId(): string { return globalThis.crypto?.randomUUID?.() ?? `${Date.now()}-${Math.random()}` }
 function findOutbox(id: string): OutboxMessage | undefined { return outbox.find((message) => message.id === id && message.sessionId === sessionId) }
 
 async function deliver(message: OutboxMessage): Promise<void> {
   try {
-    const response = await fetch(`/api/sessions/${message.sessionId}`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ text: message.text, attachments: message.attachments, clientMessageId: message.id }) })
+    const response = await fetch(`/api/sessions/${message.sessionId}`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ text: message.text, attachments: message.attachments, clientMessageId: message.id, ...(chatView ? { view: chatView } : {}) }) })
     if (!response.ok) throw new Error((await response.json()).error ?? 'Message was not accepted')
     message.delivery = undefined
     saveOutbox()
@@ -104,24 +121,35 @@ async function deliver(message: OutboxMessage): Promise<void> {
   }
 }
 
-/** The only session-starting call in the UI — declares build intent explicitly; the server decides permission from it. */
-export async function startBrowserSession(): Promise<{ id: string; backend: string }> {
-  const response = await fetch('/api/sessions', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ backend: 'codex', intent: 'build' }) })
+/** The only build-starting call in the UI — declares build intent explicitly; the server decides permission from it. */
+export async function startBrowserSession(backend = 'codex'): Promise<{ id: string; backend: string }> {
+  return begin('/api/sessions', { backend, intent: 'build' }, backend)
+}
+
+/** Starts an ordinary chat: an assistant limited to the app's listed actions, never a build. */
+export async function startChatSession(): Promise<{ id: string; backend: string }> {
+  return begin('/api/chat', {}, 'anthropic')
+}
+
+async function begin(url: string, body: object, backend: string): Promise<{ id: string; backend: string }> {
+  const response = await fetch(url, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) })
   const result = await response.json() as { id?: string; backend?: string; error?: string }
   if (!response.ok || !result.id) throw new Error(result.error ?? 'Unable to start session')
   source?.close()
   source = undefined
   sessionId = result.id
+  sessionBackend = result.backend ?? backend
   try { window.sessionStorage.setItem(storageKey, sessionId) } catch {}
   cursor = -1
   eventLog = new Map()
   setStatus('ready')
   messages = []
   emit()
-  return { id: result.id, backend: result.backend ?? 'codex' }
+  return { id: result.id, backend: sessionBackend }
 }
 
 export function currentBrowserSession(): string | undefined { return sessionId }
+export function currentBrowserBackend(): string | undefined { return sessionBackend }
 
 /** Drops this tab's remembered build conversation, e.g. when a different person signs in. */
 export function forgetBrowserSession(): void {
@@ -129,22 +157,27 @@ export function forgetBrowserSession(): void {
   try { window.sessionStorage.removeItem(storageKey) } catch {}
 }
 
-export async function restoreBrowserSession(): Promise<boolean> {
+/** Reopens this tab's conversation, else the latest build (or, with `chat`, the latest chat) conversation. */
+export async function restoreBrowserSession(discover: 'build' | 'chat' = 'build'): Promise<boolean> {
   if (!sessionId) {
-    const discovered = await fetch('/api/sessions/latest')
+    const discovered = await fetch(discover === 'chat' ? '/api/chat' : '/api/sessions/latest')
     if (discovered.status === 404) return false
     if (!discovered.ok) throw new Error((await discovered.json()).error ?? 'Unable to discover a saved session')
-    sessionId = (await discovered.json() as { id: string }).id
+    const found = await discovered.json() as { id?: string; latest?: { id: string } }
+    const id = discover === 'chat' ? found.latest?.id : found.id
+    if (!id) return false
+    sessionId = id
     try { window.sessionStorage.setItem(storageKey, sessionId) } catch {}
   }
   const response = await fetch(`/api/sessions/${sessionId}/history`)
   if (response.status === 404) {
     sessionId = undefined
     try { window.sessionStorage.removeItem(storageKey) } catch {}
-    return restoreBrowserSession()
+    return restoreBrowserSession(discover)
   }
   if (!response.ok) throw new Error((await response.json()).error ?? 'Unable to restore session')
-  const result = await response.json() as { events: Array<{ sequence: number; type: string; text?: string; reason?: string; clientMessageId?: string; attachments?: ChatAttachment[] }>; status: string }
+  const result = await response.json() as { events: Array<{ sequence: number; type: string; text?: string; reason?: string; clientMessageId?: string; attachments?: ChatAttachment[] }>; status: string; backend?: string }
+  sessionBackend = result.backend
   eventLog = new Map()
   setStatus(mergeEvents(result.events) ?? result.status)
   emit()
@@ -191,10 +224,15 @@ export const chat: ChatAdapter & { retry(messageId: string): Promise<void> } = {
       const subscribedSession = sessionId
       let subscribedSource: EventSource
       const connect = () => {
-        const nextSource = new EventSource(`/api/sessions/${subscribedSession}/events?after=${cursor}`)
+        const nextSource = new EventSource(`/api/sessions/${subscribedSession}/events?after=${cursor}${sessionBackend === 'anthropic' ? '&view=1' : ''}`)
         subscribedSource = nextSource
         source = nextSource
         nextSource.onmessage = (event) => applyEvent(JSON.parse(event.data))
+        if (sessionBackend === 'anthropic') nextSource.addEventListener('view', (event) => {
+          const data = JSON.parse((event as MessageEvent).data) as ViewStreamEvent
+          if (data.type === 'view') chatView = data.id
+          viewListeners.forEach((listener) => listener(data))
+        })
         nextSource.onopen = () => {
           void fetch(`/api/sessions/${subscribedSession}/history`).then(async (response) => {
             if (!response.ok || source !== nextSource || sessionId !== subscribedSession) return
@@ -221,7 +259,7 @@ export const chat: ChatAdapter & { retry(messageId: string): Promise<void> } = {
     return () => listeners.delete(listener)
   },
   async send(text, attachments) {
-    if (!sessionId) throw new Error('Enter build mode before sending a message')
+    if (!sessionId) throw new Error('Start a conversation before sending a message')
     const message: OutboxMessage = { id: messageId(), sessionId, text, attachments, delivery: 'pending', at: new Date().toISOString() }
     outbox.push(message)
     saveOutbox()

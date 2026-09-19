@@ -1,8 +1,16 @@
 import { resolve } from 'node:path'
 import { pathToFileURL } from 'node:url'
+import { toolNameProblem } from './runtime/tool-names.ts'
 
 /** Browser-visible settings: never put secrets in golem.config.ts. */
-export type AppConfig = { host: string; port: number; storage: 'jsonl' | 'sqlite'; origin?: string; accounts?: AccountsConfig }
+export type AppConfig = { host: string; port: number; storage: 'jsonl' | 'sqlite'; origin?: string; accounts?: AccountsConfig; agents?: AgentsConfig }
+
+/**
+ * `builder` is the agent build mode starts with. `ordinary` turns on everyday chat: an API agent
+ * whose only tools are the listed app operations, run as the person chatting.
+ */
+export type AgentsConfig = { builder?: 'codex' | 'claude'; ordinary?: OrdinaryAgentConfig }
+export type OrdinaryAgentConfig = { backend: 'anthropic'; model: string; operations: string[]; collections?: string[]; roots?: string[]; instructions?: string }
 
 /** golem-ui's Auth role shape: `manages` roles run accounts and may build; `builder` may build. */
 export type AccountRole = { id: string; label: string; manages: boolean }
@@ -25,7 +33,7 @@ export async function loadAppConfig(root = process.cwd()): Promise<AppConfig> {
   if (!value || typeof value !== 'object' || Array.isArray(value)) {
     throw new Error('golem.config.ts must default-export an object')
   }
-  const configured = value as { host?: unknown; port?: unknown; storage?: unknown; origin?: unknown; accounts?: unknown }
+  const configured = value as { host?: unknown; port?: unknown; storage?: unknown; origin?: unknown; accounts?: unknown; agents?: unknown }
   const host: unknown = configured.host === undefined ? '127.0.0.1' : configured.host
   const port: unknown = configured.port === undefined ? 3000 : configured.port
   if (typeof host !== 'string' || !host.trim()) {
@@ -42,7 +50,7 @@ export async function loadAppConfig(root = process.cwd()): Promise<AppConfig> {
   if (origin !== undefined && (typeof origin !== 'string' || !/^https?:$/.test(safeUrl(origin)?.protocol ?? '') || safeUrl(origin)?.origin !== origin)) {
     throw new Error("golem.config.ts origin must be an exact origin like 'https://notes.example.com'")
   }
-  return { host, port, storage, ...(origin === undefined ? {} : { origin }), ...(configured.accounts === undefined ? {} : { accounts: accounts(configured.accounts) }) }
+  return { host, port, storage, ...(origin === undefined ? {} : { origin }), ...(configured.accounts === undefined ? {} : { accounts: accounts(configured.accounts) }), ...(configured.agents === undefined ? {} : { agents: agents(configured.agents) }) }
 }
 
 function accounts(value: unknown): AccountsConfig {
@@ -61,6 +69,44 @@ function accounts(value: unknown): AccountsConfig {
   if (!parsed.some((role) => role.manages)) throw new Error('golem.config.ts accounts roles need one role with manages: true')
   if (allowSignUp && !parsed.some(isPlain)) throw new Error("golem.config.ts accounts allowSignUp needs a role that neither manages nor is 'builder'")
   return { guests, allowSignUp, roles: parsed }
+}
+
+function agents(value: unknown): AgentsConfig {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) throw new Error('golem.config.ts agents must be an object')
+  const { builder, ordinary, ...unknown } = value as Record<string, unknown>
+  if (Object.keys(unknown).length) throw new Error(`golem.config.ts agents has unknown fields: ${Object.keys(unknown).join(', ')}`)
+  if (builder !== undefined && builder !== 'codex' && builder !== 'claude') throw new Error("golem.config.ts agents.builder must be 'codex' or 'claude'")
+  return { ...(builder ? { builder } : {}), ...(ordinary === undefined ? {} : { ordinary: ordinaryAgent(ordinary) }) }
+}
+
+// Operations whose input or output is raw bytes, which a chat tool cannot carry.
+const byteOperations = ['files.upload', 'files.read']
+
+function ordinaryAgent(value: unknown): OrdinaryAgentConfig {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) throw new Error('golem.config.ts agents.ordinary must be an object')
+  const { backend, model = 'claude-opus-5', operations, collections, roots, instructions, ...unknown } = value as Record<string, unknown>
+  if (Object.keys(unknown).length) throw new Error(`golem.config.ts agents.ordinary has unknown fields: ${Object.keys(unknown).join(', ')}`)
+  if (backend === 'codex' || backend === 'claude') {
+    throw new Error(`golem.config.ts agents.ordinary.backend '${backend}' is not supported: a terminal agent runs with this computer account's file access, which Golem cannot limit to the listed operations. Use 'anthropic'.`)
+  }
+  if (backend !== 'anthropic') throw new Error("golem.config.ts agents.ordinary.backend must be 'anthropic'")
+  if (typeof model !== 'string' || !model) throw new Error('golem.config.ts agents.ordinary.model must be a nonempty string')
+  const names = (list: unknown, field: string) => {
+    if (!Array.isArray(list) || !list.every((item) => typeof item === 'string' && item)) throw new Error(`golem.config.ts agents.ordinary.${field} must be a list of names`)
+    return list as string[]
+  }
+  const allowed = names(operations, 'operations')
+  const refused = allowed.filter((name) => byteOperations.includes(name))
+  if (refused.length) throw new Error(`golem.config.ts agents.ordinary.operations cannot include ${refused.join(', ')}: chat tools carry no file bytes`)
+  const problem = toolNameProblem(allowed)
+  if (problem) throw new Error(`golem.config.ts agents.ordinary.operations: ${problem}`)
+  if (instructions !== undefined && typeof instructions !== 'string') throw new Error('golem.config.ts agents.ordinary.instructions must be a string')
+  return {
+    backend, model, operations: allowed,
+    ...(collections === undefined ? {} : { collections: names(collections, 'collections') }),
+    ...(roots === undefined ? {} : { roots: names(roots, 'roots') }),
+    ...(instructions === undefined ? {} : { instructions }),
+  }
 }
 
 /** Neither manages accounts nor builds: what an open sign-up may receive. */

@@ -1,5 +1,6 @@
 #!/usr/bin/env tsx
 import { startDevServer } from './dev-server.ts';
+import { discoverAgents } from './runtime/discovery.ts';
 import { buildBrowser } from './browser-build.ts';
 import { loadAppConfig, serverUrl } from './config.ts';
 import { execFileSync } from 'node:child_process';
@@ -14,7 +15,7 @@ Usage: ./golem <command>
   help    Show every command (also the default).
   init    Create a minimal app in the current directory.
   dev     Serve the browser shell using golem.config.ts (127.0.0.1:3000 by default).
-          Restart after changing settings. Uses the local Codex runtime from the browser.
+          Restart after changing settings. Uses local Claude Code or Codex from the browser.
   build   Build the browser shell into dist/.
   doctor  Report local shell and backend readiness.
 
@@ -43,9 +44,9 @@ if (args.length || !['help', 'init', 'dev', 'build', 'doctor'].includes(command)
       break;
     case 'doctor':
       console.log(`Golem shell readiness (Node ${process.version})
-Ready: local CLI, HTTP shell, golem-ui browser build and Codex session seam.
-Claude integration: not yet connected.
-Not implemented: Claude integration.
+Ready: local CLI, HTTP shell, golem-ui browser build and agent session seam.
+${(await discoverAgents()).map(({ agent, status, runnable, detail }) => `${agent}: ${runnable ? 'runnable' : status === 'missing' ? 'not installed' : detail ?? status}`).join('\n')}
+Not implemented: domain storage, accounts, permissions.
 The dev server defaults to 127.0.0.1:3000 and uses optional host/port from golem.config.ts.`);
       break;
     case 'build':

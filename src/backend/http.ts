@@ -16,6 +16,7 @@ const maxUpload = 25_000_000
 
 export type AppBackend = {
   app: App
+  config: AppConfig
   /** Present when golem.config.ts turns on local accounts. */
   accounts?: Accounts
   /** Serves /api/app/* and /api/auth/*. */
@@ -57,6 +58,7 @@ export async function createAppBackend(appRoot: string, dataDirectory: string): 
   const server = { app, accounts, config, cookie }
   return {
     app,
+    config,
     accounts,
     handle: (request, response) => handle(server, request, response),
     mutationAllowed: (request) => mutationAllowed(request, config.origin),
@@ -213,7 +215,7 @@ async function readJson(request: IncomingMessage): Promise<unknown> {
   try { return JSON.parse(text || '{}') } catch { throw new InvalidError('Request body must be valid JSON') }
 }
 
-function readCookie(request: IncomingMessage, name: string): string | undefined {
+export function readCookie(request: IncomingMessage, name: string): string | undefined {
   for (const part of (request.headers.cookie ?? '').split(';')) {
     const [key, ...value] = part.trim().split('=')
     if (key === name) return value.join('=') || undefined
