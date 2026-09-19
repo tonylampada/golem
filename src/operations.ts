@@ -67,8 +67,8 @@ export interface Operation<I extends z.ZodType = z.ZodType, O extends z.ZodType 
   description: string
   input: I
   output: O
-  /** The record this call acts on; `authorize` receives it as `record`. */
-  record?: (input: z.output<I>) => { collection: string; id: string } | undefined
+  /** The record this call acts on; `authorize` receives it as `record`. `{ row }` hands over one that is not stored (a knowledge file). */
+  record?: (input: z.output<I>) => { collection: string; id: string } | { row: Row } | undefined
   run(input: z.output<I>, context: OperationContext): Promise<z.input<O>> | z.input<O>
 }
 

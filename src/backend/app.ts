@@ -5,6 +5,8 @@ import {
   type Authorize, type FileStore, type Operation, type Principal, type RecordStore, type Row, type Via,
 } from '../operations.ts'
 import { FILES_COLLECTION } from './files.ts'
+import { knowledgeOperations, type KnowledgeRoots } from './knowledge.ts'
+import { createViews, type Views } from './views.ts'
 
 /** What an app's src/server/index.ts may default-export. Every field is optional. */
 export type AppServerModule = {
@@ -13,6 +15,8 @@ export type AppServerModule = {
   authorize?: Authorize
   /** Trusted server-side identity for an HTTP request. Defaults to `anonymous`. */
   resolvePrincipal?: (request: IncomingMessage) => Principal | Promise<Principal>
+  /** Markdown knowledge roots: name → directory relative to the app root. Adds the `knowledge.*` operations. */
+  knowledge?: KnowledgeRoots
 }
 
 export type AgentTool = { name: string; description: string; inputSchema: unknown; call(input: unknown): Promise<unknown> }
@@ -26,7 +30,9 @@ export type App = {
    * The operations as tools for an in-process agent acting for `principal`. Each call first
    * refreshes the principal, so a signed-out session or a changed role takes effect at once.
    */
-  agentTools(principal: Principal): AgentTool[]
+  agentTools(principal: Principal, context?: { owner: string; conversation: string; view?: string }): AgentTool[]
+  /** Session-scoped view actions: agents offer, the person accepts in one browser view. */
+  views: Views
   resolvePrincipal(request: IncomingMessage): Promise<Principal>
   /** Re-reads a principal from trusted state; throws once its session has ended. Identity for anonymous-only apps. */
   refresh(principal: Principal): Promise<Principal>
@@ -47,11 +53,12 @@ export type Identity = {
   resolveAccount(id: string): Promise<Principal>
 }
 
-export function createApp(stores: { records: RecordStore; files: (records: RecordStore) => FileStore }, module: AppServerModule = {}, identity?: Identity): App {
+export function createApp(stores: { records: RecordStore; files: (records: RecordStore) => FileStore; root?: string }, module: AppServerModule = {}, identity?: Identity): App {
   const changes = new EventEmitter().setMaxListeners(0)
   const records = watched(stores.records, (collection) => changes.emit('change', collection))
   const files = stores.files(records)
-  let current = compile(module)
+  const load = (next: AppServerModule) => compile(next, stores.root)
+  let current = load(module)
 
   async function invoke(name: string, raw: unknown, principal: Principal, via: Via): Promise<unknown> {
     const { byName, authorize } = current
@@ -62,42 +69,71 @@ export function createApp(stores: { records: RecordStore; files: (records: Recor
     if (!parsed.success) throw new InvalidError(`${name}: ${z.prettifyError(parsed.error)}`)
     const input = parsed.data
     const target = operation.record?.(input)
-    const record = target ? await records.get(target.collection, target.id) : null
+    const record = !target ? null : 'row' in target ? target.row : await records.get(target.collection, target.id)
     const request = { operation: name, input, principal, via }
     if (!(await authorize({ ...request, record }))) throw new ForbiddenError(`Not allowed: ${name}`)
     const permits = async (row: Row) => Boolean(await authorize({ ...request, record: row }))
     return operation.output.parse(await operation.run(input, { principal, via, records, files, permits }))
   }
 
+  const views = createViews({
+    invoke,
+    refresh: async (principal) => identity ? identity.refresh(principal) : principal,
+    has: (name) => current.byName.has(name),
+  })
+
   return {
     get operations() { return [...current.byName.values()] },
     invoke,
     changes,
-    use(next) { current = compile(next) },
+    use(next) { current = load(next) },
     resolvePrincipal: async (request) => identity ? identity.resolve(request) : (await current.module.resolvePrincipal?.(request)) ?? anonymous,
     refresh: async (principal) => identity ? identity.refresh(principal) : principal,
     resolveAccount: async (id) => {
       if (!identity) throw new ForbiddenError('This app has no accounts')
       return identity.resolveAccount(id)
     },
-    agentTools: (principal) => [...current.byName.values()].map((operation) => ({
-      name: operation.name,
-      description: operation.description,
-      inputSchema: z.toJSONSchema(operation.input, { unrepresentable: 'any' }),
-      call: async (input: unknown) => invoke(operation.name, input, identity ? await identity.refresh(principal) : principal, 'agent'),
-    })),
+    views,
+    agentTools: (principal, context) => {
+      const fresh = async () => identity ? identity.refresh(principal) : principal
+      const tools: AgentTool[] = [...current.byName.values()].map((operation) => ({
+        name: operation.name,
+        description: operation.description,
+        inputSchema: z.toJSONSchema(operation.input, { unrepresentable: 'any' }),
+        call: async (input: unknown) => invoke(operation.name, input, await fresh(), 'agent'),
+      }))
+      if (!context || !views.actions().length) return tools
+      const { owner, conversation, view } = context
+      return [...tools, {
+        name: 'view.actions',
+        description: 'List what you can offer to show in the person\'s view of this conversation, with each action\'s input.',
+        inputSchema: { type: 'object', properties: {}, additionalProperties: false },
+        call: async () => views.actions(),
+      }, {
+        name: 'view.request',
+        description: 'Offer one view action (see view.actions) in this conversation. The person accepts or dismisses it; nothing opens until they accept.',
+        inputSchema: { type: 'object', properties: { action: { type: 'string' }, input: { type: 'object' } }, required: ['action', 'input'], additionalProperties: false },
+        call: async (raw: unknown) => {
+          const { action, input } = (raw ?? {}) as { action?: unknown; input?: unknown }
+          if (typeof action !== 'string') throw new InvalidError('view.request needs an action name')
+          return views.request({ principal: await fresh(), owner, conversation, view }, action, input)
+        },
+      }]
+    },
   }
 }
 
 /** Validates a server module into the lookup `invoke` reads; throws before anything is swapped. */
-function compile(module: AppServerModule) {
+function compile(module: AppServerModule, root?: string) {
   if (!module || typeof module !== 'object') throw new Error('src/server/index.ts must default-export an object')
+  if (module.knowledge !== undefined && !root) throw new Error('knowledge roots need the app root')
+  const knowledge = module.knowledge === undefined ? [] : knowledgeOperations(root!, module.knowledge)
   for (const hook of ['authorize', 'resolvePrincipal'] as const) {
     if (module[hook] !== undefined && typeof module[hook] !== 'function') throw new Error(`${hook} must be a function`)
   }
   if (module.operations !== undefined && !Array.isArray(module.operations)) throw new Error('operations must be an array')
   const byName = new Map<string, Operation>()
-  for (const operation of [...builtins, ...(module.operations ?? [])]) {
+  for (const operation of [...builtins, ...knowledge, ...(module.operations ?? [])]) {
     const schemas = [operation?.input, operation?.output].every((schema) => typeof (schema as { safeParse?: unknown })?.safeParse === 'function')
     if (typeof operation?.name !== 'string' || !operation.name || typeof operation.run !== 'function' || !schemas) {
       throw new Error(`Operation ${operation?.name ?? '(unnamed)'} needs a name, input and output schemas, and a run function`)

@@ -136,3 +136,50 @@ export async function setGroups(userId: string, groups: string[]): Promise<void>
   await auth(`members/${encodeURIComponent(userId)}/groups`, { groups })
   await reloadIdentity()
 }
+
+/**
+ * golem-ui `RecordsAdapter` over the app's knowledge roots: `collection` is the root name, `id` the
+ * file path and `body` its markdown. Hand it to `Editor` (versioned saves, merged conflicts) or `RecordList`.
+ */
+export const knowledge: RecordsAdapter = {
+  list: (root, query) => invoke('knowledge.list', { root, ...(typeof query?.filter?.folder === 'string' ? { folder: query.filter.folder } : {}) }),
+  get: async (root, path) => {
+    try { return await invoke('knowledge.read', { root, path }) }
+    catch (error) { if ((error as Error).name === 'NotFoundError') return null; throw error }
+  },
+  create: (root, data) => invoke('knowledge.write', { root, path: data.path ?? data.id, body: data.body ?? '', expectedVersion: 0 }),
+  update: (root, path, patch, options) => invoke('knowledge.write', { root, path, body: patch.body, expectedVersion: options?.expectedVersion ?? (patch.version as number) }),
+  remove: () => Promise.reject(new Error('Knowledge files are removed in the app folder, not from the browser.')),
+  subscribe: (_root, listener) => watch('_knowledge', listener),
+}
+
+/** A knowledge passage an agent offered to show; `line` and `endLine` are 1-based and inclusive. */
+export type ViewOffer = { id: string; conversation: string; action: 'source.open'; input: { root: string; path: string; line: number; endLine: number } }
+/**
+ * `apply` carries the file `version` its lines were counted in and the `text` of those lines: show them
+ * once the editor has that version, and look for `text` instead when the editor shows an unsaved draft.
+ */
+export type ViewEvent = { type: 'offer'; offer: ViewOffer } | { type: 'apply'; offer: ViewOffer; version: number; text: string } | { type: 'withdrawn'; id: string }
+
+/**
+ * Opens this tab's view of one conversation. `id` is the view to send with this tab's chat messages,
+ * so the agent's offers come here. An offer arrives as `offer` (or is shown by the chat); `answer` is
+ * the person's choice, and only an accepted offer comes back, to this tab alone, as `apply`.
+ */
+export function openView(conversation: string, listener: (event: ViewEvent) => void): { id: Promise<string>; answer(offer: string, accept: boolean): Promise<void>; close(): void } {
+  let source: EventSource | undefined
+  let closed = false
+  const id = call<{ id: string }>(fetch('/api/app/views', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ conversation }) })).then((view) => view.id)
+  void id.then((view) => {
+    if (closed) return
+    source = new EventSource(`/api/app/views/${view}`)
+    source.onmessage = (event) => listener(JSON.parse(event.data) as ViewEvent)
+  }, () => {})
+  return {
+    id,
+    answer: async (offer, accept) => {
+      await call(fetch(`/api/app/views/${await id}/answer`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ offer, accept }) }))
+    },
+    close: () => { closed = true; source?.close() },
+  }
+}

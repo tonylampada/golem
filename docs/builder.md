@@ -9,3 +9,5 @@ For implementation and pull-request work, start with the user or business proble
 Supported app surface: edit `src/app.tsx`; configure the shell title, host, port, storage, and optional accounts in `golem.config.ts`; use `./golem help`, `./golem build`, and `./golem dev`. The installed `golem-ui` package is the component contract: its `README.md` names the current components and adapters, while its API and adapter docs are linked there. Use its `config` plus `adapters` shape rather than inventing a data layer inside a component. Ask before changing an important application contract or proposing framework/UI-kit work.
 
 Before storing records or files, adding server behavior an agent or the UI calls, or adding sign-in, roles or groups, read `node_modules/golem-kit/docs/app-backend.md`: it names where UI, shared, and server code live and the operation, authorization, and storage contracts.
+
+Before adding a knowledge base, notes, a handbook or any markdown the app should keep in folders, read `node_modules/golem-kit/docs/knowledge.md`.
