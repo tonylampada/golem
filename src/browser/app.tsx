@@ -12,9 +12,12 @@ import { Terminal } from './terminal'
 const chatAdapters = { chat }
 // `Brain` is in golem-ui after 0.1.1; with 0.1.1 installed the panel says so instead of rendering it.
 const Brain = (GolemUI as unknown as { Brain?: (props: { config: { title: string; openLocation?: string }; adapters: { brain: typeof brain } }) => ReactNode }).Brain
-const brainAdapters = { brain }
 /** The `?brain=` route param: the location the Brain panel shows, or undefined when the app is showing. */
 const brainParam = () => new URLSearchParams(window.location.search).get('brain') ?? undefined
+const brainUrl = (location: string) => `${window.location.pathname}?brain=${encodeURIComponent(location)}`
+// What the reader opens on its own goes into the URL, so a reload (a Builder rebuild, a sign-in
+// change) lands on the same document instead of the root index.
+const brainAdapters = { brain: { ...brain, open: (location: string) => navigation.go(brainUrl(location)) } }
 const authAdapters = { identity, navigation }
 const agentNames: Record<string, string> = { codex: 'Codex', claude: 'Claude Code' }
 type Discovery = { agent: string; status: string; runnable?: boolean; detail?: string }
@@ -103,7 +106,9 @@ export function App() {
   const shellAdapters = { identity: accounts ? identity : anonymousIdentity, navigation }
   return (
     <Shell
-      config={{ title: projectConfig.title, chatSide: 'left', breakpoint: 768 }}
+      config={{ title: projectConfig.title, chatSide: 'left', breakpoint: 768,
+        // A reload with ?brain= lands on the reader, not the chat. Same golem-ui vintage as Brain; 0.1.1's strict schema would reject the key.
+        ...(Brain ? { initialTab: brainParam() === undefined ? 'chat' : 'canvas' } : {}) }}
       adapters={shellAdapters}
       chat={!kind ? null : (
         <div className="flex h-full min-h-0 flex-col">
@@ -165,7 +170,7 @@ export function App() {
           >
             {dark ? 'Light mode' : 'Dark mode'}
           </button>
-          {(projectConfig as { brain?: boolean }).brain === true && !showBrain && <button type="button" className="golem-browser-brain-open rounded border border-neutral-300 px-2 py-1 text-sm" onClick={() => navigation.go(`${window.location.pathname}?brain=index.md`)}>Brain</button>}
+          {(projectConfig as { brain?: boolean }).brain === true && !showBrain && <button type="button" className="golem-browser-brain-open rounded border border-neutral-300 px-2 py-1 text-sm" onClick={() => navigation.go(brainUrl('index.md'))}>Brain</button>}
           {!authConfig ? <span className="golem-browser-guest text-sm text-neutral-500">Guest</span>
             : me?.user ? <>
                 {manages && <button type="button" className="golem-browser-members rounded border border-neutral-300 px-2 py-1 text-sm" onClick={() => setView('account')}>Members</button>}

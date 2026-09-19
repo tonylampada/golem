@@ -10,8 +10,8 @@ edited UI components are compiled and scanned.
 ## Pinned golem-ui
 
 The published `golem-ui@0.1.1` predates the `Brain` component and `ChatMessage.sources`. This
-checkout is developed against golem-ui commit `fc460b6` (MNC-180 slash commands, MNC-181 `Shell`
-`chat={null}`); until that ships as a package version, run with `GOLEM_UI_SOURCE` pointing at a
+checkout is developed against golem-ui commit `bcb8fff` (MNC-184 Brain stack navigation,
+`BrainAdapter.open`, `Shell` `initialTab`); until that ships as a package version, run with `GOLEM_UI_SOURCE` pointing at a
 checkout of it to get the Brain reader, the source chips, the slash-command picker and a chat-less
 normal mode. With 0.1.1 installed the shell still builds, and the Brain panel says what is missing.
 
