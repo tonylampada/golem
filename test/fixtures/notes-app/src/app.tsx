@@ -1,6 +1,7 @@
 import { useState } from 'react'
 import { RecordForm, RecordList, Upload } from 'golem-ui'
 import { files, invoke, records } from 'golem-kit/client'
+import { SampleJobs } from './jobs.tsx'
 
 const fields = [
   { key: 'title', label: 'Title', type: 'text' as const, required: true },
@@ -24,6 +25,7 @@ export default function App() {
           </section>
         : <RecordForm config={{ collection: 'notes', fields, mode: 'create', submitLabel: 'Add note' }} adapters={{ records }} />}
       {message && <p className="notes-message">{message}</p>}
+      <SampleJobs />
       <Upload config={{ folder: 'attachments', captions: true, layout: 'list' }} adapters={{ files }} />
     </main>
   )

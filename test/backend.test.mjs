@@ -171,7 +171,8 @@ test('a malformed server module edit keeps the last good operations and policy',
     good.replace('export default {', 'export const notDefault = {'),
     `${good}\nexport const unused = 1\n`.replace('export default {', 'export default null as unknown as {'),
     good.replace('authorize: (', "authorize: 'allow' as never, _unused: ("),
-    good.replace('operations: [archive]', "operations: [{ name: 'notes.bad', run() {} } as never]"),
+    good.replace('operations: [archive, generate]', "operations: [{ name: 'notes.bad', run() {} } as never]"),
+    good.replace("operation: 'notes.generate'", "operation: 'notes.missing'"),
   ]
   try {
     for (const source of broken) {

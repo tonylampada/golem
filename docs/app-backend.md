@@ -69,12 +69,13 @@ Exact signatures (source: `src/operations.ts`, `src/backend/app.ts`):
 ```ts
 type AppServerModule = {
   operations?: Operation[]
+  jobs?: JobDefinition[]   // see Jobs
   authorize?: (request: AuthorizeRequest) => boolean | Promise<boolean>
   resolvePrincipal?: (request: IncomingMessage) => Principal | Promise<Principal>
 }
 type AuthorizeRequest = { operation: string; input: unknown; principal: Principal; via: 'http' | 'agent' | 'server'; record: Row | null }
 type Principal = { kind: 'anonymous' } | { kind: 'user'; id: string; name: string; roles: string[]; groups: string[]; session?: string }
-type OperationContext = { principal; via; records: RecordStore; files: FileStore; permits(record: Row): Promise<boolean> }
+type OperationContext = { principal; via; records: RecordStore; files: FileStore; permits(record: Row): Promise<boolean>; job?: JobContext }
 ```
 
 - **One invoke path.** HTTP (`POST /api/app/operations/<name>`), the raw file routes and in-process agent tools (`app.agentTools(principal)`) all call the same `invoke`: validate input, load the `record` the operation names, `authorize`, run, validate output.
@@ -160,7 +161,7 @@ When the store has no account yet, `./golem dev` prints a one-use admin invite l
 ### Agents and jobs
 
 - `app.agentTools(principal)` refreshes the principal before every call. A principal with a `session` works only while that browser session is live; after sign-out its calls fail with `UnauthorizedError` and never fall back to anonymous.
-- Server-owned work that acts for a person (a scheduled job) stores the account id and calls `app.resolveAccount(id)` on every run. It gets the current roles and groups, no session, and `ForbiddenError` once the account is removed. Nothing a browser sends becomes a principal.
+- Server-owned work that acts for a person (a job; see [Jobs](#jobs)) stores the account id and calls `app.resolveAccount(id)` on every run. It gets the current roles and groups, no session, and `ForbiddenError` once the account is removed. Nothing a browser sends becomes a principal.
 
 ### Security boundary
 
@@ -170,6 +171,44 @@ When the store has no account yet, `./golem dev` prints a one-use admin invite l
 - Five failed sign-ins lock that email, and separately that client address, for 15 minutes.
 - Browser writes must come from this origin. Without `origin`, the `Origin` header must match the `Host` header. Behind a proxy, set `origin` to the public origin; then it is the only one accepted. Forwarding headers such as `X-Forwarded-For` are never read, so behind a proxy the per-address lockout counts the proxy's address.
 - This protects one app's data between people who use it. It is not a hosted identity provider: there is no email verification, password reset (a manager removes and re-invites), external sign-in or two-factor. Server code and anyone with the data directory can read everything.
+
+## Jobs
+
+Optional server-side work that keeps running when the browser closes: one run now, or on a schedule. The app owns each job; a caller picks a job and its input, never the operation or who it acts for.
+
+```ts
+// src/server/index.ts
+export default {
+  operations: [generate],
+  jobs: [{ name: 'sample-notes', description: 'Write a batch of sample notes.', operation: 'notes.generate' }],
+} satisfies AppServerModule
+```
+
+```ts
+type JobDefinition = {
+  name: string
+  description: string
+  operation: string          // a registered app operation
+  anonymous?: boolean        // guests may start it when the app has accounts; runs act as anonymous
+  missed?: 'skip' | 'once'   // default 'skip'
+}
+```
+
+From the browser, `jobs` in `golem-kit/client` wraps the builtin operations: `jobs.start(job, input)`, `jobs.schedule(job, { every: seconds } | { cron, timezone }, input)`, `jobs.unschedule(id)`, `jobs.runs({ job?, scheduleId?, limit? })`, `jobs.cancel(id)`, `jobs.resolve(id, 'retry' | 'dismiss')`, `jobs.list()` and `jobs.subscribe(listener)`. Each is an ordinary operation (`jobs.start` and so on), so it goes through `authorize`. For `jobs.cancel`, `jobs.resolve` and `jobs.unschedule`, `authorize` also gets the run or schedule as `record`.
+
+- **Who a run acts for.** A signed-in caller's account id is stored with the run or schedule. Every run calls `app.resolveAccount(id)`, so it gets that account's current roles and groups and needs no live session. Then it calls the operation through `invoke` with `via: 'server'`. If the account was removed or lost a role, the run fails with that error. Anonymous callers run as `anonymous`. In an app with accounts, they need `anonymous: true` on the job and `guests: true`.
+- **Visibility.** People see, cancel and settle only their own runs and schedules, and `authorize` can narrow that further. Run state lives in the reserved `_job_runs` and `_job_schedules` collections, which `records.*` refuse. The change stream names only `_jobs`.
+- **Operation context.** A run passes `context.job = { runId, key, signal, progress }` to the operation. Call `await job.progress({ done, total, message })` to report progress. `key` stays the same across an explicit retry and is unique for each scheduled slot, and it is a valid record id. Write with ids derived from it (`${key}-${index}`) so a retry skips work already done. Golem makes no exactly-once promise.
+- **Cancel** aborts `job.signal`, and nothing more. The run stays `running`, with `cancelRequested`, until the operation returns or throws. Pass the signal on (`fetch`, `timers/promises`) or call `signal.throwIfAborted()` between steps. An operation that ignores the signal finishes as `succeeded`. Writes already made stay.
+- **Statuses:** `running`, `succeeded`, `failed` (with `error`), `cancelled` and `interrupted`.
+- **Stopping the server** aborts every running operation's `signal` and records nothing more. An operation that ignores the signal keeps going until the process exits, and calls it already made to other services may still complete.
+- **Restarts.** A run still `running` when the server stopped becomes `interrupted` at the next start. Its effects may be partial, so it never runs again by itself. `jobs.resolve(id, 'retry')` starts a new run with the same input and `key`, and `'dismiss'` leaves it as is. Only one retry is accepted per interrupted run.
+- **Schedules** persist across restarts. `every` is in seconds, 10 or more, counted from when the previous slot fired. `cron` uses five fields, or six with seconds, parsed by [croner](https://github.com/hexagon/croner), and needs an IANA `timezone`, such as `'Europe/Lisbon'`.
+- **Overlap** is skipped. A slot is skipped and recorded as `lastSkippedAt` while an earlier run of the schedule is still running (cancelling included) or is interrupted and not yet settled. An unsettled interrupted run pauses its schedule.
+- **Missed slots** are slots that passed while the server was down. With `skip`, the schedule waits for the next slot and records `lastMissedAt`. With `once`, it runs one catch-up at start.
+- **Reload** validates `jobs` with the rest of the module. A bad definition keeps the old module serving. A schedule or interrupted run remembers the operation it was made with. If its job is removed or now names another operation, it never runs. The schedule records the reason as `error` and skips each slot. To pick up the change, schedule the job again.
+- Finished runs are kept; there is no retention limit yet.
+- Jobs do not send notifications, export data or call external services unless the app's own operation does.
 
 ## Errors
 
