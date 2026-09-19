@@ -4,7 +4,7 @@ import { Auth, Chat, Shell } from 'golem-ui'
 import UserApp from '@golem/app'
 import projectConfig from '@golem/config'
 import { currentSession, identity, type Me } from '../client'
-import { anonymousIdentity, brain, chat, currentBrowserBackend, currentBrowserSession, forgetBrowserSession, navigation, restoreBrowserSession, startBrowserSession, startChatSession, subscribeBrowserStatus } from './adapters'
+import { anonymousIdentity, brain, chat, currentBrowserBackend, leaveBrowserSession, forgetBrowserSession, navigation, restoreBrowserSession, startBrowserSession, subscribeBrowserSession, subscribeBrowserStatus, type SessionKind } from './adapters'
 import { Groups } from './groups'
 import { SourcePanel, SourceReturn, useSourceView, type OpenSource } from './sources'
 import { Terminal } from './terminal'
@@ -18,7 +18,6 @@ const brainParam = () => new URLSearchParams(window.location.search).get('brain'
 const authAdapters = { identity, navigation }
 const agentNames: Record<string, string> = { codex: 'Codex', claude: 'Claude Code' }
 type Discovery = { agent: string; status: string; runnable?: boolean; detail?: string }
-const backendKey = 'golem.backend'
 
 export function App() {
   const [dark, setDark] = useState(() => {
@@ -31,16 +30,13 @@ export function App() {
     document.documentElement.style.colorScheme = theme
     try { localStorage.setItem('golem.theme', theme) } catch { /* Theme still works without storage. */ }
   }, [dark])
-  const [mode, setMode] = useState(false)
+  // Builder mode is app state, kept on the server (`.golem/builder.json`) so a reload comes back in it.
+  const [builder, setBuilder] = useState<boolean>()
   const [session, setSession] = useState<string>()
   const [sessionStatus, setSessionStatus] = useState('starting')
-  const [enteringBuildMode, setEnteringBuildMode] = useState(false)
-  const enteringBuildModeRef = useRef(false)
-  const [discoveries, setDiscoveries] = useState<Discovery[]>([])
-  const [backend, setBackend] = useState<string>()
   const [sessionBackend, setSessionBackend] = useState<string>()
   const [error, setError] = useState<string>()
-  const [chatInfo, setChatInfo] = useState<{ available: boolean; detail?: string; views?: boolean }>()
+  const [chatInfo, setChatInfo] = useState<{ provider: 'tmux' | 'anthropic' | null; agent?: string; available: boolean; detail?: string; views?: boolean }>()
   const [source, setSource] = useState<OpenSource>()
   const [sourceShown, setSourceShown] = useState(false)
   const [me, setMe] = useState<Me>()
@@ -50,7 +46,6 @@ export function App() {
   const showBrain = (projectConfig as { brain?: boolean }).brain === true && brainAt !== undefined
   const [terminal, setTerminal] = useState(false)
   const signedInAs = useRef<string | null>(null)
-  const runnable = discoveries.filter((item) => item.status === 'available' && item.runnable).map((item) => item.agent)
   useEffect(() => {
     currentSession().then((next) => { signedInAs.current = next.user?.id ?? null; setMe(next) }, () => setError('Account service unavailable.'))
     // Another person on this browser starts clean: their own build conversation, their own view.
@@ -68,103 +63,65 @@ export function App() {
   }, [])
   const canBuild = me?.canBuild === true
   const chatting = sessionBackend === 'anthropic'
-  const offers = useSourceView(mode && chatting && chatInfo?.views ? session : undefined, (next) => { setSource(next); setSourceShown(true) })
-  // Losing build access closes an open build conversation; its history stays on the server for later.
-  useEffect(() => { if (me && !canBuild && !chatting) setMode(false) }, [me, canBuild, chatting])
+  const offers = useSourceView(!builder && chatting && chatInfo?.views ? session : undefined, (next) => { setSource(next); setSourceShown(true) })
   useEffect(() => {
     if (!me) return
     fetch('/api/chat').then(async (response) => { if (response.ok) setChatInfo(await response.json()) }).catch(() => {})
+    fetch('/api/builder').then(async (response) => setBuilder(response.ok ? Boolean((await response.json()).builder) : false)).catch(() => setBuilder(false))
   }, [me])
+  useEffect(() => subscribeBrowserStatus(setSessionStatus), [])
+  useEffect(() => subscribeBrowserSession(setSession), [])
+  // What the chat column shows: the builder agent, or whatever the app defines for normal mode (maybe nothing).
+  const kind: SessionKind | undefined = builder === undefined || !chatInfo ? undefined : builder && canBuild ? 'builder' : chatInfo.provider === 'tmux' ? 'chat' : chatInfo.provider === 'anthropic' ? 'anthropic' : undefined
   useEffect(() => {
-    if (!canBuild) return
-    fetch('/api/runtime').then((response) => response.json()).then((result) => {
-      const found = result.discoveries as Discovery[]
-      const ready = found.filter((item) => item.status === 'available' && item.runnable).map((item) => item.agent)
-      let saved: string | null = null
-      try { saved = localStorage.getItem(backendKey) } catch { /* No remembered choice. */ }
-      setDiscoveries(found)
-      setBackend([saved, result.builder, 'codex', 'claude'].find((agent) => agent && ready.includes(agent)) ?? undefined)
-    }).catch(() => setError('Runtime discovery unavailable.'))
-  }, [canBuild])
-  const chooseBackend = (agent: string) => {
-    setBackend(agent)
-    try { localStorage.setItem(backendKey, agent) } catch { /* Choice still applies to this page. */ }
+    setError(undefined)
+    setTerminal(false)
+    if (!kind) { leaveBrowserSession(); setSession(undefined); setSessionBackend(undefined); return }
+    let cancelled = false
+    const open = async () => {
+      // A terminal agent: the configured one, else what this computer has (the server picks per intent).
+      const runtime = kind === 'anthropic' ? undefined : await fetch('/api/runtime').then((response) => response.json()) as { discoveries: Discovery[]; builder?: string } | undefined
+      const ready = runtime?.discoveries.filter((item) => item.status === 'available' && item.runnable).map((item) => item.agent) ?? []
+      const agent = kind === 'anthropic' ? undefined : [kind === 'chat' ? chatInfo?.agent : undefined, runtime?.builder, 'codex', 'claude'].find((one) => one && ready.includes(one))
+      if (await restoreBrowserSession(kind)) return
+      if (kind !== 'anthropic' && !agent) throw new Error(`No agent to chat with: ${runtime?.discoveries.map((item) => `${agentNames[item.agent] ?? item.agent} ${item.status === 'missing' ? 'not installed' : item.detail ?? item.status}`).join(', ') || 'checking agents…'}`)
+      if (kind === 'anthropic' && !chatInfo?.available) throw new Error(chatInfo?.detail ?? 'Chat is not available.')
+      await startBrowserSession(agent, kind)
+    }
+    open().then(() => { if (!cancelled) { setSessionBackend(currentBrowserBackend()) } }, (cause) => { if (!cancelled) setError(cause instanceof Error ? cause.message : String(cause)) })
+    return () => { cancelled = true }
+  }, [kind])
+  const toggleBuilder = async (on: boolean) => {
+    setBuilder(on)
+    const response = await fetch('/api/builder', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ builder: on }) })
+    if (!response.ok) { setError((await response.json()).error ?? 'Unable to switch mode'); setBuilder(!on) }
   }
-  useEffect(() => {
-    const unsubscribe = subscribeBrowserStatus(setSessionStatus)
-    const discover = canBuild ? 'build' : chatInfo?.available ? 'chat' : undefined
-    if (!discover) return unsubscribe
-    restoreBrowserSession(discover).then((restored) => restored || discover === 'chat' || !chatInfo?.available ? restored : restoreBrowserSession('chat')).then((restored) => {
-      if (restored) { setSession(currentBrowserSession()); setSessionBackend(currentBrowserBackend()); setMode(true) }
-    }).catch((cause) => setError(cause instanceof Error ? cause.message : String(cause)))
-    return unsubscribe
-  }, [canBuild, chatInfo?.available])
   const accounts = me?.accounts
   const authConfig = accounts && { workspaceName: projectConfig.title, mode: 'password' as const, allowSignUp: accounts.allowSignUp, roles: accounts.roles }
   const manages = Boolean(me?.user?.roles.some((role) => accounts?.roles.some((one) => one.id === role && one.manages)))
   const invited = new URLSearchParams(window.location.search).has('invite')
   const shellAdapters = { identity: accounts ? identity : anonymousIdentity, navigation }
-  const enterBuildMode = async () => {
-    if (enteringBuildModeRef.current) return
-    enteringBuildModeRef.current = true
-    setEnteringBuildMode(true)
-    setError(undefined)
-    try { const started = await startBrowserSession(backend); setSession(started.id); setSessionBackend(started.backend); setMode(true) }
-    catch (cause) { setError(cause instanceof Error ? cause.message : String(cause)) }
-    finally { enteringBuildModeRef.current = false; setEnteringBuildMode(false) }
-  }
-  const startChat = async () => {
-    setError(undefined)
-    try { const started = await startChatSession(); setSession(started.id); setSessionBackend(started.backend); setMode(true) }
-    catch (cause) { setError(cause instanceof Error ? cause.message : String(cause)) }
-  }
   return (
     <Shell
       config={{ title: projectConfig.title, chatSide: 'left', breakpoint: 768 }}
       adapters={shellAdapters}
-      chat={
+      chat={!kind ? null : (
         <div className="flex h-full min-h-0 flex-col">
           <div className="golem-browser-header flex items-center gap-1 whitespace-nowrap border-b border-neutral-200 bg-white px-2 py-2 text-xs">
-            <span className="font-medium">{mode ? (chatting ? 'Chat' : 'Build mode') : 'Conversation mode'}</span>
-            <span className={`flex min-w-0 items-center ${mode ? 'golem-browser-status-connected text-green-700' : 'golem-browser-status-disconnected text-neutral-500'}`} title={mode ? session : undefined}>
+            <span className="font-medium">{kind === 'builder' ? 'Builder' : 'Chat'}</span>
+            <span className={`flex min-w-0 items-center ${session ? 'golem-browser-status-connected text-green-700' : 'golem-browser-status-disconnected text-neutral-500'}`} title={session}>
               <span className="golem-browser-status-dot" aria-hidden="true" />
-              <span className="truncate">{mode ? <>{sessionStatus} <span className="opacity-60">{session?.slice(0, 8)}</span></> : 'Not connected'}</span>
+              <span className="truncate">{session ? <>{sessionStatus} <span className="opacity-60">{session.slice(0, 8)}</span></> : error ? 'Not connected' : 'Connecting…'}</span>
             </span>
-            {mode && !chatting && <button className="golem-browser-new golem-browser-terminal ml-auto shrink-0 rounded-full border border-neutral-300 px-2 py-1" title="Agent terminal" onClick={() => setTerminal(true)}>Terminal</button>}
-            {mode && <button className={`golem-browser-new shrink-0 rounded-full border border-neutral-300 px-2 py-1${chatting ? ' ml-auto' : ''}`} title="New conversation" onClick={() => setMode(false)}>New</button>}
+            {session && !chatting && <button type="button" className="golem-browser-terminal ml-auto shrink-0 rounded-full border border-neutral-300 px-2 py-1" title="Agent terminal" aria-label="Agent terminal" onClick={() => setTerminal(true)}>🖥️</button>}
           </div>
-          {terminal && mode && !chatting && session && <Terminal session={session} onClose={() => setTerminal(false)} />}
-          {!mode ? (
-            <div className="p-4 text-sm">
-              {chatInfo && (
-                <div className="mb-4">
-                  <button className="golem-browser-chat golem-browser-enter rounded bg-neutral-900 px-3 py-2 text-white disabled:opacity-40" disabled={!chatInfo.available} onClick={startChat}>Start a chat</button>
-                  {chatInfo.detail && <p className="golem-browser-chat-detail golem-browser-runtime mt-2 text-neutral-600">{chatInfo.detail}</p>}
-                </div>
-              )}
-              {me && !canBuild && <p className="golem-browser-build-denied mb-3 text-neutral-600">{me.user ? 'Your account may not build this app.' : 'Sign in with an account that may build.'}</p>}
-              <p className="golem-browser-runtime text-neutral-600">
-                {discoveries.length ? discoveries.map((item) => `${agentNames[item.agent] ?? item.agent}: ${item.status === 'available' && item.runnable ? 'available' : item.status === 'missing' ? 'not installed' : item.detail ?? 'unavailable'}`).join(' · ') : 'Checking agents…'}
-              </p>
-              {runnable.length > 1 && (
-                <label className="golem-browser-runtime mt-3 flex items-center gap-2">
-                  Agent
-                  <select className="golem-browser-backend rounded border border-neutral-300 px-2 py-1" value={backend} onChange={(event) => chooseBackend(event.target.value)}>
-                    {runnable.map((agent) => <option key={agent} value={agent}>{agentNames[agent] ?? agent}</option>)}
-                  </select>
-                </label>
-              )}
-              <div className="mt-4 flex flex-wrap gap-2">
-              <button className="golem-browser-enter rounded bg-neutral-900 px-3 py-2 text-white disabled:opacity-40" disabled={!canBuild || !backend || enteringBuildMode} onClick={enterBuildMode}>Enter build mode{backend ? ` with ${agentNames[backend] ?? backend}` : ''}</button>
-              {session && <button className="golem-browser-new rounded border border-neutral-300 px-3 py-2" onClick={() => setMode(true)}>Back to conversation</button>}
-              </div>
-              {error && <p className="golem-browser-error mt-3 text-red-700">{error}</p>}
-            </div>
-          ) : chatting
+          {terminal && session && !chatting && <Terminal session={session} onClose={() => setTerminal(false)} />}
+          {error && <p className="golem-browser-error px-4 pt-3 text-sm text-red-700">{error}</p>}
+          {session && (chatting
             ? <><div className="min-h-0 flex-1"><Chat key={session} config={{ agentName: 'Assistant', emptyState: 'Ask about or update what you can see in this app.' }} adapters={chatAdapters} /></div>{offers}{source && !sourceShown && <SourceReturn source={source} onShow={() => setSourceShown(true)} />}</>
-            : <Chat key={session} config={{ agentName: `Golem ${agentNames[sessionBackend ?? 'codex'] ?? sessionBackend}`, emptyState: `Ask ${agentNames[sessionBackend ?? 'codex'] ?? sessionBackend} to inspect or explain this workspace.` }} adapters={chatAdapters} />}
+            : <Chat key={kind} config={{ agentName: `Golem ${agentNames[sessionBackend ?? 'codex'] ?? sessionBackend}`, emptyState: kind === 'builder' ? `Ask ${agentNames[sessionBackend ?? 'codex'] ?? sessionBackend} to build or change this app.` : 'Ask about this app.' }} adapters={chatAdapters} />)}
         </div>
-      }
+      )}
       canvas={
         !me ? null : <>
           {/* Mounted from the first accepted source on, so closing or switching never drops an edit. */}
@@ -195,6 +152,12 @@ export function App() {
       }
       account={
         <div className="flex shrink-0 items-center gap-3">
+          {canBuild && builder !== undefined && (
+            <label className="golem-browser-builder-switch flex cursor-pointer items-center gap-1.5 text-sm" title="Builder mode: chat with the agent that builds this app">
+              <input type="checkbox" className="golem-browser-builder" checked={builder} onChange={(event) => void toggleBuilder(event.target.checked)} />
+              Builder
+            </label>
+          )}
           <button
             type="button"
             onClick={() => setDark((current) => !current)}

@@ -137,7 +137,7 @@ test('ordinary chat: an API agent acting as the sender through listed operations
 
     // A member who may not build can chat; the chat is not a build and grants none.
     assert.equal((await member.get('/api/runtime')).status, 403)
-    assert.deepEqual((await member.get('/api/chat')).body, { available: true, views: true })
+    assert.deepEqual((await member.get('/api/chat')).body, { provider: 'anthropic', available: true, views: true })
     const chat = await member.post('/api/chat')
     assert.equal(chat.status, 201)
     assert.equal(chat.body.backend, 'anthropic')

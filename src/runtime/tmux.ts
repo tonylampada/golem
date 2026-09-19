@@ -1,9 +1,9 @@
-import { existsSync } from 'node:fs'
+import { existsSync, readFileSync } from 'node:fs'
 import { createRequire } from 'node:module'
 import { basename, dirname, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import type { AgentName } from './discovery.ts'
-import type { BackendEvent, PaneAccess, SessionBackend } from './session.ts'
+import type { BackendEvent, PaneAccess, SessionBackend, SlashCommand } from './session.ts'
 
 const require = createRequire(import.meta.url)
 const frameworkRoot = resolve(dirname(fileURLToPath(import.meta.url)), '../..')
@@ -21,6 +21,10 @@ export type Harness = {
   paneInput?(ref: HarnessRef, input: { key?: string; text?: string }): Promise<void>
   openPane?(ref: HarnessRef, opts: { onFrame: (frame: string) => void }): Promise<PaneHandle> | PaneHandle
   paneSnapshot?(ref: HarnessRef): Promise<string>
+  commands?(ref: HarnessRef): SlashCommand[]
+  runCommand?(ref: HarnessRef, line: string): Promise<string>
+  /** Pins a session-granular ref (pre-window conversations) to a named window without restarting the agent. */
+  adoptWindow?(ref: HarnessRef, window: string): Promise<HarnessRef | null>
 }
 export type PaneHandle = { close(): void }
 
@@ -36,10 +40,18 @@ export function builderInstructions(cwd: string): string {
   return `You are Golem's in-app builder. The user sees Chat beside their application's Canvas. Explain that plainly and ask what they want to create; do not redirect them to generic coding-assistant documentation. Build-mode turns may edit the app and, after success, Golem rebuilds and refreshes the Canvas. Conversation history persists, including resumed threads. Read ${existsSync(guide) ? guide : resolve(frameworkRoot, 'docs/builder.md')} and ${resolve(cwd, 'docs/domain.md')} when present before major work, implementation, or opening/updating a pull request. This app is ${cwd}; active Golem source is ${source}${ui ? `; active golem-ui source is ${ui}` : ''}. Keep app-specific decisions in the app and shared framework/UI knowledge in its owner. The user only sees what you send with \`./golem say <text>\` (or \`./golem say --file <f>\`) from the app root; answer every message that way, nothing printed in this terminal reaches them.${existsSync(resolve(cwd, 'brain/index.md')) ? ` ${brainInstructions}` : ''}`
 }
 
+/** The `chat` window's brief: the app's `docs/chat.md` when present, else a plain assistant; never a builder. */
+export function chatInstructions(cwd: string): string {
+  const brief = resolve(cwd, 'docs/chat.md')
+  const own = existsSync(brief) ? readFileSync(brief, 'utf8').trim() : `You are the assistant of the application in ${cwd}. People chat with you beside the running app; help them use it and answer questions about it.`
+  return `${own} You are not this app's builder: do not edit its files, run builds, or change its configuration; if asked to, say the Builder switch is for that. The user only sees what you send with \`./golem say <text>\` (or \`./golem say --file <f>\`) from the app root; answer every message that way, nothing printed in this terminal reaches them.${existsSync(resolve(cwd, 'brain/index.md')) ? ` ${brainInstructions}` : ''}`
+}
+
 /** Added when the app has a `brain/` folder: read the root index first, cite what you used. */
 export const brainInstructions = 'This app has a brain: `brain/` is an Open Knowledge Format bundle. Read `brain/index.md` first, then the concepts it points to. When an answer is grounded in the brain, cite each passage you used as `path#Lstart-Lend` (the path relative to `brain/`, e.g. `concepts/opening.md#L4-L9`); Golem turns those citations into source chips under your reply that open the passage in the reader.'
 
-export type TmuxOptions = { harness?: Harness; stateDir?: string; api?: string }
+/** `window` names this agent's window in the app's session (`builder`, `chat`); `instructions` its launch prompt. */
+export type TmuxOptions = { harness?: Harness; stateDir?: string; api?: string; window?: string; instructions?: string }
 
 /** The one tmux session of an app's build mode: `tmux attach -t golem-<app dir>` is always the place to look. */
 export const tmuxSessionName = (cwd: string): string => `golem-${basename(cwd).replace(/[^A-Za-z0-9_-]/g, '-')}`
@@ -74,13 +86,17 @@ export class TmuxBackend implements SessionBackend {
     const opts = {
       stateDir: this.opts.stateDir ?? resolve(this.cwd, '.golem/harness'),
       session: tmuxSessionName(this.cwd),
+      window: this.opts.window,
       env: { GOLEM_SESSION: sessionId, GOLEM_API: this.opts.api ?? 'http://127.0.0.1:3000' },
-      // codex 0.155: the update prompt at launch would take the typed brief as its answer, and the
-      // paste-burst fold swallows the first Enter of a long line. Both off; replayed on resume.
-      extraArgs: this.agent === 'codex' ? ['-c', 'check_for_update_on_startup=false', '-c', 'disable_paste_burst=true'] : [],
+      // codex 0.155: the update prompt at launch would take the typed brief as its answer, the
+      // paste-burst fold swallows the first Enter of a long line, and the rate-limit "keep current
+      // model" nudge after the first turn eats the first message. All off; replayed on resume.
+      extraArgs: this.agent === 'codex' ? ['-c', 'check_for_update_on_startup=false', '-c', 'disable_paste_burst=true', '-c', 'notice.hide_rate_limit_model_nudge=true'] : [],
     }
     try {
-      this.ref = this.ref ? await this.harness.resume(this.ref, opts) : await this.harness.spawn(this.cwd, builderInstructions(this.cwd), opts)
+      // A conversation saved before windows existed owned the whole session: pin it to its window first.
+      if (this.ref && !this.ref.window && opts.window) this.ref = (await this.harness.adoptWindow?.(this.ref, opts.window)) ?? this.ref
+      this.ref = this.ref ? await this.harness.resume(this.ref, opts) : await this.harness.spawn(this.cwd, this.opts.instructions ?? builderInstructions(this.cwd), opts)
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error)
       emit({ type: 'error', message: `${this.agent} session failed to start: ${message}` })
@@ -120,6 +136,14 @@ export class TmuxBackend implements SessionBackend {
   }
 
   harnessRef(): HarnessRef | undefined { return this.ref }
+
+  /** The harness's own slash commands (`/status`, `/compact`, …); `/reset` is the server's, not listed here. */
+  commands(): SlashCommand[] { return this.ref && this.harness.commands ? this.harness.commands(this.ref) : [] }
+
+  async runCommand(line: string): Promise<string> {
+    if (!this.ref || !this.harness.runCommand) throw new Error(`unknown command ${line.split(/\s+/)[0]}`)
+    return this.harness.runCommand(this.ref, line)
+  }
 
   /** The live tmux screen, for the Terminal popup: undefined until the agent has been spawned or resumed. */
   pane(): PaneAccess | undefined {

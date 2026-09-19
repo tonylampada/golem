@@ -27,7 +27,12 @@ export type SessionBackend = {
   transcript?(): unknown
   /** The agent's live terminal screen, when the backend has one to show (the tmux backend). */
   pane?(): PaneAccess | undefined
+  /** Slash commands the harness honours, and their runner; the reply is the strip's system text. */
+  commands?(): SlashCommand[]
+  runCommand?(line: string): Promise<string>
 }
+
+export type SlashCommand = { name: string; description: string; args?: Array<{ value: string; description: string }> }
 
 /** One agent screen: `open` streams whole-screen frames on change until closed, `input` types one key or a literal string. */
 export type PaneAccess = {
@@ -430,9 +435,13 @@ export class SessionManager {
     for (const snapshot of snapshots) this.sessions.set(snapshot.id, Session.restore(snapshot, createWorker(snapshot), this.persist))
   }
 
-  /** One agent per app, in one tmux session: parks every terminal-agent session but `id` before another starts or resumes there. */
-  async parkOthers(id?: string): Promise<void> {
-    await Promise.all(this.all().filter((session) => session.id !== id && session.backend !== 'anthropic').map((session) => session.park()))
+  /**
+   * One agent per window: the app's tmux session has a `builder` window and a `chat` window, and a
+   * terminal-agent conversation lives in the one its `buildMode` names. Parks every other terminal-agent
+   * conversation of that window before another starts or resumes there.
+   */
+  async parkOthers(buildMode: boolean, id?: string): Promise<void> {
+    await Promise.all(this.all().filter((session) => session.id !== id && session.backend !== 'anthropic' && session.buildMode === buildMode).map((session) => session.park()))
   }
 
   async shutdownAll(): Promise<void> {

@@ -110,7 +110,7 @@ test('a fresh browser discovers history without starting work', async () => {
   assert.equal(await restoreBrowserSession(), true)
   assert.equal(discovery, 1)
   assert.deepEqual((await chat.history()).map(({ text }) => text), ['earlier'])
-  assert.equal(values.get('golem.browser.session'), 'saved')
+  assert.equal(values.get('golem.browser.session.builder'), 'saved')
 })
 
 test('failed optimistic messages remain retryable until matching history confirms them', async () => {

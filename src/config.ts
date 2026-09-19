@@ -3,7 +3,13 @@ import { pathToFileURL } from 'node:url'
 import { toolNameProblem } from './runtime/tool-names.ts'
 
 /** Browser-visible settings: never put secrets in golem.config.ts. */
-export type AppConfig = { host: string; port: number; storage: 'jsonl' | 'sqlite'; origin?: string; accounts?: AccountsConfig; agents?: AgentsConfig; brain?: boolean }
+export type AppConfig = { host: string; port: number; storage: 'jsonl' | 'sqlite'; origin?: string; accounts?: AccountsConfig; agents?: AgentsConfig; brain?: boolean; chat?: ChatConfig }
+/**
+ * Normal-mode chat, the app's rule: `false` (or absent) means no chat column outside builder mode.
+ * `anthropic` is the API agent (same shape as `agents.ordinary`, which it fills); `tmux` is a
+ * terminal agent in the `chat` window of the app's tmux session, briefed from `docs/chat.md`.
+ */
+export type ChatConfig = { provider: 'anthropic' } | { provider: 'tmux'; agent?: 'codex' | 'claude' }
 /** `brain: true` serves the app's `brain/` folder read-only and mounts the Brain reader beside the app. */
 
 /**
@@ -34,7 +40,7 @@ export async function loadAppConfig(root = process.cwd()): Promise<AppConfig> {
   if (!value || typeof value !== 'object' || Array.isArray(value)) {
     throw new Error('golem.config.ts must default-export an object')
   }
-  const configured = value as { host?: unknown; port?: unknown; storage?: unknown; origin?: unknown; accounts?: unknown; agents?: unknown; brain?: unknown }
+  const configured = value as { host?: unknown; port?: unknown; storage?: unknown; origin?: unknown; accounts?: unknown; agents?: unknown; brain?: unknown; chat?: unknown }
   if (configured.brain !== undefined && typeof configured.brain !== 'boolean') throw new Error('golem.config.ts brain must be a boolean')
   const host: unknown = configured.host === undefined ? '127.0.0.1' : configured.host
   const port: unknown = configured.port === undefined ? 3000 : configured.port
@@ -52,7 +58,21 @@ export async function loadAppConfig(root = process.cwd()): Promise<AppConfig> {
   if (origin !== undefined && (typeof origin !== 'string' || !/^https?:$/.test(safeUrl(origin)?.protocol ?? '') || safeUrl(origin)?.origin !== origin)) {
     throw new Error("golem.config.ts origin must be an exact origin like 'https://notes.example.com'")
   }
-  return { host, port, storage, ...(origin === undefined ? {} : { origin }), ...(configured.accounts === undefined ? {} : { accounts: accounts(configured.accounts) }), ...(configured.agents === undefined ? {} : { agents: agents(configured.agents) }), ...(configured.brain ? { brain: true } : {}) }
+  const config: AppConfig = { host, port, storage, ...(origin === undefined ? {} : { origin }), ...(configured.accounts === undefined ? {} : { accounts: accounts(configured.accounts) }), ...(configured.agents === undefined ? {} : { agents: agents(configured.agents) }), ...(configured.brain ? { brain: true } : {}) }
+  if (configured.chat !== undefined && configured.chat !== false) {
+    if (!configured.chat || typeof configured.chat !== 'object' || Array.isArray(configured.chat)) throw new Error('golem.config.ts chat must be false or { provider, ... }')
+    const { provider, ...rest } = configured.chat as Record<string, unknown>
+    if (provider === 'anthropic') {
+      config.agents = { ...config.agents, ordinary: ordinaryAgent({ backend: 'anthropic', ...rest }) }
+      config.chat = { provider }
+    } else if (provider === 'tmux') {
+      const { agent, ...unknown } = rest
+      if (Object.keys(unknown).length) throw new Error(`golem.config.ts chat has unknown fields: ${Object.keys(unknown).join(', ')}`)
+      if (agent !== undefined && agent !== 'codex' && agent !== 'claude') throw new Error("golem.config.ts chat.agent must be 'codex' or 'claude'")
+      config.chat = { provider, ...(agent ? { agent } : {}) }
+    } else throw new Error("golem.config.ts chat.provider must be 'anthropic' or 'tmux'")
+  } else if (config.agents?.ordinary) config.chat = { provider: 'anthropic' }
+  return config
 }
 
 function accounts(value: unknown): AccountsConfig {

@@ -32,11 +32,22 @@ export const navigation: NavigationAdapter = {
   },
 }
 
-const storageKey = 'golem.browser.session'
+/** Which conversation the chat column shows: the builder agent, or the app's normal-mode chat. */
+export type SessionKind = 'builder' | 'chat' | 'anthropic'
+// This tab remembers one conversation per kind, so the Builder switch comes back to the same one.
+const storageKey = (kind: SessionKind) => `golem.browser.session.${kind}`
 const outboxKey = 'golem.browser.outbox'
+const kinds = ['builder', 'chat', 'anthropic'] as const
+// Until the shell decides the mode, the tab's last conversation of any kind is the shown one.
 let sessionId: string | undefined = (() => {
-  try { return window.sessionStorage.getItem(storageKey) ?? undefined } catch { return undefined }
+  try { return kinds.map((kind) => window.sessionStorage.getItem(storageKey(kind))).find(Boolean) ?? undefined } catch { return undefined }
 })()
+const sessionListeners = new Set<(id: string | undefined) => void>()
+/** Fires when the shown conversation changes underneath an open Chat, e.g. after `/reset`. */
+export function subscribeBrowserSession(listener: (id: string | undefined) => void): () => void {
+  sessionListeners.add(listener)
+  return () => sessionListeners.delete(listener)
+}
 type BrowserMessage = ChatMessage & { delivery?: 'pending' | 'failed'; sources?: string[] }
 type OutboxMessage = { id: string; sessionId: string; text: string; attachments?: ChatAttachment[]; delivery?: 'pending' | 'failed'; at: string }
 let outbox: OutboxMessage[] = (() => {
@@ -89,6 +100,41 @@ function fromEvents(events: Array<{ type: string; sequence: number; text?: strin
 
 function refresh(): void { mergeEvents([]); emit() }
 
+type SlashCommand = { name: string; description: string; args?: Array<{ value: string; description: string }> }
+
+/** (Re)opens the shown conversation's event stream; the previous stream, if any, is closed. */
+function connect(): void {
+  source?.close()
+  const subscribedSession = sessionId!
+  const nextSource = new EventSource(`/api/sessions/${subscribedSession}/events?after=${cursor}${sessionBackend === 'anthropic' ? '&view=1' : ''}`)
+  source = nextSource
+  nextSource.onmessage = (event) => applyEvent(JSON.parse(event.data))
+  if (sessionBackend === 'anthropic') nextSource.addEventListener('view', (event) => {
+    const data = JSON.parse((event as MessageEvent).data) as ViewStreamEvent
+    if (data.type === 'view') chatView = data.id
+    viewListeners.forEach((listener) => listener(data))
+  })
+  nextSource.onopen = () => {
+    void fetch(`/api/sessions/${subscribedSession}/history`).then(async (response) => {
+      if (!response.ok || source !== nextSource || sessionId !== subscribedSession) return
+      const result = await response.json() as { events: Array<{ sequence: number; type: string; text?: string; reason?: string; clientMessageId?: string; attachments?: ChatAttachment[]; sources?: string[] }>; status: string }
+      if (source !== nextSource || sessionId !== subscribedSession) return
+      setStatus(mergeEvents(result.events) ?? result.status)
+      emit()
+    }).catch(() => {})
+  }
+  nextSource.onerror = () => {
+    if (source !== nextSource || nextSource.readyState !== EventSource.CLOSED || sessionId !== subscribedSession) return
+    // Reconnect only while this conversation is still ours to read; a 401/403 means access
+    // changed, so let identity decide instead of retrying into the same refusal.
+    void fetch(`/api/sessions/${subscribedSession}/history`).then((response) => {
+      if (source !== nextSource || sessionId !== subscribedSession) return
+      if (response.status === 401 || response.status === 403) void refreshIdentity()
+      else connect()
+    }, () => { if (source === nextSource) connect() })
+  }
+}
+
 // This tab's view of the open chat, from its event stream: sent with each message so the
 // assistant's offers come here, and used to answer them.
 let chatView: string | undefined
@@ -121,64 +167,78 @@ async function deliver(message: OutboxMessage): Promise<void> {
   }
 }
 
-/** The only build-starting call in the UI — declares build intent explicitly; the server decides permission from it. */
-export async function startBrowserSession(backend = 'codex'): Promise<{ id: string; backend: string }> {
-  return begin('/api/sessions', { backend, intent: 'build' }, backend)
+/**
+ * Starts a conversation of `kind`: the builder agent (the only build-starting call in the UI, declaring
+ * build intent explicitly; the server decides permission), a terminal chat agent, or the API assistant.
+ */
+export async function startBrowserSession(backend = 'codex', kind: SessionKind = 'builder'): Promise<{ id: string; backend: string }> {
+  return kind === 'anthropic' ? begin(kind, '/api/chat', {}, 'anthropic') : begin(kind, '/api/sessions', { backend, intent: kind === 'builder' ? 'build' : 'chat' }, backend)
 }
 
-/** Starts an ordinary chat: an assistant limited to the app's listed actions, never a build. */
-export async function startChatSession(): Promise<{ id: string; backend: string }> {
-  return begin('/api/chat', {}, 'anthropic')
-}
-
-async function begin(url: string, body: object, backend: string): Promise<{ id: string; backend: string }> {
+async function begin(kind: SessionKind, url: string, body: object, backend: string): Promise<{ id: string; backend: string }> {
   const response = await fetch(url, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) })
   const result = await response.json() as { id?: string; backend?: string; error?: string }
   if (!response.ok || !result.id) throw new Error(result.error ?? 'Unable to start session')
-  source?.close()
-  source = undefined
-  sessionId = result.id
-  sessionBackend = result.backend ?? backend
-  try { window.sessionStorage.setItem(storageKey, sessionId) } catch {}
+  show(kind, result.id, result.backend ?? backend)
+  return { id: result.id, backend: sessionBackend! }
+}
+
+/** Makes `id` the shown conversation: remembered for its kind, stream reconnected if a Chat is listening. */
+function show(kind: SessionKind, id: string, backend: string): void {
+  sessionKind = kind
+  sessionId = id
+  sessionBackend = backend
+  try { window.sessionStorage.setItem(storageKey(kind), id) } catch {}
   cursor = -1
   eventLog = new Map()
   setStatus('ready')
   messages = []
   emit()
-  return { id: result.id, backend: sessionBackend }
+  if (listeners.size) connect()
+  sessionListeners.forEach((listener) => listener(id))
 }
+
+/** Closes the shown conversation's stream without forgetting it; the chat column is going away. */
+export function leaveBrowserSession(): void {
+  source?.close()
+  source = undefined
+  sessionId = undefined
+  sessionKind = undefined
+  sessionBackend = undefined
+  messages = []
+  emit()
+}
+let sessionKind: SessionKind | undefined
 
 export function currentBrowserSession(): string | undefined { return sessionId }
 export function currentBrowserBackend(): string | undefined { return sessionBackend }
 
-/** Drops this tab's remembered build conversation, e.g. when a different person signs in. */
+/** Drops this tab's remembered conversations, e.g. when a different person signs in. */
 export function forgetBrowserSession(): void {
   sessionId = undefined
-  try { window.sessionStorage.removeItem(storageKey) } catch {}
+  for (const kind of kinds) try { window.sessionStorage.removeItem(storageKey(kind)) } catch {}
 }
 
-/** Reopens this tab's conversation, else the latest build (or, with `chat`, the latest chat) conversation. */
-export async function restoreBrowserSession(discover: 'build' | 'chat' = 'build'): Promise<boolean> {
-  if (!sessionId) {
-    const discovered = await fetch(discover === 'chat' ? '/api/chat' : '/api/sessions/latest')
+/** Reopens this tab's conversation of `kind`, else the latest one of that kind on the server. */
+export async function restoreBrowserSession(kind: SessionKind = 'builder'): Promise<boolean> {
+  let id: string | undefined
+  try { id = window.sessionStorage.getItem(storageKey(kind)) ?? undefined } catch { /* Discovery below. */ }
+  if (!id) {
+    const discovered = await fetch(kind === 'anthropic' ? '/api/chat' : `/api/sessions/latest${kind === 'chat' ? '?chat=1' : ''}`)
     if (discovered.status === 404) return false
     if (!discovered.ok) throw new Error((await discovered.json()).error ?? 'Unable to discover a saved session')
     const found = await discovered.json() as { id?: string; latest?: { id: string } }
-    const id = discover === 'chat' ? found.latest?.id : found.id
+    id = kind === 'anthropic' ? found.latest?.id : found.id
     if (!id) return false
-    sessionId = id
-    try { window.sessionStorage.setItem(storageKey, sessionId) } catch {}
   }
-  const response = await fetch(`/api/sessions/${sessionId}/history`)
+  const response = await fetch(`/api/sessions/${id}/history`)
   if (response.status === 404) {
-    sessionId = undefined
-    try { window.sessionStorage.removeItem(storageKey) } catch {}
-    return restoreBrowserSession(discover)
+    try { window.sessionStorage.removeItem(storageKey(kind)) } catch {}
+    return restoreBrowserSession(kind)
   }
   if (!response.ok) throw new Error((await response.json()).error ?? 'Unable to restore session')
   const result = await response.json() as { events: Array<{ sequence: number; type: string; text?: string; reason?: string; clientMessageId?: string; attachments?: ChatAttachment[]; sources?: string[] }>; status: string; backend?: string }
-  sessionBackend = result.backend
-  eventLog = new Map()
+  show(kind, id, result.backend ?? (kind === 'anthropic' ? 'anthropic' : 'codex'))
   setStatus(mergeEvents(result.events) ?? result.status)
   emit()
   return true
@@ -207,8 +267,8 @@ function applyEvent(event: { sessionId?: string; sequence: number; type: string;
   emit()
 }
 
-// interrupt is declared here too so the object still typechecks against a golem-ui whose ChatAdapter predates it.
-export const chat: ChatAdapter & { retry(messageId: string): Promise<void>; interrupt(): Promise<void>; openSource(location: string): void } = {
+// interrupt, commands and runCommand are declared here too so the object still typechecks against a golem-ui whose ChatAdapter predates them (0.1.1).
+export const chat: ChatAdapter & { retry(messageId: string): Promise<void>; interrupt(): Promise<void>; openSource(location: string): void; commands(): Promise<SlashCommand[]>; runCommand(line: string): Promise<string> } = {
   interrupt: interruptBrowserSession,
   // A source chip: the Brain panel opens on the cited lines, and on a phone the canvas tab comes forward.
   openSource: (location) => navigation.go(`${window.location.pathname}?brain=${encodeURIComponent(location)}`),
@@ -223,44 +283,23 @@ export const chat: ChatAdapter & { retry(messageId: string): Promise<void>; inte
   },
   subscribe(listener) {
     listeners.add(listener)
-    if (sessionId) {
-      source?.close()
-      const subscribedSession = sessionId
-      let subscribedSource: EventSource
-      const connect = () => {
-        const nextSource = new EventSource(`/api/sessions/${subscribedSession}/events?after=${cursor}${sessionBackend === 'anthropic' ? '&view=1' : ''}`)
-        subscribedSource = nextSource
-        source = nextSource
-        nextSource.onmessage = (event) => applyEvent(JSON.parse(event.data))
-        if (sessionBackend === 'anthropic') nextSource.addEventListener('view', (event) => {
-          const data = JSON.parse((event as MessageEvent).data) as ViewStreamEvent
-          if (data.type === 'view') chatView = data.id
-          viewListeners.forEach((listener) => listener(data))
-        })
-        nextSource.onopen = () => {
-          void fetch(`/api/sessions/${subscribedSession}/history`).then(async (response) => {
-            if (!response.ok || source !== nextSource || sessionId !== subscribedSession) return
-            const result = await response.json() as { events: Array<{ sequence: number; type: string; text?: string; reason?: string; clientMessageId?: string; attachments?: ChatAttachment[]; sources?: string[] }>; status: string }
-            if (source !== nextSource || sessionId !== subscribedSession) return
-            setStatus(mergeEvents(result.events) ?? result.status)
-            emit()
-          }).catch(() => {})
-        }
-        nextSource.onerror = () => {
-          if (source !== nextSource || nextSource.readyState !== EventSource.CLOSED || sessionId !== subscribedSession) return
-          // Reconnect only while this conversation is still ours to read; a 401/403 means access
-          // changed, so let identity decide instead of retrying into the same refusal.
-          void fetch(`/api/sessions/${subscribedSession}/history`).then((response) => {
-            if (source !== nextSource || sessionId !== subscribedSession) return
-            if (response.status === 401 || response.status === 403) void refreshIdentity()
-            else connect()
-          }, () => { if (source === nextSource) connect() })
-        }
-      }
-      connect()
-      return () => { subscribedSource.close(); if (source === subscribedSource) source = undefined; listeners.delete(listener) }
-    }
-    return () => listeners.delete(listener)
+    if (sessionId && !source) connect()
+    return () => { listeners.delete(listener); if (!listeners.size) { source?.close(); source = undefined } }
+  },
+  // Slash commands: `/reset` and the harness's own, from the server; a reply naming a new session switches to it.
+  commands: async () => {
+    if (!sessionId) return []
+    const response = await fetch(`/api/sessions/${sessionId}/commands`)
+    if (!response.ok) throw new Error((await response.json()).error ?? 'Unable to list commands')
+    return (await response.json() as { commands: SlashCommand[] }).commands
+  },
+  runCommand: async (line: string) => {
+    if (!sessionId || !sessionKind) throw new Error('Start a conversation before running a command')
+    const response = await fetch(`/api/sessions/${sessionId}/command`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ line }) })
+    const result = await response.json() as { text?: string; session?: string; error?: string }
+    if (!response.ok) throw new Error(result.error ?? 'Command failed')
+    if (result.session) show(sessionKind, result.session, sessionBackend ?? 'codex')
+    return result.text ?? ''
   },
   async send(text, attachments) {
     if (!sessionId) throw new Error('Start a conversation before sending a message')

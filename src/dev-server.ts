@@ -1,6 +1,6 @@
 import { createHash } from 'node:crypto';
 import { createServer, type Server } from 'node:http';
-import { readFile } from 'node:fs/promises';
+import { mkdir, readFile, writeFile } from 'node:fs/promises';
 import { extname, join, normalize, resolve } from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { buildBrowser, rebuild } from './browser-build.ts';
@@ -10,12 +10,22 @@ import { openBrain } from './brain.ts';
 import { serverUrl } from './config.ts';
 import { discoverAgents, runtimeState, type AgentName } from './runtime/discovery.ts';
 import { SessionManager, type Session, type SessionBackend, type SessionSnapshot } from './runtime/session.ts';
-import { TmuxBackend, type HarnessRef } from './runtime/tmux.ts';
+import { TmuxBackend, chatInstructions, type HarnessRef } from './runtime/tmux.ts';
 import { ConversationState } from './runtime/state.ts';
 
 const appRoot = resolve(process.cwd());
-/** `ref` is the saved harness ref of a restored conversation; a new one has none. */
-type CreateBackend = (backend: AgentName, ref?: HarnessRef) => SessionBackend | Promise<SessionBackend>;
+/** `ref` is the saved harness ref of a restored conversation; a new one has none. `buildMode` picks the window: `builder` or `chat`. */
+type CreateBackend = (backend: AgentName, ref?: HarnessRef, buildMode?: boolean) => SessionBackend | Promise<SessionBackend>;
+/** The app-wide Builder switch, kept in `.golem/builder.json` so a reload comes back in the same mode. */
+type BuilderFlag = { get(): boolean; set(on: boolean): Promise<void> };
+async function builderFlag(stateDirectory: string): Promise<BuilderFlag> {
+  const file = join(stateDirectory, 'builder.json');
+  let on = await readFile(file, 'utf8').then((text) => Boolean(JSON.parse(text).builder), () => false);
+  return {
+    get: () => on,
+    async set(next) { on = next; await mkdir(stateDirectory, { recursive: true }); await writeFile(file, JSON.stringify({ builder: next }) + '\n'); },
+  };
+}
 const root = pathToFileURL(`${process.cwd()}/dist/`);
 const types: Record<string, string> = {
   '.html': 'text/html; charset=utf-8',
@@ -33,10 +43,11 @@ export async function startDevServer(
 ): Promise<Server> {
   await buildBrowser();
   // A new session needs a runnable CLI; a restored one keeps its ref and resumes on its next message.
-  createBackend ??= async (backend, ref) => {
+  createBackend ??= async (backend, ref, buildMode = true) => {
     if (!ref && !(await discoverAgents()).some((found) => found.agent === backend && found.runnable)) throw new Error(`${backend} is not runnable here`);
-    return new TmuxBackend(appRoot, backend, ref, { stateDir: join(stateDirectory, 'harness'), api: serverUrl(host, port) });
+    return new TmuxBackend(appRoot, backend, ref, { stateDir: join(stateDirectory, 'harness'), api: serverUrl(host, port), window: buildMode ? 'builder' : 'chat', ...(buildMode ? {} : { instructions: chatInstructions(appRoot) }) });
   };
+  const builder = await builderFlag(stateDirectory);
   const state = new ConversationState(stateDirectory);
   const sessions = new SessionManager((snapshots) => state.save(snapshots));
   const app = await createAppBackend(appRoot, join(stateDirectory, 'data'));
@@ -51,7 +62,7 @@ export async function startDevServer(
   const restored = await state.load();
   const workers = await Promise.all(restored.map((snapshot) => snapshot.backend === 'anthropic'
     ? chat.backend(snapshot.transcript)
-    : createBackend(snapshot.backend, snapshot.harness as HarnessRef | undefined)));
+    : createBackend(snapshot.backend, snapshot.harness as HarnessRef | undefined, snapshot.buildMode)));
   sessions.restore(restored, (snapshot: SessionSnapshot) => workers[restored.indexOf(snapshot)]);
   const { accounts } = app;
   if (accounts) {
@@ -75,7 +86,7 @@ export async function startDevServer(
     });
   }
   const server = createServer((request, response) => {
-    void (request.url?.startsWith('/api/app/') || request.url?.startsWith('/api/auth/') ? app.handle(request, response) : request.url?.startsWith('/api/brain/') ? handleBrain(request, response, app, brain) : handleRequest(request, response, sessions, port, host, createBackend, app, chat)).catch((error) => {
+    void (request.url?.startsWith('/api/app/') || request.url?.startsWith('/api/auth/') ? app.handle(request, response) : request.url?.startsWith('/api/brain/') ? handleBrain(request, response, app, brain) : handleRequest(request, response, sessions, port, host, createBackend, app, chat, builder)).catch((error) => {
       if (!response.headersSent) json(response, 400, { error: error instanceof Error ? error.message : 'Malformed request' });
       else response.destroy();
     });
@@ -96,11 +107,12 @@ async function handleRequest(
   createBackend: CreateBackend,
   app: AppBackend,
   chat: OrdinaryChat,
+  builder: BuilderFlag,
 ): Promise<void> {
     const url = new URL(request.url ?? '/', 'http://127.0.0.1');
     decodeURIComponent(url.pathname);
     if (url.pathname.startsWith('/api/')) {
-      await handleApi(request, response, url, sessions, createBackend, app, chat);
+      await handleApi(request, response, url, sessions, createBackend, app, chat, builder);
       return;
     }
     let pathname: string;
@@ -254,6 +266,7 @@ async function handleApi(
   createBackend: CreateBackend,
   app: AppBackend,
   chat: OrdinaryChat,
+  builder: BuilderFlag,
 ): Promise<void> {
   const reloadServer = app.reload;
   const { accounts } = app;
@@ -268,7 +281,9 @@ async function handleApi(
     if (!mayChat) return json(response, 401, { error: 'Sign in to chat.' });
     if (request.method === 'GET') {
       const latest = chatOwner ? sessions.latest((session) => session.backend === 'anthropic' && session.owner === chatOwner) : undefined;
-      return json(response, 200, { available: chat.available, detail: chat.detail, views: chat.views(), latest: latest && { id: latest.id, status: latest.status } });
+      // `provider` is the app's rule for normal mode: null means no chat column outside builder mode.
+      const provider = app.config.chat?.provider ?? null;
+      return json(response, 200, { provider, agent: app.config.chat?.provider === 'tmux' ? app.config.chat.agent : undefined, available: provider === 'tmux' || chat.available, detail: provider === 'tmux' ? undefined : chat.detail, views: chat.views(), latest: latest && { id: latest.id, status: latest.status } });
     }
     if (request.method !== 'POST') return json(response, 404, { error: 'Unknown API route' });
     if (!mutationAllowed(request)) return json(response, 403, { error: 'Cross-origin mutations are not allowed' });
@@ -291,6 +306,19 @@ async function handleApi(
     return json(response, 202, { status: said.status });
   }
   const chatSession = sessionMatch && sessions.get(sessionMatch[1])?.backend === 'anthropic';
+  // The Builder switch: whoever may build flips it; everyone else reads it as off.
+  if (url.pathname === '/api/builder') {
+    const mayBuild = !accounts || accounts.canBuild(principal);
+    if (request.method === 'GET') return json(response, 200, { builder: mayBuild && builder.get() });
+    if (request.method !== 'POST') return json(response, 404, { error: 'Unknown API route' });
+    if (!mayBuild) return json(response, principal.kind === 'anonymous' ? 401 : 403, { error: 'Your account may not build this app.' });
+    if (!mutationAllowed(request)) return json(response, 403, { error: 'Cross-origin mutations are not allowed' });
+    const input = await body(request) as { builder?: unknown };
+    if (typeof input.builder !== 'boolean') return json(response, 400, { error: 'builder must be a boolean' });
+    await builder.set(input.builder);
+    if (!input.builder) await sessions.parkOthers(true); // leaving builder mode parks the builder agent
+    return json(response, 200, { builder: input.builder });
+  }
   if (!chatSession && accounts && !accounts.canBuild(principal)) {
     return json(response, principal.kind === 'anonymous' ? 401 : 403, { error: principal.kind === 'anonymous' ? 'Sign in to build.' : 'Your account may not build this app.' });
   }
@@ -310,8 +338,8 @@ async function handleApi(
       if (input.backend !== 'codex' && input.backend !== 'claude') return json(response, 400, { error: 'backend must be claude or codex' });
       // Every agent session runs with the CLI's own bypass flags in the app root, the way Bridge Commander runs its workers.
       const buildMode = input.intent === 'build';
-      await sessions.parkOthers(); // one agent per app: the new one takes the tmux session
-      const session = await sessions.start(input.backend, await createBackend(input.backend), buildMode, owner);
+      await sessions.parkOthers(buildMode); // one agent per window: the new one takes it
+      const session = await sessions.start(input.backend, await createBackend(input.backend, undefined, buildMode), buildMode, owner);
       json(response, 201, { id: session.id, backend: session.backend, status: session.status });
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
@@ -320,7 +348,9 @@ async function handleApi(
     return;
   }
   if (request.method === 'GET' && url.pathname === '/api/sessions/latest') {
-    const latest = sessions.latest((session) => session.buildMode && visible(session));
+    // `?chat=1`: the latest normal-mode terminal-agent conversation instead of the latest build one.
+    const wantChat = url.searchParams.get('chat') === '1';
+    const latest = sessions.latest((session) => session.backend !== 'anthropic' && session.buildMode === !wantChat && visible(session));
     if (!latest) return json(response, 404, { error: 'No saved build conversation' });
     json(response, 200, { id: latest.id, backend: latest.backend, status: latest.status });
     return;
@@ -344,10 +374,34 @@ async function handleApi(
     }
     return json(response, 404, { error: 'Unknown API route' });
   }
-  const match = url.pathname.match(/^\/api\/sessions\/([^/]+)(?:\/(history|events|interrupt))?$/);
+  const match = url.pathname.match(/^\/api\/sessions\/([^/]+)(?:\/(history|events|interrupt|commands|command))?$/);
   if (!match) return json(response, 404, { error: 'Unknown API route' });
   const session = sessions.get(match[1]);
   if (!session || !visible(session)) return json(response, 404, { error: 'Unknown session' });
+  // Slash commands: `/reset` is the server's, the rest are the harness's own (`/status`, `/compact`, …).
+  if (request.method === 'GET' && match[2] === 'commands') {
+    return json(response, 200, { commands: [{ name: '/reset', description: 'park this conversation and start a fresh one with the same agent' }, ...(session.worker.commands?.() ?? [])] });
+  }
+  if (request.method === 'POST' && match[2] === 'command') {
+    if (!mutationAllowed(request)) return json(response, 403, { error: 'Cross-origin mutations are not allowed' });
+    const input = await body(request) as { line?: unknown };
+    const line = typeof input.line === 'string' ? input.line.trim() : '';
+    if (!line.startsWith('/')) return json(response, 400, { error: 'line must be a /command' });
+    try {
+      if (line.split(/\s+/)[0] === '/reset') {
+        // Same backend, same owner, same window: the old conversation is parked (resumable), the new agent takes the window.
+        await session.park();
+        const fresh = session.backend === 'anthropic'
+          ? await sessions.start('anthropic', chat.backend(), false, session.owner)
+          : (await sessions.parkOthers(session.buildMode), await sessions.start(session.backend, await createBackend(session.backend, undefined, session.buildMode), session.buildMode, session.owner));
+        return json(response, 200, { text: `New conversation ${fresh.id.slice(0, 8)} started${session.backend === 'anthropic' ? '' : ' in the same terminal window'}; the previous one is parked.`, session: fresh.id });
+      }
+      if (!session.worker.runCommand) throw new Error(`unknown command ${line.split(/\s+/)[0]}`);
+      return json(response, 200, { text: await session.worker.runCommand(line) });
+    } catch (error) {
+      return json(response, 400, { error: error instanceof Error ? error.message : String(error) });
+    }
+  }
   if (request.method === 'GET' && match[2] === 'history') {
     json(response, 200, { events: session.history, status: session.status, backend: session.backend });
     return;
@@ -393,7 +447,7 @@ async function handleApi(
         return json(response, 400, { error: 'That view does not belong to this conversation.' });
       }
       // A parked conversation takes the app's tmux session back before its agent resumes there.
-      if (session.backend !== 'anthropic' && !session.live) await sessions.parkOthers(session.id);
+      if (session.backend !== 'anthropic' && !session.live) await sessions.parkOthers(session.buildMode, session.id);
       const accepted = await session.accept(input.text, input.clientMessageId, attachments, context);
       json(response, 202, { status: session.status, duplicate: accepted.duplicate });
       if (!accepted.duplicate && accepted.completion) void accepted.completion.then(

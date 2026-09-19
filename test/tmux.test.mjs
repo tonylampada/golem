@@ -42,7 +42,7 @@ test('one agent per app: starting a second conversation parks the first, whose s
   await first.send('remember this')
   const ref = first.snapshot().harness
   assert.equal(ref.session, 'golem-my-app')
-  await manager.parkOthers()
+  await manager.parkOthers(true)
   const second = await manager.start('claude', backend(), true)
   assert.equal(second.snapshot().harness.session, ref.session, 'same tmux session, new agent')
   assert.equal(first.status, 'stopped')
@@ -50,10 +50,10 @@ test('one agent per app: starting a second conversation parks the first, whose s
   const snapshot = first.snapshot()
   assert.equal(snapshot.harness.resumeId, ref.resumeId)
   assert.ok(snapshot.history.some((event) => event.text === 'remember this'))
-  await manager.parkOthers(second.id)
+  await manager.parkOthers(true, second.id)
   assert.equal(second.live, true, 'parking others leaves the named one alone')
 
-  await manager.parkOthers(first.id)
+  await manager.parkOthers(true, first.id)
   assert.equal(second.live, false)
   await first.send('and this')
   assert.equal(first.status, 'ready')
