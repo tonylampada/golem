@@ -44,7 +44,8 @@ try {
         assert.equal(result.layout, 'mobile')
         assert.equal(result.aside, null)
         assert.equal(result.chat.width, width)
-        await page.getByRole('tab', { name: 'canvas' }).click()
+        // The chat is a sheet over the app on a phone; Esc puts it away and the app is where it was.
+        await page.keyboard.press('Escape')
         const canvas = page.locator('[data-golem-component="Shell"] section')
         await canvas.waitFor({ state: 'visible' })
         assert.equal(await canvas.evaluate((node) => node.getBoundingClientRect().width), width)

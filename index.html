@@ -4,13 +4,14 @@
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>Golem</title>
-    <!-- Theme before first paint: app.tsx sets it again in an effect, too late to stop a white frame on reload. -->
+    <!-- Theme before first paint: the Shell sets it again in an effect, too late to stop a white frame on reload.
+         Same key and default as the Shell: the saved choice, else the OS. -->
     <script>
-      try { document.documentElement.dataset.golemTheme = localStorage.getItem('golem.theme') === 'light' ? 'light' : 'dark' } catch { document.documentElement.dataset.golemTheme = 'dark' }
+      try { document.documentElement.dataset.golemTheme = localStorage.getItem('golem-shell-theme') ?? (matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light') } catch { document.documentElement.dataset.golemTheme = 'light' }
     </script>
     <style>
-      html { background: #fff; color-scheme: light; }
-      html[data-golem-theme='dark'] { background: oklch(20.5% 0 0); color-scheme: dark; } /* golem-ui Shell: bg-white / dark:bg-neutral-900 */
+      html { background: #f4f6f9; color-scheme: light; }
+      html[data-golem-theme='dark'] { background: #0e131a; color-scheme: dark; } /* golem-ui Shell: --chat-bg */
     </style>
   </head>
   <body>

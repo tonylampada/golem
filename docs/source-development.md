@@ -10,10 +10,12 @@ edited UI components are compiled and scanned.
 ## Pinned golem-ui
 
 The published `golem-ui@0.1.1` predates the `Brain` component and `ChatMessage.sources`. This
-checkout is developed against golem-ui commit `bcb8fff` (MNC-184 Brain stack navigation,
-`BrainAdapter.open`, `Shell` `initialTab`); until that ships as a package version, run with `GOLEM_UI_SOURCE` pointing at a
-checkout of it to get the Brain reader, the source chips, the slash-command picker and a chat-less
-normal mode. With 0.1.1 installed the shell still builds, and the Brain panel says what is missing.
+checkout is developed against golem-ui commit `e26476d` (MNC-187 Shell chrome: the menu row, the
+settings dropdown, the chat toggle; `initialTab` is gone); until that ships as a package version, run
+with `GOLEM_UI_SOURCE` pointing at a checkout of it to get the Brain reader, the source chips, the
+slash-command picker, a chat-less normal mode, and the Brain, Admin and Builder controls. With 0.1.1
+installed the shell still builds with the old chrome and none of those controls, and the Brain panel
+says what is missing.
 
 ## Clean checkout
 

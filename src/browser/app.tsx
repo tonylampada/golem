@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState, type ReactNode } from 'react'
+import { useEffect, useRef, useState, type ComponentProps, type ReactNode } from 'react'
 import * as GolemUI from 'golem-ui'
 import { Auth, Chat, Shell } from 'golem-ui'
 import UserApp from '@golem/app'
@@ -12,6 +12,16 @@ import { Terminal } from './terminal'
 const chatAdapters = { chat }
 // `Brain` is in golem-ui after 0.1.1; with 0.1.1 installed the panel says so instead of rendering it.
 const Brain = (GolemUI as unknown as { Brain?: (props: { config: { title: string; openLocation?: string }; adapters: { brain: typeof brain } }) => ReactNode }).Brain
+// The Shell chrome after golem-ui 29acbd5: a menu row, a settings dropdown, the chat behind a toggle. 0.1.1's
+// strict schema would reject the keys, so they go in only when `Shell.Setting` (same vintage) is there.
+type ShellSetting = (props: { icon: ReactNode; label: string; on?: boolean; onClick: () => void }) => ReactNode
+type ShellIcon = (props: { name: 'user' | 'wrench' }) => ReactNode
+const { Setting: ShellSetting, Icon: ShellIcon } = Shell as unknown as { Setting?: ShellSetting; Icon?: ShellIcon }
+const ShellFrame = Shell as unknown as (props: Omit<ComponentProps<typeof Shell>, 'config'> & {
+  config: ComponentProps<typeof Shell>['config'] & { menu?: { id: string; label: string; icon?: string }[]; activeId?: string; chatOpen?: boolean }
+  settings?: ReactNode
+  onSelect?: (id: string) => void
+}) => ReactNode
 /** The `?brain=` route param: the location the Brain panel shows, or undefined when the app is showing. */
 const brainParam = () => new URLSearchParams(window.location.search).get('brain') ?? undefined
 const brainUrl = (location: string) => `${window.location.pathname}?brain=${encodeURIComponent(location)}`
@@ -23,16 +33,6 @@ const agentNames: Record<string, string> = { codex: 'Codex', claude: 'Claude Cod
 type Discovery = { agent: string; status: string; runnable?: boolean; detail?: string }
 
 export function App() {
-  const [dark, setDark] = useState(() => {
-    try { return localStorage.getItem('golem.theme') !== 'light' }
-    catch { return true }
-  })
-  useEffect(() => {
-    const theme = dark ? 'dark' : 'light'
-    document.documentElement.dataset.golemTheme = theme
-    document.documentElement.style.colorScheme = theme
-    try { localStorage.setItem('golem.theme', theme) } catch { /* Theme still works without storage. */ }
-  }, [dark])
   // Builder mode is app state, kept on the server (`.golem/builder.json`) so a reload comes back in it.
   const [builder, setBuilder] = useState<boolean>()
   const [session, setSession] = useState<string>()
@@ -43,9 +43,10 @@ export function App() {
   const [source, setSource] = useState<OpenSource>()
   const [sourceShown, setSourceShown] = useState(false)
   const [me, setMe] = useState<Me>()
+  // The Admin screen is app state; any navigation (the title, a Brain item, a chip) leaves it.
   const [view, setView] = useState<'app' | 'account'>('app')
   const [brainAt, setBrainAt] = useState(brainParam)
-  useEffect(() => navigation.subscribe(() => setBrainAt(brainParam())), [])
+  useEffect(() => navigation.subscribe(() => { setBrainAt(brainParam()); setView('app') }), [])
   const showBrain = (projectConfig as { brain?: boolean }).brain === true && brainAt !== undefined
   const [terminal, setTerminal] = useState(false)
   const signedInAs = useRef<string | null>(null)
@@ -104,12 +105,27 @@ export function App() {
   const manages = Boolean(me?.user?.roles.some((role) => accounts?.roles.some((one) => one.id === role && one.manages)))
   const invited = new URLSearchParams(window.location.search).has('invite')
   const shellAdapters = { identity: accounts ? identity : anonymousIdentity, navigation }
+  const hasBrain = (projectConfig as { brain?: boolean }).brain === true
+  const menu = [
+    ...(hasBrain ? [{ id: 'brain', label: 'Brain', icon: '🧠' }] : []),
+    ...(manages ? [{ id: 'admin', label: 'Admin', icon: '🛠️' }] : []),
+  ]
+  // An item is a toggle: tapping the current one is the way back to the app.
+  const select = (id: string) => {
+    if (id === 'brain') navigation.go(showBrain ? window.location.pathname : brainUrl('index.md'))
+    else if (id === 'admin') { if (showBrain) navigation.go(window.location.pathname); setView(view === 'account' ? 'app' : 'account') }
+  }
+  const barButton = 'golem-browser-bar-button flex size-8 items-center justify-center rounded-lg border'
   return (
-    <Shell
+    <ShellFrame
       config={{ title: projectConfig.title, chatSide: 'left', breakpoint: 768,
-        // A reload with ?brain= lands on the reader, not the chat. Same golem-ui vintage as Brain; 0.1.1's strict schema would reject the key.
-        ...(Brain ? { initialTab: brainParam() === undefined ? 'chat' : 'canvas' } : {}) }}
+        // Builder on raises the chat; a mode that is off leaves the chat where the reader left it.
+        ...(ShellSetting ? { menu, activeId: showBrain ? 'brain' : view === 'account' ? 'admin' : undefined, chatOpen: builder === true } : {}) }}
       adapters={shellAdapters}
+      onSelect={select}
+      settings={ShellSetting && canBuild && builder !== undefined && (
+        <ShellSetting icon={ShellIcon ? <ShellIcon name="wrench" /> : '🔧'} label="Builder" on={builder} onClick={() => void toggleBuilder(!builder)} />
+      )}
       chat={!kind ? null : (
         <div className="flex h-full min-h-0 flex-col">
           <div className="golem-browser-header flex items-center gap-1 whitespace-nowrap border-b border-neutral-200 bg-white px-2 py-2 text-xs">
@@ -132,21 +148,14 @@ export function App() {
           {/* Mounted from the first accepted source on, so closing or switching never drops an edit. */}
           {source && <SourcePanel source={source} shown={sourceShown} onClose={() => setSourceShown(false)} />}
           {showBrain && (
-            <div className="golem-browser-brain flex h-full flex-col overflow-hidden">
-              <div className="golem-browser-header flex items-center justify-between gap-2 border-b border-neutral-200 px-4 py-2 text-sm">
-                <span className="golem-browser-runtime min-w-0 truncate font-medium">{brainAt}</span>
-                <button type="button" className="golem-browser-new shrink-0 rounded border border-neutral-300 px-2 py-1" onClick={() => navigation.go(window.location.pathname)}>Back to app</button>
-              </div>
-              <div className="min-h-0 flex-1">
-                {Brain ? <Brain config={{ title: projectConfig.title, openLocation: brainAt === 'index.md' ? undefined : brainAt }} adapters={brainAdapters} /> : <p className="p-4 text-sm text-neutral-600">The Brain reader needs golem-ui after 0.1.1 (see docs/source-development.md).</p>}
-              </div>
+            <div className="golem-browser-brain h-full overflow-hidden">
+              {Brain ? <Brain config={{ title: projectConfig.title, openLocation: brainAt === 'index.md' ? undefined : brainAt }} adapters={brainAdapters} /> : <p className="p-4 text-sm text-neutral-600">The Brain reader needs golem-ui after 0.1.1 (see docs/source-development.md).</p>}
             </div>
           )}
           <div className="h-full" style={(source && sourceShown) || showBrain ? { display: 'none' } : undefined}>{
           !authConfig ? <UserApp />
           : view === 'account' || (invited && !me.user)
-            ? <div className="flex h-full flex-col overflow-auto">
-                <button type="button" className="golem-browser-back m-4 self-start rounded border border-neutral-300 px-2 py-1 text-sm" onClick={() => setView('app')}>Back to app</button>
+            ? <div className="golem-browser-admin flex h-full flex-col overflow-auto">
                 <Auth config={authConfig} adapters={authAdapters} />
                 {manages && <Groups />}
               </div>
@@ -156,28 +165,9 @@ export function App() {
         </>
       }
       account={
-        <div className="flex shrink-0 items-center gap-3">
-          {canBuild && builder !== undefined && (
-            <label className="golem-browser-builder-switch flex cursor-pointer items-center gap-1.5 text-sm" title="Builder mode: chat with the agent that builds this app">
-              <input type="checkbox" className="golem-browser-builder" checked={builder} onChange={(event) => void toggleBuilder(event.target.checked)} />
-              Builder
-            </label>
-          )}
-          <button
-            type="button"
-            onClick={() => setDark((current) => !current)}
-            className="golem-browser-theme-toggle rounded border border-neutral-300 px-2 py-1 text-sm"
-          >
-            {dark ? 'Light mode' : 'Dark mode'}
-          </button>
-          {(projectConfig as { brain?: boolean }).brain === true && !showBrain && <button type="button" className="golem-browser-brain-open rounded border border-neutral-300 px-2 py-1 text-sm" onClick={() => navigation.go(brainUrl('index.md'))}>Brain</button>}
-          {!authConfig ? <span className="golem-browser-guest text-sm text-neutral-500">Guest</span>
-            : me?.user ? <>
-                {manages && <button type="button" className="golem-browser-members rounded border border-neutral-300 px-2 py-1 text-sm" onClick={() => setView('account')}>Members</button>}
-                <Auth.AccountMenu config={authConfig} adapters={authAdapters} />
-              </>
-            : <button type="button" className="golem-browser-sign-in rounded border border-neutral-300 px-2 py-1 text-sm" onClick={() => setView('account')}>Sign in</button>}
-        </div>
+        !authConfig ? <span className="golem-browser-guest text-sm text-neutral-500">Guest</span>
+          : me?.user ? <Auth.AccountMenu config={authConfig} adapters={authAdapters} />
+          : <button type="button" className={`golem-browser-sign-in ${barButton}`} title="Sign in" aria-label="Sign in" onClick={() => setView('account')}>{ShellIcon ? <ShellIcon name="user" /> : '👤'}</button>
       }
     />
   )

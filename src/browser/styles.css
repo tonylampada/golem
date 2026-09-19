@@ -5,9 +5,11 @@
 [data-golem-theme='dark'] .golem-browser-runtime { color: oklch(87% 0 0); }
 [data-golem-theme='dark'] .golem-browser-enter { background-color: oklch(87% 0 0); color: oklch(14.5% 0 0); }
 [data-golem-theme='dark'] .golem-browser-error { color: oklch(70.4% .191 22.216); }
-[data-golem-theme='dark'] .golem-browser-theme-toggle { border-color: oklch(37.1% 0 0); }
 [data-golem-theme='dark'] .golem-browser-backend { border-color: oklch(37.1% 0 0); background-color: oklch(20.5% 0 0); color: oklch(98.5% 0 0); }
 [data-golem-theme='dark'] .golem-browser-new { border-color: oklch(37.1% 0 0); color: oklch(87% 0 0); }
+/* The sign-in button matches the Shell's own bar buttons (Chat's tokens). */
+.golem-browser-bar-button { border-color: var(--chat-line, #dce3eb); color: var(--chat-dim, #5f7186); }
+.golem-browser-bar-button:hover { border-color: var(--chat-accent, #2f83c2); color: var(--chat-accent, #2f83c2); }
 .golem-browser-header { line-height: 1.25; }
 .golem-browser-header button { line-height: 1.25; }
 .golem-browser-status-dot { display: inline-block; width: .45em; height: .45em; margin-right: .35em; border-radius: 9999px; background-color: currentColor; flex-shrink: 0; }

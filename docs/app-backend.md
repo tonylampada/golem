@@ -151,7 +151,7 @@ The roles above are the default. A role with `manages: true` may invite, change 
 - **guests: true**: signed-out callers run as `anonymous` through `authorize`. The default `authorize` allows everything, so write one that refuses what guests may not do.
 - **Policy** stays in `authorize`: check `principal.roles`, `principal.groups` and `record`. Without an `authorize`, every signed-in member may do everything.
 - **Build mode** needs a signed-in member who may build; `/api/runtime` and every `/api/sessions` route answer 401 or 403 to anyone else. A build conversation belongs to the member who started it. Conversations saved before accounts were enabled are visible to managers only. Losing build access, or signing out everywhere, interrupts a running build turn.
-- **Managing**: managers get a Members button in the shell: golem-ui's member list for invites, roles and removal, plus a groups editor. Apps can use `identity` and `setGroups` from `golem-kit/client`.
+- **Managing**: managers get a Admin item in the shell menu row: golem-ui's member list for invites, roles and removal, plus a groups editor. Apps can use `identity` and `setGroups` from `golem-kit/client`.
 - **Identity in the UI**: `identity` from `golem-kit/client` is golem-ui's `IdentityAdapter`. Pass it to `Auth.Guard` or `Timeline`. It exposes nothing a server rule trusts.
 
 ### First admin and recovery
