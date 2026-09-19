@@ -3,7 +3,8 @@ import { pathToFileURL } from 'node:url'
 import { toolNameProblem } from './runtime/tool-names.ts'
 
 /** Browser-visible settings: never put secrets in golem.config.ts. */
-export type AppConfig = { host: string; port: number; storage: 'jsonl' | 'sqlite'; origin?: string; accounts?: AccountsConfig; agents?: AgentsConfig }
+export type AppConfig = { host: string; port: number; storage: 'jsonl' | 'sqlite'; origin?: string; accounts?: AccountsConfig; agents?: AgentsConfig; brain?: boolean }
+/** `brain: true` serves the app's `brain/` folder read-only and mounts the Brain reader beside the app. */
 
 /**
  * `builder` is the agent build mode starts with. `ordinary` turns on everyday chat: an API agent
@@ -33,7 +34,8 @@ export async function loadAppConfig(root = process.cwd()): Promise<AppConfig> {
   if (!value || typeof value !== 'object' || Array.isArray(value)) {
     throw new Error('golem.config.ts must default-export an object')
   }
-  const configured = value as { host?: unknown; port?: unknown; storage?: unknown; origin?: unknown; accounts?: unknown; agents?: unknown }
+  const configured = value as { host?: unknown; port?: unknown; storage?: unknown; origin?: unknown; accounts?: unknown; agents?: unknown; brain?: unknown }
+  if (configured.brain !== undefined && typeof configured.brain !== 'boolean') throw new Error('golem.config.ts brain must be a boolean')
   const host: unknown = configured.host === undefined ? '127.0.0.1' : configured.host
   const port: unknown = configured.port === undefined ? 3000 : configured.port
   if (typeof host !== 'string' || !host.trim()) {
@@ -50,7 +52,7 @@ export async function loadAppConfig(root = process.cwd()): Promise<AppConfig> {
   if (origin !== undefined && (typeof origin !== 'string' || !/^https?:$/.test(safeUrl(origin)?.protocol ?? '') || safeUrl(origin)?.origin !== origin)) {
     throw new Error("golem.config.ts origin must be an exact origin like 'https://notes.example.com'")
   }
-  return { host, port, storage, ...(origin === undefined ? {} : { origin }), ...(configured.accounts === undefined ? {} : { accounts: accounts(configured.accounts) }), ...(configured.agents === undefined ? {} : { agents: agents(configured.agents) }) }
+  return { host, port, storage, ...(origin === undefined ? {} : { origin }), ...(configured.accounts === undefined ? {} : { accounts: accounts(configured.accounts) }), ...(configured.agents === undefined ? {} : { agents: agents(configured.agents) }), ...(configured.brain ? { brain: true } : {}) }
 }
 
 function accounts(value: unknown): AccountsConfig {

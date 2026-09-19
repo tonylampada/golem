@@ -1,13 +1,19 @@
-import { useEffect, useRef, useState } from 'react'
+import { useEffect, useRef, useState, type ReactNode } from 'react'
+import * as GolemUI from 'golem-ui'
 import { Auth, Chat, Shell } from 'golem-ui'
 import UserApp from '@golem/app'
 import projectConfig from '@golem/config'
 import { currentSession, identity, type Me } from '../client'
-import { anonymousIdentity, chat, currentBrowserBackend, currentBrowserSession, forgetBrowserSession, navigation, restoreBrowserSession, startBrowserSession, startChatSession, subscribeBrowserStatus } from './adapters'
+import { anonymousIdentity, brain, chat, currentBrowserBackend, currentBrowserSession, forgetBrowserSession, navigation, restoreBrowserSession, startBrowserSession, startChatSession, subscribeBrowserStatus } from './adapters'
 import { Groups } from './groups'
 import { SourcePanel, SourceReturn, useSourceView, type OpenSource } from './sources'
 
 const chatAdapters = { chat }
+// `Brain` is in golem-ui after 0.1.1; with 0.1.1 installed the panel says so instead of rendering it.
+const Brain = (GolemUI as unknown as { Brain?: (props: { config: { title: string; openLocation?: string }; adapters: { brain: typeof brain } }) => ReactNode }).Brain
+const brainAdapters = { brain }
+/** The `?brain=` route param: the location the Brain panel shows, or undefined when the app is showing. */
+const brainParam = () => new URLSearchParams(window.location.search).get('brain') ?? undefined
 const authAdapters = { identity, navigation }
 const agentNames: Record<string, string> = { codex: 'Codex', claude: 'Claude Code' }
 type Discovery = { agent: string; status: string; runnable?: boolean; detail?: string }
@@ -38,6 +44,9 @@ export function App() {
   const [sourceShown, setSourceShown] = useState(false)
   const [me, setMe] = useState<Me>()
   const [view, setView] = useState<'app' | 'account'>('app')
+  const [brainAt, setBrainAt] = useState(brainParam)
+  useEffect(() => navigation.subscribe(() => setBrainAt(brainParam())), [])
+  const showBrain = (projectConfig as { brain?: boolean }).brain === true && brainAt !== undefined
   const signedInAs = useRef<string | null>(null)
   const runnable = discoveries.filter((item) => item.status === 'available' && item.runnable).map((item) => item.agent)
   useEffect(() => {
@@ -156,7 +165,18 @@ export function App() {
         !me ? null : <>
           {/* Mounted from the first accepted source on, so closing or switching never drops an edit. */}
           {source && <SourcePanel source={source} shown={sourceShown} onClose={() => setSourceShown(false)} />}
-          <div className="h-full" style={source && sourceShown ? { display: 'none' } : undefined}>{
+          {showBrain && (
+            <div className="golem-browser-brain flex h-full flex-col overflow-hidden">
+              <div className="golem-browser-header flex items-center justify-between gap-2 border-b border-neutral-200 px-4 py-2 text-sm">
+                <span className="golem-browser-runtime min-w-0 truncate font-medium">{brainAt}</span>
+                <button type="button" className="golem-browser-new shrink-0 rounded border border-neutral-300 px-2 py-1" onClick={() => navigation.go(window.location.pathname)}>Back to app</button>
+              </div>
+              <div className="min-h-0 flex-1">
+                {Brain ? <Brain config={{ title: projectConfig.title, openLocation: brainAt === 'index.md' ? undefined : brainAt }} adapters={brainAdapters} /> : <p className="p-4 text-sm text-neutral-600">The Brain reader needs golem-ui after 0.1.1 (see docs/source-development.md).</p>}
+              </div>
+            </div>
+          )}
+          <div className="h-full" style={(source && sourceShown) || showBrain ? { display: 'none' } : undefined}>{
           !authConfig ? <UserApp />
           : view === 'account' || (invited && !me.user)
             ? <div className="flex h-full flex-col overflow-auto">
@@ -178,6 +198,7 @@ export function App() {
           >
             {dark ? 'Light mode' : 'Dark mode'}
           </button>
+          {(projectConfig as { brain?: boolean }).brain === true && !showBrain && <button type="button" className="golem-browser-brain-open rounded border border-neutral-300 px-2 py-1 text-sm" onClick={() => navigation.go(`${window.location.pathname}?brain=index.md`)}>Brain</button>}
           {!authConfig ? <span className="golem-browser-guest text-sm text-neutral-500">Guest</span>
             : me?.user ? <>
                 {manages && <button type="button" className="golem-browser-members rounded border border-neutral-300 px-2 py-1 text-sm" onClick={() => setView('account')}>Members</button>}

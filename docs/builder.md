@@ -11,3 +11,5 @@ Supported app surface: edit `src/app.tsx`; configure the shell title, host, port
 Before storing records or files, adding server behavior an agent or the UI calls, or adding sign-in, roles or groups, read `node_modules/golem-kit/docs/app-backend.md`: it names where UI, shared, and server code live and the operation, authorization, and storage contracts.
 
 Before adding a knowledge base, notes, a handbook or any markdown the app should keep in folders, read `node_modules/golem-kit/docs/knowledge.md`.
+
+When the app has a `brain/` folder, it is an Open Knowledge Format bundle: read `brain/index.md` first, then the concepts it points to. Ground answers in those files and cite each passage you used as `path#Lstart-Lend`, the path relative to `brain/` (`concepts/opening.md#L4-L9`); Golem turns a citation in your message into a source chip that opens the passage in the Brain reader. Keep `brain/index.md` and `brain/log.md` current when you add or change a concept.

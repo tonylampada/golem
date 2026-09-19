@@ -1,6 +1,7 @@
 import { randomUUID } from 'node:crypto'
 import type { AgentName } from './discovery.ts'
 import type { TurnContext } from './assistant.ts'
+import { citations } from '../brain.ts'
 
 /** A terminal agent, or `anthropic`: the ordinary-use API agent. */
 export type BackendName = AgentName | 'anthropic'
@@ -40,6 +41,8 @@ export type SessionEvent = {
   ok?: boolean
   clientMessageId?: string
   attachments?: Array<{ id: string; name: string; size?: number }>
+  /** Brain locations (`path#Lstart-Lend`) the agent cited in this message. */
+  sources?: string[]
 }
 
 export class Session {
@@ -208,7 +211,7 @@ export class Session {
   /** Also the entry for replies the agent posts itself (`golem say`). */
   receive(event: BackendEvent): void {
     if (this.closed) return
-    if (event.type === 'message') this.record({ type: 'message', text: event.text })
+    if (event.type === 'message') { const sources = citations(event.text); this.record({ type: 'message', text: event.text, ...(sources.length ? { sources } : {}) }) }
     if (event.type === 'tool') this.record({ type: 'tool', name: event.name, ok: event.ok, text: event.text })
     if (event.type === 'interrupted') {
       const alreadyInterrupted = this.status === 'interrupted'

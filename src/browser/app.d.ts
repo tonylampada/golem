@@ -4,6 +4,6 @@ declare module '@golem/app' {
   export default App
 }
 declare module '@golem/config' {
-  const config: { title: string }
+  const config: { title: string; brain?: boolean }
   export default config
 }

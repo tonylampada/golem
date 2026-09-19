@@ -6,6 +6,7 @@ import { pathToFileURL } from 'node:url';
 import { buildBrowser, rebuild } from './browser-build.ts';
 import { createAppBackend, type AppBackend } from './backend/http.ts';
 import { ordinaryChat, type OrdinaryChat } from './chat.ts';
+import { openBrain } from './brain.ts';
 import { serverUrl } from './config.ts';
 import { discoverAgents, runtimeState, type AgentName } from './runtime/discovery.ts';
 import { SessionManager, type Session, type SessionBackend, type SessionSnapshot } from './runtime/session.ts';
@@ -40,6 +41,7 @@ export async function startDevServer(
   const sessions = new SessionManager((snapshots) => state.save(snapshots));
   const app = await createAppBackend(appRoot, join(stateDirectory, 'data'));
   const chat = ordinaryChat(app);
+  const brain = app.config.brain ? openBrain(join(appRoot, 'brain')) : undefined;
   // Source views of a chat belong to whoever owns that chat.
   app.app.views.useConversations({
     owner: (request, principal) => chat.owner(request, principal),
@@ -73,7 +75,7 @@ export async function startDevServer(
     });
   }
   const server = createServer((request, response) => {
-    void (request.url?.startsWith('/api/app/') || request.url?.startsWith('/api/auth/') ? app.handle(request, response) : handleRequest(request, response, sessions, port, host, createBackend, app, chat)).catch((error) => {
+    void (request.url?.startsWith('/api/app/') || request.url?.startsWith('/api/auth/') ? app.handle(request, response) : request.url?.startsWith('/api/brain/') ? handleBrain(request, response, app, brain) : handleRequest(request, response, sessions, port, host, createBackend, app, chat)).catch((error) => {
       if (!response.headersSent) json(response, 400, { error: error instanceof Error ? error.message : 'Malformed request' });
       else response.destroy();
     });
@@ -141,6 +143,29 @@ async function handleRequest(
 function json(response: import('node:http').ServerResponse, status: number, body: unknown): void {
   response.writeHead(status, { 'Content-Type': 'application/json; charset=utf-8', 'Cache-Control': 'no-store' });
   response.end(JSON.stringify(body));
+}
+
+/** The app's brain, read-only: whoever may see the app may read it. */
+async function handleBrain(request: import('node:http').IncomingMessage, response: import('node:http').ServerResponse, app: AppBackend, brain: ReturnType<typeof openBrain> | undefined): Promise<void> {
+  if (!brain || request.method !== 'GET') return json(response, 404, { error: 'This app has no brain' });
+  const principal = await app.app.resolvePrincipal(request);
+  if (app.accounts && !app.accounts.config.guests && principal.kind === 'anonymous') return json(response, 401, { error: 'Sign in to read the brain.' });
+  const url = new URL(request.url ?? '/', 'http://127.0.0.1');
+  const param = (name: string) => url.searchParams.get(name) ?? '';
+  switch (url.pathname) {
+    case '/api/brain/index': return json(response, 200, { text: await brain.index(param('dir')) });
+    case '/api/brain/list': return json(response, 200, { entries: await brain.list(param('dir')) });
+    case '/api/brain/read': return json(response, 200, { text: await brain.read(param('path')) });
+    case '/api/brain/search': return json(response, 200, { hits: await brain.search(param('q')) });
+    case '/api/brain/events': {
+      response.writeHead(200, { 'Content-Type': 'text/event-stream; charset=utf-8', 'Cache-Control': 'no-cache', Connection: 'keep-alive' });
+      response.flushHeaders();
+      const stop = brain.watch(() => response.write('data: {}\n\n'));
+      request.on('close', stop);
+      return;
+    }
+    default: return json(response, 404, { error: 'Unknown API route' });
+  }
 }
 
 async function body(request: import('node:http').IncomingMessage): Promise<unknown> {

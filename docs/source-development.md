@@ -7,6 +7,13 @@ deduplicating React with the Golem checkout. It also loads the UI checkout's ins
 `@tailwindcss/vite` plugin and adds the checkout as a Tailwind `@source`, so utility classes in
 edited UI components are compiled and scanned.
 
+## Pinned golem-ui
+
+The published `golem-ui@0.1.1` predates the `Brain` component and `ChatMessage.sources`. This
+checkout is developed against golem-ui commit `e05c2db` (MNC-176); until that ships as a package
+version, run with `GOLEM_UI_SOURCE` pointing at a checkout of it to get the Brain reader and the
+source chips. With 0.1.1 installed the shell still builds, and the Brain panel says what is missing.
+
 ## Clean checkout
 
 ```sh

@@ -37,7 +37,7 @@ const outboxKey = 'golem.browser.outbox'
 let sessionId: string | undefined = (() => {
   try { return window.sessionStorage.getItem(storageKey) ?? undefined } catch { return undefined }
 })()
-type BrowserMessage = ChatMessage & { delivery?: 'pending' | 'failed' }
+type BrowserMessage = ChatMessage & { delivery?: 'pending' | 'failed'; sources?: string[] }
 type OutboxMessage = { id: string; sessionId: string; text: string; attachments?: ChatAttachment[]; delivery?: 'pending' | 'failed'; at: string }
 let outbox: OutboxMessage[] = (() => {
   try { return (JSON.parse(window.localStorage.getItem(outboxKey) ?? '[]') as OutboxMessage[]).map((message) => ({ ...message, delivery: message.delivery === 'pending' ? 'failed' : message.delivery })) } catch { return [] }
@@ -45,7 +45,7 @@ let outbox: OutboxMessage[] = (() => {
 let messages: BrowserMessage[] = []
 let sessionBackend: string | undefined
 let cursor = -1
-let eventLog = new Map<number, { sequence: number; type: string; text?: string; status?: string; reason?: string; clientMessageId?: string; attachments?: ChatAttachment[] }>()
+let eventLog = new Map<number, { sequence: number; type: string; text?: string; status?: string; reason?: string; clientMessageId?: string; attachments?: ChatAttachment[]; sources?: string[] }>()
 let status = 'starting'
 let source: EventSource | undefined
 const listeners = new Set<(messages: ChatMessage[]) => void>()
@@ -63,7 +63,7 @@ function saveOutbox(confirmed = new Set<string>()): void {
   } catch { /* Delivery still works for this page. */ }
 }
 
-function mergeEvents(events: Array<{ sequence: number; type: string; text?: string; status?: string; reason?: string; clientMessageId?: string; attachments?: ChatAttachment[] }>): string | undefined {
+function mergeEvents(events: Array<{ sequence: number; type: string; text?: string; status?: string; reason?: string; clientMessageId?: string; attachments?: ChatAttachment[]; sources?: string[] }>): string | undefined {
   for (const event of events) if (!eventLog.has(event.sequence)) eventLog.set(event.sequence, event)
   const ordered = [...eventLog.values()].sort((left, right) => left.sequence - right.sequence)
   cursor = Math.max(cursor, ...ordered.map((event) => event.sequence))
@@ -75,10 +75,10 @@ function mergeEvents(events: Array<{ sequence: number; type: string; text?: stri
   return ordered.findLast((event) => event.type === 'status')?.status
 }
 
-function fromEvents(events: Array<{ type: string; sequence: number; text?: string; ok?: boolean; status?: string; reason?: string; clientMessageId?: string; attachments?: ChatAttachment[] }>): BrowserMessage[] {
+function fromEvents(events: Array<{ type: string; sequence: number; text?: string; ok?: boolean; status?: string; reason?: string; clientMessageId?: string; attachments?: ChatAttachment[]; sources?: string[] }>): BrowserMessage[] {
   return events.flatMap((event) => {
     if ((event.type === 'user' || event.type === 'message') && event.text) {
-      return [{ id: event.type === 'user' && event.clientMessageId ? event.clientMessageId : `${event.sequence}`, role: event.type === 'user' ? 'user' : 'agent', text: event.text, attachments: event.attachments, at: new Date().toISOString() }]
+      return [{ id: event.type === 'user' && event.clientMessageId ? event.clientMessageId : `${event.sequence}`, role: event.type === 'user' ? 'user' : 'agent', text: event.text, attachments: event.attachments, ...(event.sources ? { sources: event.sources } : {}), at: new Date().toISOString() }]
     }
     if (event.type === 'error') return [{ id: `${event.sequence}`, role: 'agent', text: `Error: ${event.text ?? 'Agent failed.'}`, attachments: undefined, at: new Date().toISOString() }]
     if (event.type === 'tool' && event.ok === false) return [{ id: `${event.sequence}`, role: 'agent', text: `An action failed: ${event.text ?? 'unknown error'}`, attachments: undefined, at: new Date().toISOString() }]
@@ -176,7 +176,7 @@ export async function restoreBrowserSession(discover: 'build' | 'chat' = 'build'
     return restoreBrowserSession(discover)
   }
   if (!response.ok) throw new Error((await response.json()).error ?? 'Unable to restore session')
-  const result = await response.json() as { events: Array<{ sequence: number; type: string; text?: string; reason?: string; clientMessageId?: string; attachments?: ChatAttachment[] }>; status: string; backend?: string }
+  const result = await response.json() as { events: Array<{ sequence: number; type: string; text?: string; reason?: string; clientMessageId?: string; attachments?: ChatAttachment[]; sources?: string[] }>; status: string; backend?: string }
   sessionBackend = result.backend
   eventLog = new Map()
   setStatus(mergeEvents(result.events) ?? result.status)
@@ -196,7 +196,7 @@ export async function interruptBrowserSession(): Promise<void> {
   if (!response.ok) throw new Error((await response.json()).error ?? 'Unable to interrupt session')
 }
 
-function applyEvent(event: { sessionId?: string; sequence: number; type: string; text?: string; status?: string; reason?: string; clientMessageId?: string; attachments?: ChatAttachment[] }): void {
+function applyEvent(event: { sessionId?: string; sequence: number; type: string; text?: string; status?: string; reason?: string; clientMessageId?: string; attachments?: ChatAttachment[]; sources?: string[] }): void {
   if (event.sessionId && event.sessionId !== sessionId) return
   if (eventLog.has(event.sequence)) return
   cursor = Math.max(cursor, event.sequence)
@@ -208,13 +208,15 @@ function applyEvent(event: { sessionId?: string; sequence: number; type: string;
 }
 
 // interrupt is declared here too so the object still typechecks against a golem-ui whose ChatAdapter predates it.
-export const chat: ChatAdapter & { retry(messageId: string): Promise<void>; interrupt(): Promise<void> } = {
+export const chat: ChatAdapter & { retry(messageId: string): Promise<void>; interrupt(): Promise<void>; openSource(location: string): void } = {
   interrupt: interruptBrowserSession,
+  // A source chip: the Brain panel opens on the cited lines, and on a phone the canvas tab comes forward.
+  openSource: (location) => navigation.go(`${window.location.pathname}?brain=${encodeURIComponent(location)}`),
   history: async () => {
     if (!sessionId) return []
     const response = await fetch(`/api/sessions/${sessionId}/history`)
     if (!response.ok) throw new Error((await response.json()).error ?? 'Unable to load session history')
-    const result = await response.json() as { events: Array<{ sequence: number; type: string; text?: string; reason?: string; clientMessageId?: string; attachments?: ChatAttachment[] }>; status: string }
+    const result = await response.json() as { events: Array<{ sequence: number; type: string; text?: string; reason?: string; clientMessageId?: string; attachments?: ChatAttachment[]; sources?: string[] }>; status: string }
   setStatus(mergeEvents(result.events) ?? result.status)
     emit()
     return [...messages]
@@ -238,7 +240,7 @@ export const chat: ChatAdapter & { retry(messageId: string): Promise<void>; inte
         nextSource.onopen = () => {
           void fetch(`/api/sessions/${subscribedSession}/history`).then(async (response) => {
             if (!response.ok || source !== nextSource || sessionId !== subscribedSession) return
-            const result = await response.json() as { events: Array<{ sequence: number; type: string; text?: string; reason?: string; clientMessageId?: string; attachments?: ChatAttachment[] }>; status: string }
+            const result = await response.json() as { events: Array<{ sequence: number; type: string; text?: string; reason?: string; clientMessageId?: string; attachments?: ChatAttachment[]; sources?: string[] }>; status: string }
             if (source !== nextSource || sessionId !== subscribedSession) return
             setStatus(mergeEvents(result.events) ?? result.status)
             emit()
@@ -279,3 +281,21 @@ export const chat: ChatAdapter & { retry(messageId: string): Promise<void>; inte
 }
 
 export type { ChatMessage, User }
+
+/** The app's `brain/` folder over the dev server's read-only routes; golem-ui's BrainAdapter shape. */
+const brainGet = async <T,>(route: string, params: Record<string, string>): Promise<T> => {
+  const response = await fetch(`/api/brain/${route}?${new URLSearchParams(params)}`)
+  if (!response.ok) throw new Error((await response.json().catch(() => ({}))).error ?? `Cannot read the brain (${response.status})`)
+  return response.json() as Promise<T>
+}
+export const brain = {
+  index: (dir = '') => brainGet<{ text: string }>('index', { dir }).then((r) => r.text),
+  list: (dir = '') => brainGet<{ entries: Array<{ path: string; kind: 'file' | 'dir' }> }>('list', { dir }).then((r) => r.entries),
+  read: (path: string) => brainGet<{ text: string }>('read', { path }).then((r) => r.text),
+  search: (query: string) => brainGet<{ hits: Array<{ path: string; line: number; excerpt: string }> }>('search', { q: query }).then((r) => r.hits),
+  subscribe(listener: () => void) {
+    const events = new EventSource('/api/brain/events')
+    events.onmessage = () => listener()
+    return () => events.close()
+  },
+}

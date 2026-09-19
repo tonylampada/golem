@@ -116,7 +116,7 @@ See node_modules/golem-kit/docs/architecture.md to add eslint.config.mjs.`);
 
 function initProject(): void {
   const root = resolve(process.cwd());
-  const files = ['golem.config.ts', 'eslint.config.mjs', 'src/app.tsx', 'docs/domain.md', 'AGENTS.md', 'CLAUDE.md', 'golem'];
+  const files = ['golem.config.ts', 'eslint.config.mjs', 'src/app.tsx', 'docs/domain.md', 'AGENTS.md', 'CLAUDE.md', 'golem', 'brain/index.md', 'brain/log.md'];
   const existing = files.filter((file) => existsSync(resolve(root, file)));
   if (existing.length) throw new Error(`refusing to overwrite existing files: ${existing.join(', ')}`);
   const packagePath = resolve(root, 'package.json');
@@ -129,6 +129,7 @@ function initProject(): void {
   const framework = JSON.parse(readFileSync(resolve(frameworkRoot, 'package.json'), 'utf8')) as { version: string; dependencies: Record<string, string> };
   mkdirSync(resolve(root, 'src'), { recursive: true });
   mkdirSync(resolve(root, 'docs'), { recursive: true });
+  mkdirSync(resolve(root, 'brain'), { recursive: true });
   if (!existsSync(packagePath)) {
     writeFileSync(packagePath, JSON.stringify({
       name: 'golem-app', private: true, type: 'module', packageManager: 'pnpm@10.28.2',
@@ -136,7 +137,15 @@ function initProject(): void {
       ...(process.env.GOLEM_KIT_TARBALL ? {} : { dependencies: { 'golem-kit': framework.version } }),
     }, null, 2) + '\n');
   }
-  writeFileSync(resolve(root, 'golem.config.ts'), "export default { title: 'Golem' }\n");
+  writeFileSync(resolve(root, 'golem.config.ts'), "export default { title: 'Golem', brain: true }\n");
+  writeFileSync(resolve(root, 'brain/index.md'), `---
+okf_version: "0.2"
+---
+# Brain
+
+This folder is an Open Knowledge Format bundle: one concept per markdown file with \`type\` front matter, this \`index.md\` listing them one \`* [Title](path) - description\` line each, and \`log.md\` recording changes newest first.
+`);
+  writeFileSync(resolve(root, 'brain/log.md'), '# Log\n');
   writeFileSync(resolve(root, 'src/app.tsx'), `export default function App() {
   return (
     <section className="flex h-full min-h-64 items-center justify-center bg-neutral-50 p-6 text-center">
