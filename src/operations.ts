@@ -11,8 +11,14 @@ export type { FileRef, RecordPage, RecordQuery, UpdateOptions }
 /** A stored record: the app's plain value plus the fields the store owns. */
 export type Row = Record<string, unknown> & { id: string; version: number; createdAt: string; updatedAt: string }
 
-/** Who is asking. Resolved on the server from trusted request context, never from request input. */
-export type Principal = { kind: 'anonymous' } | { kind: 'user'; id: string; roles: string[] }
+/**
+ * Who is asking. Resolved on the server from trusted request context, never from request input.
+ * `session` is set when a signed-in browser session stands behind the call; it ends at sign-out.
+ * A user principal without one comes from trusted server code acting for an account (a job).
+ */
+export type Principal =
+  | { kind: 'anonymous' }
+  | { kind: 'user'; id: string; name: string; roles: string[]; groups: string[]; session?: string }
 export const anonymous: Principal = Object.freeze({ kind: 'anonymous' })
 
 /** Which caller path reached `invoke`. */
@@ -82,6 +88,10 @@ export class AppError extends Error {
 }
 export class InvalidError extends AppError {
   override name = 'InvalidError'
+}
+export class UnauthorizedError extends AppError {
+  override name = 'UnauthorizedError'
+  override status = 401
 }
 export class ForbiddenError extends AppError {
   override name = 'ForbiddenError'

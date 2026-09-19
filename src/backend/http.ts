@@ -2,9 +2,10 @@ import { existsSync } from 'node:fs'
 import type { IncomingMessage, ServerResponse } from 'node:http'
 import { isAbsolute, join } from 'node:path'
 import { pathToFileURL } from 'node:url'
-import { loadAppConfig } from '../config.ts'
+import { loadAppConfig, type AppConfig } from '../config.ts'
 import { build } from 'vite'
-import { AppError, type RecordStore } from '../operations.ts'
+import { AppError, InvalidError, UnauthorizedError, type Principal, type RecordStore } from '../operations.ts'
+import { createAccounts, type Accounts } from './accounts.ts'
 import { createApp, type App, type AppServerModule } from './app.ts'
 import { diskFiles } from './files.ts'
 import { jsonlStore } from './jsonl.ts'
@@ -15,7 +16,14 @@ const maxUpload = 25_000_000
 
 export type AppBackend = {
   app: App
+  /** Present when golem.config.ts turns on local accounts. */
+  accounts?: Accounts
+  /** Serves /api/app/* and /api/auth/*. */
   handle(request: IncomingMessage, response: ServerResponse): Promise<void>
+  /** The configured `origin` when set, else same-origin by Host; requests without Origin are not from a browser page. */
+  mutationAllowed(request: IncomingMessage): boolean
+  /** Where links handed out by this server point: the configured origin, else this Host authority. */
+  origin(authority?: string): string
   /** Re-reads src/server/index.ts and its local imports; on failure the running module stays. */
   reload(): Promise<void>
   close(): Promise<void>
@@ -23,7 +31,8 @@ export type AppBackend = {
 
 /** Loads golem.config.ts storage and the optional app-owned src/server/index.ts, and serves /api/app/*. */
 export async function createAppBackend(appRoot: string, dataDirectory: string): Promise<AppBackend> {
-  const { storage } = await loadAppConfig(appRoot)
+  const config = await loadAppConfig(appRoot)
+  const { storage } = config
   const records: RecordStore = storage === 'sqlite'
     ? (await import('./sqlite.ts')).sqliteStore(join(dataDirectory, 'records.sqlite'))
     : await jsonlStore(join(dataDirectory, 'records'))
@@ -34,11 +43,24 @@ export async function createAppBackend(appRoot: string, dataDirectory: string): 
     loading = next.catch(() => {})
     return next
   }
+  // Accounts write the raw store, so nothing about them reaches the public change stream.
+  const accounts = config.accounts ? createAccounts(records, config.accounts) : undefined
+  const cookie = `${config.origin?.startsWith('https:') ? '__Host-' : ''}golem-session-${config.port}`
+  const identity = accounts && {
+    requireUser: !accounts.config.guests,
+    resolve: (request: IncomingMessage) => accounts.fromToken(readCookie(request, cookie)),
+    refresh: accounts.refresh,
+    resolveAccount: accounts.resolveAccount,
+  }
   // FileStore writes metadata through the app's watched store, so file changes reach subscribers.
-  const app = createApp({ records, files: (watched) => diskFiles(join(dataDirectory, 'files'), watched) }, await load())
+  const app = createApp({ records, files: (watched) => diskFiles(join(dataDirectory, 'files'), watched) }, await load(), identity)
+  const server = { app, accounts, config, cookie }
   return {
     app,
-    handle: (request, response) => handle(app, request, response),
+    accounts,
+    handle: (request, response) => handle(server, request, response),
+    mutationAllowed: (request) => mutationAllowed(request, config.origin),
+    origin: (authority) => originOf(config, authority),
     reload: async () => app.use(await load()),
     close: () => records.close(),
   }
@@ -65,11 +87,16 @@ async function loadServerModule(appRoot: string, outDir: string): Promise<AppSer
   return loaded as AppServerModule
 }
 
-async function handle(app: App, request: IncomingMessage, response: ServerResponse): Promise<void> {
+type Server = { app: App; accounts?: Accounts; config: AppConfig; cookie: string }
+
+async function handle({ app, accounts, config, cookie }: Server, request: IncomingMessage, response: ServerResponse): Promise<void> {
   try {
     const url = new URL(request.url ?? '/', 'http://127.0.0.1')
-    if (request.method !== 'GET' && !mutationAllowed(request)) return send(response, 403, { error: 'Cross-origin mutations are not allowed' })
+    if (request.method !== 'GET' && !mutationAllowed(request, config.origin)) return send(response, 403, { error: 'Cross-origin mutations are not allowed' })
     const principal = await app.resolvePrincipal(request)
+    if (url.pathname.startsWith('/api/auth/')) return await handleAuth({ app, accounts, config, cookie }, principal, request, response, url.pathname.slice('/api/auth/'.length))
+    // guests: false keeps every signed-out caller out of app data; guests: true sends them through authorize as anonymous.
+    if (accounts && !accounts.config.guests && principal.kind === 'anonymous') throw new UnauthorizedError('Sign in to use this app.')
     const operation = url.pathname.match(/^\/api\/app\/operations\/([A-Za-z0-9_.-]+)$/)
     if (request.method === 'POST' && operation) {
       const text = (await read(request, maxJson)).toString('utf8')
@@ -101,8 +128,19 @@ async function handle(app: App, request: IncomingMessage, response: ServerRespon
       response.writeHead(200, { 'Content-Type': 'text/event-stream; charset=utf-8', 'Cache-Control': 'no-cache', Connection: 'keep-alive' })
       response.flushHeaders()
       const write = (collection: string) => response.write(`data: ${JSON.stringify({ collection })}\n\n`)
+      // When this reader's account changes, re-resolve the same request: a signed-out reader
+      // loses the stream, everyone else is told to re-read who they are and what they may see.
+      const recheck = (accountId: string) => {
+        if (principal.kind !== 'user' || accountId !== principal.id) return
+        void app.resolvePrincipal(request).then((now) => {
+          // Tell the page first, so a signed-out tab drops what it shows instead of waiting for a reload.
+          response.write(`data: ${JSON.stringify({ identity: true })}\n\n`)
+          if (now.kind === 'anonymous' && !accounts?.config.guests) response.end()
+        }, () => response.end())
+      }
       app.changes.on('change', write)
-      request.on('close', () => app.changes.off('change', write))
+      accounts?.changes.on('change', recheck)
+      request.on('close', () => { app.changes.off('change', write); accounts?.changes.off('change', recheck) })
       return
     }
     send(response, 404, { error: 'Unknown API route' })
@@ -117,12 +155,62 @@ async function handle(app: App, request: IncomingMessage, response: ServerRespon
   }
 }
 
-// By name, not class: app code bundled at reload has its own copies of these error classes.
-const statuses: Record<string, number> = { InvalidError: 400, ForbiddenError: 403, NotFoundError: 404, VersionConflictError: 409, RecordRefusedError: 422 }
+async function handleAuth({ accounts, config, cookie }: Server, principal: Principal, request: IncomingMessage, response: ServerResponse, route: string): Promise<void> {
+  if (request.method === 'GET' && route === 'me') {
+    const settings = accounts && { guests: accounts.config.guests, allowSignUp: accounts.config.allowSignUp, roles: accounts.config.roles }
+    return send(response, 200, { result: { user: accounts ? await accounts.me(principal) : null, canBuild: accounts ? accounts.canBuild(principal) : true, accounts: settings ?? null } })
+  }
+  if (!accounts) return send(response, 404, { error: 'This app has no accounts' })
+  const secure = config.origin?.startsWith('https:') ? '; Secure' : ''
+  const session = (token: string, maxAge: number) => ({ 'Set-Cookie': `${cookie}=${token}; Path=/; HttpOnly; SameSite=Lax; Max-Age=${maxAge}${secure}` })
+  if (request.method === 'GET' && route === 'members') return send(response, 200, { result: await accounts.members(principal) })
+  if (request.method !== 'POST') return send(response, 404, { error: 'Unknown API route' })
+  const input = await readJson(request)
+  if (route === 'sign-in' || route === 'sign-up') {
+    const { user, token } = route === 'sign-in' ? await accounts.signIn(input, request.socket.remoteAddress ?? 'unknown') : await accounts.signUp(input)
+    return send(response, 200, { result: user }, session(token, 14 * 86_400))
+  }
+  if (route === 'sign-out') {
+    await accounts.signOut(principal)
+    return send(response, 200, { result: null }, session('', 0))
+  }
+  if (route === 'invites') return send(response, 200, { result: await accounts.invite(principal, input, originOf(config, request.headers.host)) })
+  const member = route.match(/^members\/([^/]+)\/(role|groups|remove)$/)
+  if (!member) return send(response, 404, { error: 'Unknown API route' })
+  const id = decodeURIComponent(member[1])
+  if (member[2] === 'role') await accounts.setRole(principal, id, input)
+  else if (member[2] === 'groups') await accounts.setGroups(principal, id, input)
+  else await accounts.remove(principal, id)
+  send(response, 200, { result: null })
+}
 
-export function mutationAllowed(request: IncomingMessage): boolean {
+async function readJson(request: IncomingMessage): Promise<unknown> {
+  const text = (await read(request, maxJson)).toString('utf8')
+  try { return JSON.parse(text || '{}') } catch { throw new InvalidError('Request body must be valid JSON') }
+}
+
+function readCookie(request: IncomingMessage, name: string): string | undefined {
+  for (const part of (request.headers.cookie ?? '').split(';')) {
+    const [key, ...value] = part.trim().split('=')
+    if (key === name) return value.join('=') || undefined
+  }
+  return undefined
+}
+
+function originOf(config: AppConfig, authority?: string): string {
+  if (config.origin) return config.origin
+  try { if (authority) return new URL(`http://${authority}`).origin } catch {}
+  return new URL(`http://${config.host.includes(':') ? `[${config.host}]` : config.host}:${config.port}`).origin
+}
+
+// By name, not class: app code bundled at reload has its own copies of these error classes.
+const statuses: Record<string, number> = { UnauthorizedError: 401, RateLimitedError: 429, InvalidError: 400, ForbiddenError: 403, NotFoundError: 404, VersionConflictError: 409, RecordRefusedError: 422 }
+
+export function mutationAllowed(request: IncomingMessage, configured?: string): boolean {
   const origin = request.headers.origin
   if (!origin) return true
+  // Behind a proxy the Host header is the proxy's business, so a configured origin is the only one accepted.
+  if (configured) return origin === configured
   const authority = request.headers.host
   if (!authority) return false
   try {
@@ -143,9 +231,9 @@ async function read(request: IncomingMessage, limit: number): Promise<Buffer> {
   return Buffer.concat(chunks)
 }
 
-function send(response: ServerResponse, status: number, body: unknown): void {
+function send(response: ServerResponse, status: number, body: unknown, headers: Record<string, string> = {}): void {
   if (response.headersSent) { response.destroy(); return }
-  response.writeHead(status, { 'Content-Type': 'application/json; charset=utf-8', 'Cache-Control': 'no-store' })
+  response.writeHead(status, { 'Content-Type': 'application/json; charset=utf-8', 'Cache-Control': 'no-store', ...headers })
   // Bytes cross JSON as base64, so an HTTP caller of files.read gets them intact.
   response.end(JSON.stringify(body, function (this: Record<string, unknown>, key, value) {
     const raw = this[key]

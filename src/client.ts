@@ -1,8 +1,8 @@
 /**
- * golem-kit/client: the browser binding. golem-ui `Records` and `Files` adapters plus `invoke`,
- * all over the app server's HTTP routes — no storage driver or server module reaches the bundle.
+ * golem-kit/client: the browser binding. golem-ui `Records`, `Files` and `Identity` adapters plus
+ * `invoke`, all over the app server's HTTP routes — no storage driver or server module reaches the bundle.
  */
-import { fileId, RecordRefusedError, VersionConflictError, type FileRef, type FilesAdapter, type RecordsAdapter } from 'golem-ui'
+import { fileId, RecordRefusedError, VersionConflictError, type FileRef, type FilesAdapter, type IdentityAdapter, type RecordsAdapter, type User } from 'golem-ui'
 
 /** Calls an app operation by name, as the signed-in principal the server resolves. */
 export function invoke<T = unknown>(operation: string, input: unknown = {}): Promise<T> {
@@ -23,12 +23,26 @@ async function call<T>(request: Promise<Response>): Promise<T> {
 const listeners = new Map<string, Set<() => void>>()
 let changes: EventSource | undefined
 
+function connect(): void {
+  changes?.close()
+  changes = Object.assign(new EventSource('/api/app/changes'), {
+    onmessage: (event: MessageEvent) => {
+      const data = JSON.parse(event.data) as { collection?: string; identity?: true }
+      if (data.identity) void reloadIdentity()
+      else listeners.get(data.collection ?? '')?.forEach((one) => one())
+    },
+    // The server refused or ended the stream for good (e.g. signed out elsewhere): re-read identity
+    // once. No reconnect here, so a 401 cannot loop; a new identity reconnects through reloadIdentity.
+    onerror: () => {
+      if (changes?.readyState === EventSource.CLOSED) void me?.then((known) => { if (known.user) void reloadIdentity(false) }, () => {})
+    },
+  })
+}
+
 function watch(collection: string, listener: () => void): () => void {
   const set = listeners.get(collection) ?? new Set()
   listeners.set(collection, set.add(listener))
-  changes ??= Object.assign(new EventSource('/api/app/changes'), {
-    onmessage: (event: MessageEvent) => listeners.get((JSON.parse(event.data) as { collection: string }).collection)?.forEach((one) => one()),
-  })
+  if (!changes) connect()
   return () => {
     set.delete(listener)
     if ([...listeners.values()].every((one) => one.size === 0)) { changes?.close(); changes = undefined }
@@ -57,4 +71,68 @@ export const files: FilesAdapter = {
   list: (folder) => invoke('files.list', { folder }),
   caption: (ref, caption) => invoke('files.caption', { id: fileId(ref), caption }),
   subscribe: (_folder, listener) => watch('_files', listener),
+}
+
+/** A signed-in person as the server sees them: golem-ui's `User` plus the groups app rules may check. */
+export type Member = User & { email: string; groups: string[] }
+export type AccountsSettings = { guests: boolean; allowSignUp: boolean; roles: Array<{ id: string; label: string; manages: boolean }> }
+/** `accounts` is null when the app has no accounts; then everyone is anonymous and may build. */
+export type Me = { user: Member | null; canBuild: boolean; accounts: AccountsSettings | null }
+
+let me: Promise<Me> | undefined
+const identityListeners = new Set<(user: User | null) => void>()
+
+/** Who this browser is signed in as, and what the app's account settings are. Cached until identity changes. */
+export function currentSession(): Promise<Me> {
+  me ??= call<Me>(fetch('/api/auth/me')).catch((error) => { me = undefined; throw error })
+  return me
+}
+
+/** Re-reads the session after sign-in, sign-out or a role change; open lists re-read what they may now see. */
+async function reloadIdentity(reconnect = true): Promise<Me> {
+  me = undefined
+  const next = await currentSession()
+  identityListeners.forEach((listener) => listener(next.user))
+  if (changes && reconnect) connect()
+  listeners.forEach((set) => set.forEach((listener) => listener()))
+  return next
+}
+
+const auth = <T = null>(route: string, input: unknown = {}) => call<T>(fetch(`/api/auth/${route}`, {
+  method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(input),
+}))
+const signedIn = async () => {
+  const { user } = await reloadIdentity()
+  if (!user) throw new Error('Signing in did not stick. Allow cookies for this site and try again.')
+  return user
+}
+const passwordOnly = () => Promise.reject(new Error('This app signs in with a password.'))
+
+/** golem-ui `IdentityAdapter` over the server's local accounts. Sign-in takes the account's email and password. */
+export const identity: IdentityAdapter = {
+  currentUser: async () => (await currentSession()).user,
+  subscribe(listener) {
+    identityListeners.add(listener)
+    // Keeps the change stream open, which is where the server says this account changed.
+    const stop = watch('', () => {})
+    return () => { identityListeners.delete(listener); stop() }
+  },
+  signIn: async (email, password) => { await auth('sign-in', { email, password }); return signedIn() },
+  signUp: async (input) => { await auth('sign-up', input); return signedIn() },
+  requestCode: passwordOnly,
+  verifyCode: passwordOnly,
+  signOut: async () => { await auth('sign-out'); await reloadIdentity() },
+  listMembers: () => call<Member[]>(fetch('/api/auth/members')),
+  invite: (role) => auth<string>('invites', { role }),
+  removeMember: async (userId) => { await auth(`members/${encodeURIComponent(userId)}/remove`); await reloadIdentity() },
+  setRole: async (userId, role) => { await auth(`members/${encodeURIComponent(userId)}/role`, { role }); await reloadIdentity() },
+}
+
+/** Re-reads who is signed in and tells identity subscribers; for callers that saw a 401 or 403. */
+export async function refreshIdentity(): Promise<void> { await reloadIdentity() }
+
+/** Replaces a member's groups. Accounts that manage members only. */
+export async function setGroups(userId: string, groups: string[]): Promise<void> {
+  await auth(`members/${encodeURIComponent(userId)}/groups`, { groups })
+  await reloadIdentity()
 }

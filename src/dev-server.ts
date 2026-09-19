@@ -3,7 +3,8 @@ import { readFile } from 'node:fs/promises';
 import { extname, join, normalize, resolve } from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { buildBrowser, rebuild } from './browser-build.ts';
-import { createAppBackend, mutationAllowed } from './backend/http.ts';
+import { createAppBackend, type AppBackend } from './backend/http.ts';
+import { serverUrl } from './config.ts';
 import { discoverAgents, runtimeState } from './runtime/discovery.ts';
 import { CodexBackend, type SandboxMode } from './runtime/codex.ts';
 import { SessionManager, type Session, type SessionBackend } from './runtime/session.ts';
@@ -30,8 +31,23 @@ export async function startDevServer(
   const sessions = new SessionManager((snapshots) => state.save(snapshots));
   sessions.restore(await state.load(), (snapshot) => createBackend(snapshot.buildMode ? 'danger-full-access' : 'read-only', snapshot.threadId));
   const app = await createAppBackend(appRoot, join(stateDirectory, 'data'));
+  const { accounts } = app;
+  if (accounts) {
+    // Printed to the terminal that owns the data, never served: a fresh store, or a deliberate recovery.
+    const invite = await accounts.managerInvite(app.origin(new URL(serverUrl(host, port)).host), process.env.GOLEM_ADMIN_INVITE === '1');
+    if (invite) console.log(`Admin invite (one use, expires in 24 hours): ${invite}`);
+    // A build turn runs with full file access: stop it once its owner may no longer build or has signed out everywhere.
+    accounts.changes.on('change', (accountId: string) => {
+      for (const session of sessions.all()) {
+        if (session.owner !== accountId || !session.snapshot().active) continue;
+        void accounts.resolveAccount(accountId)
+          .then(async (principal) => accounts.canBuild(principal) && await accounts.signedIn(accountId), () => false)
+          .then((allowed) => { if (!allowed) return session.interrupt(); });
+      }
+    });
+  }
   const server = createServer((request, response) => {
-    void (request.url?.startsWith('/api/app/') ? app.handle(request, response) : handleRequest(request, response, sessions, port, host, createBackend, app.reload)).catch((error) => {
+    void (request.url?.startsWith('/api/app/') || request.url?.startsWith('/api/auth/') ? app.handle(request, response) : handleRequest(request, response, sessions, port, host, createBackend, app)).catch((error) => {
       if (!response.headersSent) json(response, 400, { error: error instanceof Error ? error.message : 'Malformed request' });
       else response.destroy();
     });
@@ -50,12 +66,12 @@ async function handleRequest(
   port: number,
   host: string,
   createBackend: (mode: SandboxMode, threadId?: string) => SessionBackend,
-  reloadServer: () => Promise<void>,
+  app: AppBackend,
 ): Promise<void> {
     const url = new URL(request.url ?? '/', 'http://127.0.0.1');
     decodeURIComponent(url.pathname);
     if (url.pathname.startsWith('/api/')) {
-      await handleApi(request, response, url, sessions, createBackend, reloadServer);
+      await handleApi(request, response, url, sessions, createBackend, app);
       return;
     }
     let pathname: string;
@@ -126,8 +142,19 @@ async function handleApi(
   url: URL,
   sessions: SessionManager,
   createBackend: (mode: SandboxMode) => SessionBackend,
-  reloadServer: () => Promise<void>,
+  app: AppBackend,
 ): Promise<void> {
+  const reloadServer = app.reload;
+  const { accounts } = app;
+  const mutationAllowed = app.mutationAllowed;
+  // With accounts, every build route needs a signed-in account allowed to build, and a
+  // conversation belongs to the account that started it. Ownerless (older) ones go to managers.
+  const principal = await app.app.resolvePrincipal(request);
+  if (accounts && !accounts.canBuild(principal)) {
+    return json(response, principal.kind === 'anonymous' ? 401 : 403, { error: principal.kind === 'anonymous' ? 'Sign in to build.' : 'Your account may not build this app.' });
+  }
+  const owner = accounts && principal.kind === 'user' ? principal.id : undefined;
+  const visible = (session: Session) => !accounts || session.owner === owner || (!session.owner && accounts.manages(principal));
   if (request.method === 'GET' && url.pathname === '/api/runtime') {
     const discoveries = await discoverAgents();
     json(response, 200, { discoveries, state: runtimeState(discoveries) });
@@ -141,7 +168,7 @@ async function handleApi(
       // Server-owned: only an explicit build intent grants filesystem access. Omitted intent stays read-only.
       // danger-full-access, not app-root-confined — see CodexBackend's doc comment for why.
       const buildMode = input.intent === 'build';
-      const session = await sessions.start('codex', createBackend(buildMode ? 'danger-full-access' : 'read-only'), buildMode);
+      const session = await sessions.start('codex', createBackend(buildMode ? 'danger-full-access' : 'read-only'), buildMode, owner);
       json(response, 201, { id: session.id, backend: session.backend, status: session.status });
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
@@ -150,7 +177,7 @@ async function handleApi(
     return;
   }
   if (request.method === 'GET' && url.pathname === '/api/sessions/latest') {
-    const latest = sessions.latest();
+    const latest = sessions.latest(visible);
     if (!latest) return json(response, 404, { error: 'No saved build conversation' });
     json(response, 200, { id: latest.id, backend: latest.backend, status: latest.status });
     return;
@@ -158,7 +185,7 @@ async function handleApi(
   const match = url.pathname.match(/^\/api\/sessions\/([^/]+)(?:\/(history|events|interrupt))?$/);
   if (!match) return json(response, 404, { error: 'Unknown API route' });
   const session = sessions.get(match[1]);
-  if (!session) return json(response, 404, { error: 'Unknown session' });
+  if (!session || !visible(session)) return json(response, 404, { error: 'Unknown session' });
   if (request.method === 'GET' && match[2] === 'history') {
     json(response, 200, { events: session.history, status: session.status, backend: session.backend });
     return;
@@ -170,7 +197,13 @@ async function handleApi(
     response.flushHeaders();
     const write = (event: { sequence: number }) => response.write(`id: ${event.sequence}\ndata: ${JSON.stringify(event)}\n\n`);
     const unsubscribe = session.subscribeFrom(after, write);
-    request.on('close', unsubscribe);
+    // Re-resolve this same request when its account changes; a reader who may no longer build loses the stream.
+    const recheck = (accountId: string) => {
+      if (accountId !== owner) return;
+      void app.app.resolvePrincipal(request).then((now) => { if (!accounts!.canBuild(now)) response.end(); }, () => response.end());
+    };
+    accounts?.changes.on('change', recheck);
+    request.on('close', () => { unsubscribe(); accounts?.changes.off('change', recheck); });
     return;
   }
   if (request.method === 'POST' && !match[2]) {
