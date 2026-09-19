@@ -116,11 +116,16 @@ export function App() {
       adapters={shellAdapters}
       chat={
         <div className="flex h-full min-h-0 flex-col">
-          <div className="golem-browser-header flex items-center justify-between border-b border-neutral-200 bg-white px-4 py-3 text-sm">
+          <div className="golem-browser-header flex items-center gap-1 whitespace-nowrap border-b border-neutral-200 bg-white px-2 py-2 text-xs">
             <span className="font-medium">{mode ? (chatting ? 'Chat' : 'Build mode') : 'Conversation mode'}</span>
-            <span className={mode ? 'golem-browser-status-connected text-green-700' : 'golem-browser-status-disconnected text-neutral-500'}>{mode ? `${sessionStatus} · ${session}` : 'Not connected'}</span>
-            {mode && <button className="golem-browser-new rounded border border-neutral-300 px-2 py-1" onClick={() => setMode(false)}>New conversation</button>}
-            {mode && (sessionStatus === 'ready' || sessionStatus === 'starting') && <button className="golem-browser-interrupt rounded border border-red-300 px-2 py-1 text-red-700" onClick={interrupt}>Interrupt</button>}
+            <span className={`flex min-w-0 items-center ${mode ? 'golem-browser-status-connected text-green-700' : 'golem-browser-status-disconnected text-neutral-500'}`} title={mode ? session : undefined}>
+              <span className="golem-browser-status-dot" aria-hidden="true" />
+              <span className="truncate">{mode ? <>{sessionStatus} <span className="opacity-60">{session?.slice(0, 8)}</span></> : 'Not connected'}</span>
+            </span>
+            {mode && <span className="ml-auto flex shrink-0 gap-1">
+              <button className="golem-browser-new rounded-full border border-neutral-300 px-2 py-1" title="New conversation" onClick={() => setMode(false)}>New</button>
+              {(sessionStatus === 'ready' || sessionStatus === 'starting') && <button className="golem-browser-interrupt rounded-full border border-red-300 px-2 py-1 text-red-700" onClick={interrupt}>Interrupt</button>}
+            </span>}
           </div>
           {!mode ? (
             <div className="p-4 text-sm">

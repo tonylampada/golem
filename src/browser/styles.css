@@ -1,6 +1,6 @@
 [data-golem-theme] .golem-browser-status-connected { color: oklch(52.7% .154 150.069); }
 [data-golem-theme] .golem-browser-interrupt { border-color: oklch(80.8% .114 19.571); color: oklch(50.5% .213 27.518); }
-[data-golem-theme='dark'] .golem-browser-header { border-color: oklch(26.9% 0 0); background-color: oklch(14.5% 0 0); }
+[data-golem-theme='dark'] .golem-browser-header { border-color: oklch(26.9% 0 0); background-color: oklch(14.5% 0 0); color: oklch(87% 0 0); }
 [data-golem-theme='dark'] .golem-browser-status-connected { color: oklch(79.2% .209 151.711); }
 [data-golem-theme='dark'] .golem-browser-status-disconnected, [data-golem-theme='dark'] .golem-browser-guest { color: oklch(70.8% 0 0); }
 [data-golem-theme='dark'] .golem-browser-interrupt { border-color: oklch(44.4% .177 26.899); color: oklch(70.4% .191 22.216); }
@@ -10,3 +10,7 @@
 [data-golem-theme='dark'] .golem-browser-theme-toggle { border-color: oklch(37.1% 0 0); }
 [data-golem-theme='dark'] .golem-browser-backend { border-color: oklch(37.1% 0 0); background-color: oklch(20.5% 0 0); color: oklch(98.5% 0 0); }
 [data-golem-theme='dark'] .golem-browser-new { border-color: oklch(37.1% 0 0); color: oklch(87% 0 0); }
+.golem-browser-header { line-height: 1.25; }
+.golem-browser-header button { line-height: 1.25; }
+.golem-browser-status-dot { display: inline-block; width: .45em; height: .45em; margin-right: .35em; border-radius: 9999px; background-color: currentColor; flex-shrink: 0; }
+[data-golem-theme='dark'] .golem-browser-status-disconnected .golem-browser-status-dot { opacity: .6; }
