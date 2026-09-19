@@ -14,14 +14,14 @@ const runner = (root) => `
 import { readFileSync, writeFileSync } from 'node:fs'
 import { startDevServer } from ${JSON.stringify(resolve(import.meta.dirname, '../src/dev-server.ts'))}
 const edits = ${JSON.stringify([
-  ["message: 'Archived.'", "message: 'Moved to archive.'"],
-  ["export const archive", "throw new Error('broken server module')\nexport const archive"],
+  [join(root, 'src/server/notes.ts'), "message: 'Archived.'", "message: 'Moved to archive.'"],
+  [join(root, 'src/app.tsx'), 'grid gap-6 p-6', 'grid gap-6 p-8'],
+  [join(root, 'src/server/notes.ts'), 'export const archive', "throw new Error('broken server module')\nexport const archive"],
 ])}
-const file = ${JSON.stringify(join(root, 'src/server/notes.ts'))}
 class EditingBackend {
   async start(emit) { this.emit = emit }
   async send(text) {
-    const [from, to] = edits.shift()
+    const [file, from, to] = edits.shift()
     writeFileSync(file, readFileSync(file, 'utf8').replace(from, to))
     this.emit({ type: 'message', text: 'edited' })
   }
@@ -38,6 +38,10 @@ async function call(name, input) {
 
 async function turn(session, id, predicate) {
   await fetch(`${base}/api/sessions/${session}`, { method: 'POST', body: JSON.stringify({ text: 'change archive', clientMessageId: id }) })
+  return history(session, predicate)
+}
+
+async function history(session, predicate) {
   const until = Date.now() + 60_000
   while (Date.now() < until) {
     const { events } = await (await fetch(`${base}/api/sessions/${session}/history`)).json()
@@ -47,7 +51,16 @@ async function turn(session, id, predicate) {
   throw new Error('timed out waiting for the turn to finish')
 }
 
-test('a build-mode turn reloads app server code, including local imports, and keeps data', { timeout: 120_000 }, async () => {
+async function until(probe) {
+  const deadline = Date.now() + 60_000
+  while (Date.now() < deadline) {
+    if (await probe()) return
+    await new Promise((done) => setTimeout(done, 100))
+  }
+  throw new Error('timed out waiting for the rebuild to land')
+}
+
+test('a build-mode turn reloads app server code, including local imports, and keeps data; only a changed browser bundle tells the page to reload', { timeout: 180_000 }, async () => {
   const root = fixtureApp(mkdtempSync(join(tmpdir(), 'golem-reload-')))
   writeFileSync(join(root, 'runner.mjs'), runner(root))
   const child = spawn(process.execPath, ['runner.mjs'], { cwd: root, stdio: ['ignore', 'pipe', 'inherit'] })
@@ -57,13 +70,19 @@ test('a build-mode turn reloads app server code, including local imports, and ke
     assert.equal((await call('notes.archive', { id: before.id })).message, 'Archived.')
 
     const session = (await (await fetch(`${base}/api/sessions`, { method: 'POST', body: JSON.stringify({ backend: 'codex', intent: 'build' }) })).json()).id
-    await turn(session, 'one', (events) => events.some((event) => event.type === 'rebuilt'))
+    // A server-only edit leaves the browser bundle as it was: the server reloads, the page is not told to.
+    await turn(session, 'one', (events) => events.some((event) => event.type === 'message'))
     const after = await call('records.create', { collection: 'notes', data: { title: 'After' } })
-    assert.equal((await call('notes.archive', { id: after.id })).message, 'Moved to archive.')
+    await until(async () => (await call('notes.archive', { id: after.id })).message === 'Moved to archive.')
     assert.equal((await call('records.get', { collection: 'notes', id: before.id })).archived, true)
     assert.doesNotMatch(readFileSync(join(root, '.golem/server/index.mjs'), 'utf8'), /function createApp|DatabaseSync/)
+    assert.equal((await history(session, () => true)).filter((event) => event.type === 'rebuilt').length, 0)
 
-    const events = await turn(session, 'two', (events) => events.some((event) => event.type === 'error'))
+    // An edit to src/app.tsx changes the bundle: exactly one rebuilt event.
+    const rebuilt = await turn(session, 'two', (events) => events.some((event) => event.type === 'rebuilt'))
+    assert.equal(rebuilt.filter((event) => event.type === 'rebuilt').length, 1)
+
+    const events = await turn(session, 'three', (events) => events.some((event) => event.type === 'error'))
     assert.match(events.findLast((event) => event.type === 'error').text, /broken server module/)
     assert.equal(events.filter((event) => event.type === 'rebuilt').length, 1)
     const third = await call('records.create', { collection: 'notes', data: { title: 'Third' } })

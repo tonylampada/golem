@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict'
 import { request as httpRequest } from 'node:http'
 import { test } from 'node:test'
-import { mkdtempSync } from 'node:fs'
+import { mkdtempSync, statSync } from 'node:fs'
 import { writeFile } from 'node:fs/promises'
 import { join } from 'node:path'
 import { tmpdir } from 'node:os'
@@ -111,18 +111,25 @@ async function waitFor(predicate, timeout = 2_000) {
   throw new Error('timed out waiting for condition')
 }
 
-test('a successful build-mode turn triggers a rebuild and notifies the browser', { timeout: 30000 }, async () => {
+// Vite rewrites dist/ on every rebuild; the mtime is how a test sees a rebuild that changed nothing.
+// Mid-build the directory is emptied, so a missing file reads as "not built yet".
+const distBuiltAt = () => { try { return statSync(join(process.cwd(), 'dist/index.html')).mtimeMs } catch { return 0 } }
+
+test('a build-mode turn that leaves the bundle unchanged rebuilds without telling the browser to reload', { timeout: 30000 }, async () => {
   const server = await start(3230, () => new InstantBackend())
   try {
     const created = await (await fetch('http://127.0.0.1:3230/api/sessions', {
       method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ backend: 'codex', intent: 'build' }),
     })).json()
+    const builtAt = distBuiltAt()
     const send = await fetch(`http://127.0.0.1:3230/api/sessions/${created.id}`, {
       method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ text: 'edit it', clientMessageId: 'edit-it' }),
     })
     assert.equal(send.status, 202)
-    const history = await waitForHistory(3230, created.id, (events) => events.some((event) => event.type === 'rebuilt'))
-    assert.deepEqual(history.events.map((event) => event.type), ['status', 'user', 'message', 'rebuilt'])
+    await waitFor(() => distBuiltAt() > builtAt, 20_000)
+    await new Promise((resolve) => setTimeout(resolve, 500))
+    const history = await waitForHistory(3230, created.id, () => true)
+    assert.deepEqual(history.events.map((event) => event.type), ['status', 'user', 'message'])
   } finally {
     await new Promise((resolve) => server.close(resolve))
   }
@@ -137,10 +144,15 @@ test('back-to-back build-mode turns coalesce their rebuilds instead of racing', 
     const send = (text) => fetch(`http://127.0.0.1:3231/api/sessions/${created.id}`, {
       method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ text, clientMessageId: text }),
     })
+    const builtAt = distBuiltAt()
     const [first, second] = await Promise.all([send('one'), send('two')])
     assert.equal(first.status, 202)
     assert.equal(second.status, 202)
-    const history = await waitForHistory(3231, created.id, (events) => events.filter((event) => event.type === 'rebuilt').length >= 1 && events.filter((event) => event.type === 'user').length === 2)
+    // Two overlapping turns coalesce into one in-flight build plus one queued rerun: two dist writes, no race.
+    await waitFor(() => distBuiltAt() > builtAt, 20_000)
+    const firstBuild = distBuiltAt()
+    await waitFor(() => distBuiltAt() > firstBuild, 20_000)
+    const history = await waitForHistory(3231, created.id, (events) => events.filter((event) => event.type === 'message').length === 2)
     assert.ok(!history.events.some((event) => event.type === 'error'))
   } finally {
     await new Promise((resolve) => server.close(resolve))
@@ -160,20 +172,19 @@ test('build intent is server-owned: omitted intent stays read-only and never reb
     })).json()
     assert.deepEqual(modes, ['read-only', 'danger-full-access'])
 
+    const builtAt = distBuiltAt()
     await fetch(`http://127.0.0.1:3232/api/sessions/${readOnly.id}`, {
       method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ text: 'hi', clientMessageId: 'read-only-hi' }),
     })
+    await waitForHistory(3232, readOnly.id, (events) => events.some((event) => event.type === 'message'))
+    // Give a stray rebuild a chance to start for the read-only session if the server-side gate were missing.
+    await new Promise((resolve) => setTimeout(resolve, 500))
+    assert.equal(distBuiltAt(), builtAt)
+
     await fetch(`http://127.0.0.1:3232/api/sessions/${build.id}`, {
       method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ text: 'hi', clientMessageId: 'build-hi' }),
     })
-
-    const buildHistory = await waitForHistory(3232, build.id, (events) => events.some((event) => event.type === 'rebuilt'))
-    assert.ok(buildHistory.events.some((event) => event.type === 'rebuilt'))
-
-    // Give a stray rebuild a chance to land on the read-only session if the server-side gate were missing.
-    await new Promise((resolve) => setTimeout(resolve, 500))
-    const readOnlyHistory = await (await fetch(`http://127.0.0.1:3232/api/sessions/${readOnly.id}/history`)).json()
-    assert.ok(!readOnlyHistory.events.some((event) => event.type === 'rebuilt'))
+    await waitFor(() => distBuiltAt() > builtAt, 20_000)
   } finally {
     await new Promise((resolve) => server.close(resolve))
   }

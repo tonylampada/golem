@@ -1,3 +1,4 @@
+import { createHash } from 'node:crypto';
 import { createServer, type Server } from 'node:http';
 import { readFile } from 'node:fs/promises';
 import { extname, join, normalize, resolve } from 'node:path';
@@ -151,11 +152,17 @@ async function body(request: import('node:http').IncomingMessage): Promise<unkno
  * The app's server module reloads before the refresh, so the new UI never talks to old operations.
  */
 function triggerRebuild(session: Session, reloadServer: () => Promise<void>): void {
-  void rebuild().then(reloadServer).then(
-    () => session.notifyRebuilt(),
-    (error) => session.notifyBuildFailed(error instanceof Error ? error.message : String(error)),
-  );
+  void distFingerprint().then(async (before) => {
+    await rebuild();
+    await reloadServer();
+    // Vite content-hashes asset names, so index.html changes iff the bundle did: a chat-only
+    // turn (or a server-only edit) leaves the page alone instead of reloading it.
+    if (await distFingerprint() !== before) session.notifyRebuilt();
+  }).catch((error: unknown) => session.notifyBuildFailed(error instanceof Error ? error.message : String(error)));
 }
+
+const distFingerprint = (): Promise<string> => readFile(new URL('index.html', root))
+  .then((html) => createHash('sha1').update(html).digest('hex'), () => '');
 
 async function handleApi(
   request: import('node:http').IncomingMessage,
