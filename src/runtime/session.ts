@@ -25,6 +25,15 @@ export type SessionBackend = {
   harnessRef?(): unknown
   /** Conversation state a backend keeps itself, saved with the conversation and handed back on restore. */
   transcript?(): unknown
+  /** The agent's live terminal screen, when the backend has one to show (the tmux backend). */
+  pane?(): PaneAccess | undefined
+}
+
+/** One agent screen: `open` streams whole-screen frames on change until closed, `input` types one key or a literal string. */
+export type PaneAccess = {
+  open(onFrame: (frame: string) => void): Promise<{ close(): void }> | { close(): void }
+  snapshot(): Promise<string>
+  input(input: { key?: string; text?: string }): Promise<void>
 }
 
 export type SessionStatus = 'starting' | 'ready' | 'interrupted' | 'stopped' | 'failed'
@@ -71,7 +80,7 @@ export class Session {
   readonly buildMode: boolean
   /** The account that started this conversation when the app has accounts; only it may use it. */
   readonly owner: string | undefined
-  private readonly worker: SessionBackend
+  readonly worker: SessionBackend
   private readonly save?: (snapshot: SessionSnapshot) => Promise<void>
 
   constructor(

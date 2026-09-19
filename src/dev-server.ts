@@ -194,6 +194,58 @@ function triggerRebuild(session: Session, reloadServer: () => Promise<void>): vo
 const distFingerprint = (): Promise<string> => readFile(new URL('index.html', root))
   .then((html) => createHash('sha1').update(html).digest('hex'), () => '');
 
+// ---------- pane hub: the Terminal popup's live agent screen ----------
+// Copied from Bridge Commander's paneStream: one harness feed per session, ref-counted across
+// browser tabs; the first subscriber opens it, the last disconnect closes it. Guards are clean
+// SSE events then end, never a 500 (the client is an EventSource and cannot read error bodies):
+//   unsupported — this backend has no screen to show
+//   no-pane     — the agent has not been spawned yet, or the open failed
+//   busy        — the concurrent-feed cap is hit
+const PANE_MAX = 8;
+type PaneHub = { clients: Set<import('node:http').ServerResponse>; handle: { close(): void } | null; last: string | null };
+const panes = new Map<string, PaneHub>();
+function paneWrite(response: import('node:http').ServerResponse, event: string, data: unknown = {}): void {
+  response.write(`event: ${event}\ndata: ${JSON.stringify(data)}\n\n`);
+}
+function paneStream(request: import('node:http').IncomingMessage, response: import('node:http').ServerResponse, session: Session): void {
+  response.writeHead(200, { 'Content-Type': 'text/event-stream; charset=utf-8', 'Cache-Control': 'no-cache', Connection: 'keep-alive' });
+  response.flushHeaders();
+  if (!session.worker.pane) { paneWrite(response, 'unsupported'); response.end(); return; }
+  const pane = session.worker.pane();
+  if (!pane) { paneWrite(response, 'no-pane', { reason: 'the agent has not started yet; send a message first' }); response.end(); return; }
+  let hub = panes.get(session.id);
+  if (!hub) {
+    if (panes.size >= PANE_MAX) { paneWrite(response, 'busy', { max: PANE_MAX }); response.end(); return; }
+    const created: PaneHub = { clients: new Set(), handle: null, last: null };
+    hub = created;
+    panes.set(session.id, created);
+    console.log(`[pane] openPane ${session.id}`);
+    Promise.resolve(pane.open((frame) => {
+      created.last = String(frame);
+      for (const client of created.clients) paneWrite(client, 'frame', created.last);
+    })).then((handle) => {
+      if (panes.get(session.id) === created) { created.handle = handle; return; }
+      try { handle.close(); } catch { /* everyone left before the open resolved */ }
+    }).catch((error: unknown) => {
+      if (panes.get(session.id) !== created) return;
+      panes.delete(session.id);
+      for (const client of created.clients) { paneWrite(client, 'no-pane', { reason: `open failed: ${error instanceof Error ? error.message : String(error)}` }); client.end(); }
+    });
+  }
+  const joined = hub;
+  joined.clients.add(response);
+  // Immediate paint: late joiners get the last frame, the first subscriber a one-shot snapshot.
+  if (joined.last != null) paneWrite(response, 'frame', joined.last);
+  else pane.snapshot().then((snap) => { if (joined.last == null && joined.clients.has(response) && snap) paneWrite(response, 'frame', snap); }, () => {});
+  request.on('close', () => {
+    joined.clients.delete(response);
+    if (joined.clients.size) return;
+    panes.delete(session.id);
+    console.log(`[pane] closePane ${session.id}`);
+    try { joined.handle?.close(); } catch { /* already gone */ }
+  });
+}
+
 async function handleApi(
   request: import('node:http').IncomingMessage,
   response: import('node:http').ServerResponse,
@@ -271,6 +323,25 @@ async function handleApi(
     if (!latest) return json(response, 404, { error: 'No saved build conversation' });
     json(response, 200, { id: latest.id, backend: latest.backend, status: latest.status });
     return;
+  }
+  // The Terminal popup: the agent's live screen (SSE frames) and raw keystrokes into it.
+  const paneMatch = url.pathname.match(/^\/api\/sessions\/([^/]+)\/pane\/(stream|input)$/);
+  if (paneMatch) {
+    const target = sessions.get(paneMatch[1]);
+    if (!target || !visible(target)) return json(response, 404, { error: 'Unknown session' });
+    if (request.method === 'GET' && paneMatch[2] === 'stream') return paneStream(request, response, target);
+    if (request.method === 'POST' && paneMatch[2] === 'input') {
+      if (!mutationAllowed(request)) return json(response, 403, { error: 'Cross-origin mutations are not allowed' });
+      const pane = target.worker.pane?.();
+      if (!target.worker.pane) return json(response, 501, { error: 'this backend cannot take pane input' });
+      if (!pane) return json(response, 404, { error: 'the agent has not started yet' });
+      const input = await body(request) as { key?: unknown; text?: unknown };
+      // Validation (key XOR text, tmux key grammar, size cap) is the harness's validatePaneInput; a refusal is a 502 like BC.
+      try { await pane.input({ key: input.key as string | undefined, text: input.text as string | undefined }); }
+      catch (error) { return json(response, 502, { error: error instanceof Error ? error.message : String(error) }); }
+      return json(response, 200, { ok: true });
+    }
+    return json(response, 404, { error: 'Unknown API route' });
   }
   const match = url.pathname.match(/^\/api\/sessions\/([^/]+)(?:\/(history|events|interrupt))?$/);
   if (!match) return json(response, 404, { error: 'Unknown API route' });

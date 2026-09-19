@@ -3,7 +3,7 @@ import { createRequire } from 'node:module'
 import { dirname, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import type { AgentName } from './discovery.ts'
-import type { BackendEvent, SessionBackend } from './session.ts'
+import type { BackendEvent, PaneAccess, SessionBackend } from './session.ts'
 
 const require = createRequire(import.meta.url)
 const frameworkRoot = resolve(dirname(fileURLToPath(import.meta.url)), '../..')
@@ -19,7 +19,10 @@ export type Harness = {
   kill(ref: HarnessRef): Promise<void> | void
   onTurnEnd(ref: HarnessRef, hook: (event: { session_id?: string | null }) => void, opts: object): () => void
   paneInput?(ref: HarnessRef, input: { key?: string; text?: string }): Promise<void>
+  openPane?(ref: HarnessRef, opts: { onFrame: (frame: string) => void }): Promise<PaneHandle> | PaneHandle
+  paneSnapshot?(ref: HarnessRef): Promise<string>
 }
+export type PaneHandle = { close(): void }
 
 export const harnesses: Record<AgentName, Harness> = {
   claude: require('./harness/claude-tmux.js'),
@@ -111,4 +114,15 @@ export class TmuxBackend implements SessionBackend {
   }
 
   harnessRef(): HarnessRef | undefined { return this.ref }
+
+  /** The live tmux screen, for the Terminal popup: undefined until the agent has been spawned or resumed. */
+  pane(): PaneAccess | undefined {
+    const { harness, ref } = this
+    if (!ref || !harness.openPane) return undefined
+    return {
+      open: (onFrame) => harness.openPane!(ref, { onFrame }),
+      snapshot: () => harness.paneSnapshot?.(ref) ?? Promise.resolve(''),
+      input: (input) => harness.paneInput?.(ref, input) ?? Promise.reject(new Error('harness cannot take pane input')),
+    }
+  }
 }

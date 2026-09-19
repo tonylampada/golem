@@ -7,6 +7,7 @@ import { currentSession, identity, type Me } from '../client'
 import { anonymousIdentity, brain, chat, currentBrowserBackend, currentBrowserSession, forgetBrowserSession, navigation, restoreBrowserSession, startBrowserSession, startChatSession, subscribeBrowserStatus } from './adapters'
 import { Groups } from './groups'
 import { SourcePanel, SourceReturn, useSourceView, type OpenSource } from './sources'
+import { Terminal } from './terminal'
 
 const chatAdapters = { chat }
 // `Brain` is in golem-ui after 0.1.1; with 0.1.1 installed the panel says so instead of rendering it.
@@ -47,6 +48,7 @@ export function App() {
   const [brainAt, setBrainAt] = useState(brainParam)
   useEffect(() => navigation.subscribe(() => setBrainAt(brainParam())), [])
   const showBrain = (projectConfig as { brain?: boolean }).brain === true && brainAt !== undefined
+  const [terminal, setTerminal] = useState(false)
   const signedInAs = useRef<string | null>(null)
   const runnable = discoveries.filter((item) => item.status === 'available' && item.runnable).map((item) => item.agent)
   useEffect(() => {
@@ -128,8 +130,10 @@ export function App() {
               <span className="golem-browser-status-dot" aria-hidden="true" />
               <span className="truncate">{mode ? <>{sessionStatus} <span className="opacity-60">{session?.slice(0, 8)}</span></> : 'Not connected'}</span>
             </span>
-            {mode && <button className="golem-browser-new ml-auto shrink-0 rounded-full border border-neutral-300 px-2 py-1" title="New conversation" onClick={() => setMode(false)}>New</button>}
+            {mode && !chatting && <button className="golem-browser-new golem-browser-terminal ml-auto shrink-0 rounded-full border border-neutral-300 px-2 py-1" title="Agent terminal" onClick={() => setTerminal(true)}>Terminal</button>}
+            {mode && <button className={`golem-browser-new shrink-0 rounded-full border border-neutral-300 px-2 py-1${chatting ? ' ml-auto' : ''}`} title="New conversation" onClick={() => setMode(false)}>New</button>}
           </div>
+          {terminal && mode && !chatting && session && <Terminal session={session} onClose={() => setTerminal(false)} />}
           {!mode ? (
             <div className="p-4 text-sm">
               {chatInfo && (
