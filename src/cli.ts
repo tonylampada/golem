@@ -19,14 +19,16 @@ Usage: ./golem <command>
   build   Build the browser shell into dist/.
   lint    Check the app's architecture rules from eslint.config.mjs.
   doctor  Report local shell and backend readiness.
+  say     <text> | --file <f>  Post a reply into the chat session that launched this agent
+          (GOLEM_SESSION and GOLEM_API are set in its tmux session).
 
-Requires Node.js >=22.18.0. Commands accept no additional arguments.
+Requires Node.js >=22.18.0. Only \`say\` takes arguments.
 Exit codes: 0 success/clean shutdown, 1 unavailable or failed, 2 invalid usage.
 `;
 
 const [command = 'help', ...args] = process.argv.slice(2);
 
-if (args.length || !['help', 'init', 'dev', 'build', 'lint', 'doctor'].includes(command)) {
+if ((args.length && command !== 'say') || !['help', 'init', 'dev', 'build', 'lint', 'doctor', 'say'].includes(command)) {
   console.error('Invalid command or arguments. Run ./golem help.');
   process.exitCode = 2;
 } else {
@@ -49,6 +51,18 @@ Ready: local CLI, HTTP shell, golem-ui browser build and agent session seam.
 ${(await discoverAgents()).map(({ agent, status, runnable, detail }) => `${agent}: ${runnable ? 'runnable' : status === 'missing' ? 'not installed' : detail ?? status}`).join('\n')}
 Not implemented: domain storage, accounts, permissions.
 The dev server defaults to 127.0.0.1:3000 and uses optional host/port from golem.config.ts.`);
+      break;
+    case 'say':
+      try {
+        const text = args[0] === '--file' && args[1] ? readFileSync(args[1], 'utf8') : args.join(' ');
+        const { GOLEM_SESSION: session, GOLEM_API: api } = process.env;
+        if (!text.trim() || !session || !api) throw new Error('usage: golem say <text> | --file <f>, inside a Golem agent session (GOLEM_SESSION, GOLEM_API)');
+        const response = await fetch(`${api}/api/sessions/${session}/say`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ text }) });
+        if (!response.ok) throw new Error(`${response.status} ${((await response.json().catch(() => ({}))) as { error?: string }).error ?? ''}`.trim());
+      } catch (error) {
+        console.error(`Cannot say: ${error instanceof Error ? error.message : String(error)}`);
+        process.exitCode = 1;
+      }
       break;
     case 'build':
       try {

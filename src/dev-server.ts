@@ -8,14 +8,13 @@ import { createAppBackend, type AppBackend } from './backend/http.ts';
 import { ordinaryChat, type OrdinaryChat } from './chat.ts';
 import { serverUrl } from './config.ts';
 import { discoverAgents, runtimeState, type AgentName } from './runtime/discovery.ts';
-import { ClaudeBackend } from './runtime/claude.ts';
-import { CodexBackend, type SandboxMode } from './runtime/codex.ts';
-import { SessionManager, type Session, type SessionBackend } from './runtime/session.ts';
+import { SessionManager, type Session, type SessionBackend, type SessionSnapshot } from './runtime/session.ts';
+import { TmuxBackend, type HarnessRef } from './runtime/tmux.ts';
 import { ConversationState } from './runtime/state.ts';
 
 const appRoot = resolve(process.cwd());
-/** `backend` is omitted by older callers; it then means Codex. */
-type CreateBackend = (mode: SandboxMode, threadId?: string, backend?: AgentName) => SessionBackend;
+/** `ref` is the saved harness ref of a restored conversation; a new one has none. */
+type CreateBackend = (backend: AgentName, ref?: HarnessRef) => SessionBackend | Promise<SessionBackend>;
 const root = pathToFileURL(`${process.cwd()}/dist/`);
 const types: Record<string, string> = {
   '.html': 'text/html; charset=utf-8',
@@ -27,12 +26,16 @@ const types: Record<string, string> = {
 // The CLI owns logging and signals; this server only serves the built browser shell.
 export async function startDevServer(
   port = 3000,
-  createBackend: CreateBackend = (mode, threadId, backend = 'codex') =>
-    backend === 'claude' ? new ClaudeBackend(appRoot, mode, 'claude', [], threadId) : new CodexBackend(appRoot, mode, 'codex', [], threadId),
+  createBackend?: CreateBackend,
   stateDirectory = join(appRoot, '.golem'),
   host = '127.0.0.1',
 ): Promise<Server> {
   await buildBrowser();
+  // A new session needs a runnable CLI; a restored one keeps its ref and resumes on its next message.
+  createBackend ??= async (backend, ref) => {
+    if (!ref && !(await discoverAgents()).some((found) => found.agent === backend && found.runnable)) throw new Error(`${backend} is not runnable here`);
+    return new TmuxBackend(appRoot, backend, ref, { stateDir: join(stateDirectory, 'harness'), api: serverUrl(host, port) });
+  };
   const state = new ConversationState(stateDirectory);
   const sessions = new SessionManager((snapshots) => state.save(snapshots));
   const app = await createAppBackend(appRoot, join(stateDirectory, 'data'));
@@ -43,9 +46,11 @@ export async function startDevServer(
     owns: (conversation, owner) => { const session = sessions.get(conversation); return session?.backend === 'anthropic' && session.owner === owner; },
   });
   // Restored conversations wait for their next message; nothing is re-run.
-  sessions.restore(await state.load(), (snapshot) => snapshot.backend === 'anthropic'
+  const restored = await state.load();
+  const workers = await Promise.all(restored.map((snapshot) => snapshot.backend === 'anthropic'
     ? chat.backend(snapshot.transcript)
-    : createBackend(snapshot.buildMode ? 'danger-full-access' : 'read-only', snapshot.threadId, snapshot.backend));
+    : createBackend(snapshot.backend, snapshot.harness as HarnessRef | undefined)));
+  sessions.restore(restored, (snapshot: SessionSnapshot) => workers[restored.indexOf(snapshot)]);
   const { accounts } = app;
   if (accounts) {
     // Printed to the terminal that owns the data, never served: a fresh store, or a deliberate recovery.
@@ -197,6 +202,17 @@ async function handleApi(
     return json(response, 201, { id: session.id, backend: session.backend, status: session.status });
   }
   const sessionMatch = url.pathname.match(/^\/api\/sessions\/([^/]+)/);
+  // `golem say` from the agent's own tmux session: the reply to the user. Local-only and unauthenticated
+  // on purpose, the agent has no principal; the server binds to loopback.
+  if (request.method === 'POST' && sessionMatch && url.pathname === `/api/sessions/${sessionMatch[1]}/say`) {
+    const said = sessions.get(sessionMatch[1]);
+    if (!said || said.backend === 'anthropic') return json(response, 404, { error: 'Unknown session' });
+    const input = await body(request) as { text?: unknown };
+    if (typeof input.text !== 'string' || !input.text.trim()) return json(response, 400, { error: 'text must be a non-empty string' });
+    said.receive({ type: 'message', text: input.text });
+    await said.flush();
+    return json(response, 202, { status: said.status });
+  }
   const chatSession = sessionMatch && sessions.get(sessionMatch[1])?.backend === 'anthropic';
   if (!chatSession && accounts && !accounts.canBuild(principal)) {
     return json(response, principal.kind === 'anonymous' ? 401 : 403, { error: principal.kind === 'anonymous' ? 'Sign in to build.' : 'Your account may not build this app.' });
@@ -215,10 +231,9 @@ async function handleApi(
     try {
       const input = await body(request) as { backend?: string; intent?: string };
       if (input.backend !== 'codex' && input.backend !== 'claude') return json(response, 400, { error: 'backend must be claude or codex' });
-      // Server-owned: only an explicit build intent grants filesystem access. Omitted intent stays read-only.
-      // danger-full-access, not app-root-confined — see CodexBackend's doc comment for why.
+      // Every agent session runs with the CLI's own bypass flags in the app root, the way Bridge Commander runs its workers.
       const buildMode = input.intent === 'build';
-      const session = await sessions.start(input.backend, createBackend(buildMode ? 'danger-full-access' : 'read-only', undefined, input.backend), buildMode, owner);
+      const session = await sessions.start(input.backend, await createBackend(input.backend), buildMode, owner);
       json(response, 201, { id: session.id, backend: session.backend, status: session.status });
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);

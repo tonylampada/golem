@@ -11,14 +11,17 @@ export type BackendEvent =
   | { type: 'error'; message: string }
   | { type: 'tool'; name: string; ok: boolean; text?: string }
 
-/** The runtime contract only; Claude/Codex process bridging is intentionally not implemented yet. */
 export type SessionBackend = {
-  start(emit: (event: BackendEvent) => void): Promise<void>
+  /** `sessionId` names the conversation this backend serves (the tmux backend's session name and `GOLEM_SESSION`). */
+  start(emit: (event: BackendEvent) => void, sessionId: string): Promise<void>
   /** `context` is the sender of this message, when the server accepted it from a person. */
   send(text: string, context?: TurnContext): Promise<void>
   shutdown(): Promise<void>
   interrupt?(): Promise<void>
-  threadId?(): string | undefined
+  /** Called instead of `shutdown` when the server stops: a backend that outlives the server keeps running. */
+  detach?(): Promise<void>
+  /** Where to find or resume the agent after a server restart; saved with the conversation. */
+  harnessRef?(): unknown
   /** Conversation state a backend keeps itself, saved with the conversation and handed back on restore. */
   transcript?(): unknown
 }
@@ -114,7 +117,7 @@ export class Session {
   }
 
   snapshot(): SessionSnapshot {
-    return { id: this.id, backend: this.backend, buildMode: this.buildMode, ...(this.owner ? { owner: this.owner } : {}), status: this.status, active: this.active, history: [...this.history, ...[...this.pendingReceipts.values()].map(({ event }) => event)], threadId: this.worker.threadId?.(), ...(this.worker.transcript ? { transcript: this.worker.transcript() } : {}), updatedAt: this.updatedAt }
+    return { id: this.id, backend: this.backend, buildMode: this.buildMode, ...(this.owner ? { owner: this.owner } : {}), status: this.status, active: this.active, history: [...this.history, ...[...this.pendingReceipts.values()].map(({ event }) => event)], harness: this.worker.harnessRef?.(), ...(this.worker.transcript ? { transcript: this.worker.transcript() } : {}), updatedAt: this.updatedAt }
   }
 
   async flush(): Promise<void> {
@@ -168,7 +171,7 @@ export class Session {
     return this.shutdownPromise
   }
 
-  async dispose(): Promise<void> { await this.closeWorker() }
+  async dispose(): Promise<void> { await (this.worker.detach ? this.worker.detach() : this.closeWorker()) }
 
   abandon(): void {
     if (!this.active || this.closed) return
@@ -202,7 +205,8 @@ export class Session {
     this.record({ type: 'error', text: message })
   }
 
-  private receive(event: BackendEvent): void {
+  /** Also the entry for replies the agent posts itself (`golem say`). */
+  receive(event: BackendEvent): void {
     if (this.closed) return
     if (event.type === 'message') this.record({ type: 'message', text: event.text })
     if (event.type === 'tool') this.record({ type: 'tool', name: event.name, ok: event.ok, text: event.text })
@@ -282,7 +286,7 @@ export class Session {
 
   private async startWorker(): Promise<boolean> {
     if (this.workerStarted) return false
-    await this.worker.start((event) => this.receive(event))
+    await this.worker.start((event) => this.receive(event), this.id)
     this.workerStarted = true
     return true
   }
@@ -352,7 +356,7 @@ export type SessionSnapshot = {
   status: SessionStatus
   active: boolean
   history: SessionEvent[]
-  threadId?: string
+  harness?: unknown
   transcript?: unknown
   updatedAt?: string
 }

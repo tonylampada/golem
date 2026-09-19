@@ -21,7 +21,7 @@ function postWithAuthority(address, port, authority, origin) {
 }
 
 test('HTTP transport validates mutations and isolates server-owned sessions', { timeout: 30000 }, async () => {
-  const server = await start(3218)
+  const server = await start(3218, () => new InstantBackend())
   try {
     const invalid = await fetch('http://127.0.0.1:3218/api/sessions', {
       method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ backend: 'other' }),
@@ -46,6 +46,12 @@ test('HTTP transport validates mutations and isolates server-owned sessions', { 
     assert.equal(history.backend, 'codex')
     assert.deepEqual(history.events.map((event) => event.type), ['status'])
     assert.equal((await fetch(`http://127.0.0.1:3218/api/sessions/${two}/history`)).status, 200)
+    // `golem say` lands as an ordinary agent message
+    const said = await fetch(`http://127.0.0.1:3218/api/sessions/${one}/say`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ text: 'pong' }) })
+    assert.equal(said.status, 202)
+    const after = await (await fetch(`http://127.0.0.1:3218/api/sessions/${one}/history`)).json()
+    assert.deepEqual(after.events.filter((event) => event.type === 'message').map((event) => event.text), ['pong'])
+    assert.equal((await fetch('http://127.0.0.1:3218/api/sessions/nope/say', { method: 'POST', body: '{"text":"x"}' })).status, 404)
   } finally {
     await new Promise((resolve) => server.close(resolve))
   }
@@ -159,9 +165,9 @@ test('back-to-back build-mode turns coalesce their rebuilds instead of racing', 
   }
 })
 
-test('build intent is server-owned: omitted intent stays read-only and never rebuilds; explicit build intent is writable and rebuilds', { timeout: 30000 }, async () => {
+test('build intent is server-owned: omitted intent never rebuilds; explicit build intent rebuilds', { timeout: 30000 }, async () => {
   const modes = []
-  const createBackend = (mode) => { modes.push(mode); return new InstantBackend() }
+  const createBackend = (backend) => { modes.push(backend); return new InstantBackend() }
   const server = await start(3232, createBackend)
   try {
     const readOnly = await (await fetch('http://127.0.0.1:3232/api/sessions', {
@@ -170,7 +176,7 @@ test('build intent is server-owned: omitted intent stays read-only and never reb
     const build = await (await fetch('http://127.0.0.1:3232/api/sessions', {
       method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ backend: 'codex', intent: 'build' }),
     })).json()
-    assert.deepEqual(modes, ['read-only', 'danger-full-access'])
+    assert.deepEqual(modes, ['codex', 'codex'])
 
     const builtAt = distBuiltAt()
     await fetch(`http://127.0.0.1:3232/api/sessions/${readOnly.id}`, {
@@ -263,11 +269,11 @@ test('saved sessions survive restart without starting a backend, and resume thei
   const state = mkdtempSync(join(tmpdir(), 'golem-state-'))
   const backends = []
   class ThreadBackend extends InstantBackend {
-    constructor(threadId) { super(); this.savedThread = threadId; this.currentThread = threadId }
+    constructor(ref) { super(); this.savedThread = ref?.resumeId; this.currentThread = ref?.resumeId }
     async send(text) { this.currentThread ??= 'native-thread'; await super.send(`${this.currentThread}:${text}`) }
-    threadId() { return this.currentThread }
+    harnessRef() { return this.currentThread && { harness: 'fake', session: 'golem-x', cwd: '/', resumeId: this.currentThread } }
   }
-  const makeBackend = (_mode, threadId) => { const backend = new ThreadBackend(threadId); backends.push(backend); return backend }
+  const makeBackend = (_backend, ref) => { const backend = new ThreadBackend(ref); backends.push(backend); return backend }
   const firstServer = await startDevServer(3225, makeBackend, state)
   let stale
   try {
@@ -302,11 +308,11 @@ test('a Claude conversation keeps its backend and native session across restart 
   const state = mkdtempSync(join(tmpdir(), 'golem-state-'))
   const made = []
   class NativeBackend extends InstantBackend {
-    constructor(threadId) { super(); this.thread = threadId }
+    constructor(ref) { super(); this.thread = ref?.resumeId }
     async send(text) { this.thread ??= 'claude-native'; await super.send(text) }
-    threadId() { return this.thread }
+    harnessRef() { return this.thread && { harness: 'claude', session: 'golem-x', cwd: '/', resumeId: this.thread } }
   }
-  const makeBackend = (mode, threadId, backend) => { const created = new NativeBackend(threadId); made.push({ mode, threadId, backend, created }); return created }
+  const makeBackend = (backend, ref) => { const created = new NativeBackend(ref); made.push({ ref, backend, created }); return created }
   const first = await startDevServer(3226, makeBackend, state)
   let id
   try {
@@ -315,7 +321,7 @@ test('a Claude conversation keeps its backend and native session across restart 
     })).json()
     id = created.id
     assert.equal(created.backend, 'claude')
-    assert.deepEqual(made.map(({ mode, backend }) => [mode, backend]), [['danger-full-access', 'claude']])
+    assert.deepEqual(made.map(({ ref, backend }) => [ref, backend]), [[undefined, 'claude']])
     await fetch(`http://127.0.0.1:3226/api/sessions/${id}`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ text: 'first', clientMessageId: 'first' }) })
     await waitForHistory(3226, id, (events) => events.some((event) => event.text === 'echo:first'))
   } finally {
@@ -324,7 +330,7 @@ test('a Claude conversation keeps its backend and native session across restart 
   const second = await startDevServer(3226, makeBackend, state)
   try {
     const restored = made.at(-1)
-    assert.deepEqual([restored.mode, restored.threadId, restored.backend], ['danger-full-access', 'claude-native', 'claude'])
+    assert.deepEqual([restored.ref?.resumeId, restored.backend], ['claude-native', 'claude'])
     assert.equal(restored.created.started, undefined, 'restart must not start an agent')
     const latest = await (await fetch('http://127.0.0.1:3226/api/sessions/latest')).json()
     assert.deepEqual([latest.id, latest.backend], [id, 'claude'])
