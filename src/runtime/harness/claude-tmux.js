@@ -183,6 +183,20 @@ async function installHooks(cwd, session, stateDir, callbackUrl) {
 // escape claude itself checks; it is never set on our own initiative. Off root
 // the consent is inert, so spawn and resume both ask here rather than each
 // deciding for themselves.
+// golem: permissionFlags(profile) — 'bypass' (default) is the builder's YOLO launch; 'readonly'
+// is the chat window's: dontAsk refuses instead of prompting (a prompt in a headless pane hangs
+// the chat forever), reads stay open, and the only Bash allowed is `./golem say`, the agent's
+// one way to answer the user.
+const PERMISSION_FLAGS = {
+  bypass: '--dangerously-skip-permissions',
+  readonly: "--permission-mode dontAsk --allowedTools 'Read,Grep,Glob,Bash(./golem say:*)' --disallowedTools 'Edit,Write,MultiEdit,NotebookEdit'",
+};
+function permissionFlags(profile) {
+  const flags = PERMISSION_FLAGS[profile || 'bypass'];
+  if (!flags) throw new Error(`unknown permission profile: ${profile}`);
+  return flags;
+}
+
 function sandboxPrefix(allowRoot) {
   const asRoot = allowRoot && typeof process.getuid === 'function' && process.getuid() === 0;
   return asRoot ? 'IS_SANDBOX=1 ' : '';
@@ -219,7 +233,7 @@ async function spawn(cwd, prompt, opts = {}) {
     const extra = (opts.extraArgs || []).map(s.shellQuote).join(' ');
     const launchCmd = sandboxPrefix(opts.allowRoot)
       + s.envPrefix(opts) /* golem */ + 'CLAUDE_CODE_ENABLE_PROMPT_SUGGESTION=false '
-      + `claude --dangerously-skip-permissions --session-id ${resumeId}`
+      + `claude ${permissionFlags(opts.permissions)} --session-id ${resumeId}`
       + (extra ? ' ' + extra : '');
     await s.launchAndSettle(s.paneTarget(session, window), launchCmd, SETTLE);
     await deliverPrompt(s.paneTarget(session, window), prompt);
@@ -339,7 +353,7 @@ async function resume(ref, opts = {}) {
     // record. A missing or corrupt record is no flags and no prefix, never a throw.
     const rec = s.recordedSpawnArgs(stateDir, key);
     const extra = (opts.extraArgs || rec.args).map(String);
-    const parts = ['claude', '--dangerously-skip-permissions'];
+    const parts = ['claude', permissionFlags(opts.permissions || rec.permissions)];
     if (resumeId) parts.push('--resume', resumeId);
     for (const a of extra) parts.push(s.shellQuote(a));
     const launchCmd = sandboxPrefix(opts.allowRoot || rec.allowRoot)
@@ -547,7 +561,7 @@ const { onTurnEnd, openPane, paneSnapshot, paneInput, adoptWindow } = s;
 // install the workspace-level Stop hook (session-agnostic; the server dedupes
 // turn-end POSTs by session_id). openPane/paneSnapshot/paneInput and
 // commands/runCommand/status are OPTIONAL capability verbs (port.js).
-module.exports = { spawn, send, alive, resumable, resume, kill, onTurnEnd, installHooks,
+module.exports = { spawn, send, alive, resumable, resume, kill, onTurnEnd, installHooks, permissionFlags,
   openPane, paneSnapshot, paneInput, commands, runCommand, status, adoptWindow,
   // Exported for the tests that pin the style list against a temp directory and
   // the built-ins against the binary.

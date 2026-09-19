@@ -82,3 +82,30 @@ test('a legacy ref (golem-<uuid>, no window) resumes into the app\'s fixed sessi
   assert.equal(fake.transcript(ref).at(-1), 'again')
   assert.equal(await fake.alive(legacy), false, 'the stray legacy session is gone')
 })
+
+test('launch profile: the chat window runs read-only and never prompts; the builder keeps bypass; resume replays the recorded profile', async () => {
+  const claude = createRequire(import.meta.url)('../src/runtime/harness/claude-tmux.js')
+  const codex = createRequire(import.meta.url)('../src/runtime/harness/codex-tmux.js')
+  const s = createRequire(import.meta.url)('../src/runtime/harness/tmux-session.js')
+  assert.equal(claude.permissionFlags(undefined), '--dangerously-skip-permissions')
+  assert.equal(claude.permissionFlags('readonly'), "--permission-mode dontAsk --allowedTools 'Read,Grep,Glob,Bash(./golem say:*)' --disallowedTools 'Edit,Write,MultiEdit,NotebookEdit'")
+  assert.equal(codex.permissionFlags('bypass'), '--dangerously-bypass-approvals-and-sandbox')
+  assert.equal(codex.permissionFlags('readonly'), '--sandbox read-only --ask-for-approval never')
+  assert.throws(() => claude.permissionFlags('yolo'))
+
+  const { mkdtempSync } = await import('node:fs')
+  const { tmpdir } = await import('node:os')
+  const dir = mkdtempSync(`${tmpdir()}/golem-profile-`)
+  s.recordSpawnArgs(dir, 'k', { permissions: 'readonly' })
+  assert.equal(s.recordedSpawnArgs(dir, 'k').permissions, 'readonly')
+  s.recordSpawnArgs(dir, 'k', {})
+  assert.equal(s.recordedSpawnArgs(dir, 'k').permissions, undefined)
+
+  fake.reset()
+  let seen
+  const spy = { ...fake, spawn: (cwd, prompt, opts) => { seen = opts; return fake.spawn(cwd, prompt, opts) } }
+  const backend = new TmuxBackend('/tmp', 'claude', undefined, { harness: spy, api: 'http://127.0.0.1:1', window: 'chat', permissions: 'readonly' })
+  await backend.start(() => {}, 'sid')
+  assert.equal(seen.permissions, 'readonly')
+  await backend.shutdown()
+})

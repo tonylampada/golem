@@ -50,8 +50,12 @@ export function chatInstructions(cwd: string): string {
 /** Added when the app has a `brain/` folder: read the root index first, cite what you used. */
 export const brainInstructions = 'This app has a brain: `brain/` is an Open Knowledge Format bundle. Read `brain/index.md` first, then the concepts it points to. When an answer is grounded in the brain, cite each passage you used as `path#Lstart-Lend` (the path relative to `brain/`, e.g. `concepts/opening.md#L4-L9`); Golem turns those citations into source chips under your reply that open the passage in the reader.'
 
-/** `window` names this agent's window in the app's session (`builder`, `chat`); `instructions` its launch prompt. */
-export type TmuxOptions = { harness?: Harness; stateDir?: string; api?: string; window?: string; instructions?: string }
+/**
+ * `window` names this agent's window in the app's session (`builder`, `chat`); `instructions` its launch prompt;
+ * `permissions` its launch profile: `bypass` (default) may do anything, `readonly` can read the app and run
+ * `./golem say`, nothing else, and refuses rather than prompts.
+ */
+export type TmuxOptions = { harness?: Harness; stateDir?: string; api?: string; window?: string; instructions?: string; permissions?: 'bypass' | 'readonly' }
 
 /** The one tmux session of an app's build mode: `tmux attach -t golem-<app dir>` is always the place to look. */
 export const tmuxSessionName = (cwd: string): string => `golem-${basename(cwd).replace(/[^A-Za-z0-9_-]/g, '-')}`
@@ -87,6 +91,7 @@ export class TmuxBackend implements SessionBackend {
       stateDir: this.opts.stateDir ?? resolve(this.cwd, '.golem/harness'),
       session: tmuxSessionName(this.cwd),
       window: this.opts.window,
+      permissions: this.opts.permissions,
       env: { GOLEM_SESSION: sessionId, GOLEM_API: this.opts.api ?? 'http://127.0.0.1:3000' },
       // codex 0.155: the update prompt at launch would take the typed brief as its answer, the
       // paste-burst fold swallows the first Enter of a long line, and the rate-limit "keep current

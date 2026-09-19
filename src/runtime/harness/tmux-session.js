@@ -63,7 +63,8 @@ function recordSpawnArgs(stateDir, key, opts = {}) {
   try {
     const rec = { args: (opts.extraArgs || []).map(String) };
     if (opts.allowRoot) rec.allowRoot = true;
-    if (rec.args.length || rec.allowRoot) fs.writeFileSync(file, JSON.stringify(rec) + '\n');
+    if (opts.permissions) rec.permissions = String(opts.permissions); // golem: launch profile, replayed on resume
+    if (rec.args.length || rec.allowRoot || rec.permissions) fs.writeFileSync(file, JSON.stringify(rec) + '\n');
     else fs.rmSync(file, { force: true });
   } catch {
     // best-effort: the record is an optimisation, never a precondition
@@ -80,6 +81,7 @@ function recordedSpawnArgs(stateDir, key) {
       return {
         args: Array.isArray(v.args) ? v.args.filter((a) => typeof a === 'string') : [],
         allowRoot: !!v.allowRoot,
+        permissions: typeof v.permissions === 'string' ? v.permissions : undefined, // golem
       };
     }
   } catch {

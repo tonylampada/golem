@@ -65,10 +65,23 @@ const TRUST_RE = /Do you trust the contents of this directory|Yes, continue/;
 const UI_READY_RE = /OpenAI Codex \(v|YOLO mode|\n›/;
 const SETTLE = { trustRe: TRUST_RE, readyRe: UI_READY_RE, label: 'codex' };
 
-// The bypass + notify flags every codex launch (spawn AND resume) carries.
-function launchFlags(stateDir, key, callbackUrl) {
+// golem: permissionFlags(profile) — 'bypass' (default) is the builder's YOLO launch; 'readonly' is
+// the chat window's: read-only sandbox and never a prompt (a prompt in a headless pane hangs the
+// chat forever; `-a never` returns the refusal to the model instead).
+const PERMISSION_FLAGS = {
+  bypass: '--dangerously-bypass-approvals-and-sandbox',
+  readonly: '--sandbox read-only --ask-for-approval never',
+};
+function permissionFlags(profile) {
+  const flags = PERMISSION_FLAGS[profile || 'bypass'];
+  if (!flags) throw new Error(`unknown permission profile: ${profile}`);
+  return flags;
+}
+
+// The permission + notify flags every codex launch (spawn AND resume) carries.
+function launchFlags(stateDir, key, callbackUrl, permissions) {
   const notify = ['node', NOTIFY_SCRIPT, stateDir, key].concat(callbackUrl ? [callbackUrl] : []);
-  return '--dangerously-bypass-approvals-and-sandbox --dangerously-bypass-hook-trust '
+  return `${permissionFlags(permissions)} --dangerously-bypass-hook-trust `
     + `-c ${s.shellQuote('notify=' + JSON.stringify(notify))}`;
 }
 
@@ -96,7 +109,7 @@ async function spawn(cwd, prompt, opts = {}) {
   try {
     const extra = (opts.extraArgs || []).map(s.shellQuote).join(' ');
     const launchCmd = s.envPrefix(opts) /* golem */ + 'codex '
-      + launchFlags(stateDir, key, opts.callbackUrl || process.env.BC_TURNEND_URL || '')
+      + launchFlags(stateDir, key, opts.callbackUrl || process.env.BC_TURNEND_URL || '', opts.permissions)
       + (extra ? ' ' + extra : '');
     await s.launchAndSettle(s.paneTarget(session, window), launchCmd, SETTLE);
     await deliverPrompt(s.paneTarget(session, window), prompt);
@@ -210,10 +223,10 @@ async function resume(ref, opts = {}) {
     // The spawn's extra flags are replayed, not rebuilt: --model and friends
     // came from the card's playbook and a resume that drops them is a worker
     // quietly moved to another model. opts.extraArgs, when given, wins.
-    const extra = (opts.extraArgs || s.recordedSpawnArgs(stateDir, key).args)
-      .map(s.shellQuote).join(' ');
+    const rec = s.recordedSpawnArgs(stateDir, key);
+    const extra = (opts.extraArgs || rec.args).map(s.shellQuote).join(' ');
     const launchCmd = s.envPrefix(opts) /* golem */ + (resumeId ? `codex resume ${resumeId} ` : 'codex ')
-      + launchFlags(stateDir, key, opts.callbackUrl || process.env.BC_TURNEND_URL || '')
+      + launchFlags(stateDir, key, opts.callbackUrl || process.env.BC_TURNEND_URL || '', opts.permissions || rec.permissions)
       + (extra ? ' ' + extra : '');
     await s.launchAndSettle(s.paneTarget(ref.session, ref.window), launchCmd, SETTLE);
   } catch (err) {
@@ -275,5 +288,5 @@ async function runCommand(ref, command, opts = {}) {
 // rename-window.
 const { onTurnEnd, openPane, paneSnapshot, paneInput, adoptWindow } = s;
 
-module.exports = { spawn, send, alive, resumable, resume, kill, onTurnEnd,
+module.exports = { spawn, send, alive, resumable, resume, kill, onTurnEnd, permissionFlags,
   openPane, paneSnapshot, paneInput, commands, runCommand, status, adoptWindow };
