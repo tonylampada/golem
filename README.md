@@ -40,4 +40,4 @@ See [the local CLI guide](docs/local-cli.md) for the complete command contract.
 
 ## Current scope
 
-Claude integration, domain storage, accounts, and permissions are planned, not part of this release.
+Apps store records and files and define server operations as described in [the app backend guide](docs/app-backend.md). Claude integration and accounts are planned, not part of this release.

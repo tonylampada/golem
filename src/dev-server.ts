@@ -3,6 +3,7 @@ import { readFile } from 'node:fs/promises';
 import { extname, join, normalize, resolve } from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { buildBrowser, rebuild } from './browser-build.ts';
+import { createAppBackend, mutationAllowed } from './backend/http.ts';
 import { discoverAgents, runtimeState } from './runtime/discovery.ts';
 import { CodexBackend, type SandboxMode } from './runtime/codex.ts';
 import { SessionManager, type Session, type SessionBackend } from './runtime/session.ts';
@@ -28,13 +29,14 @@ export async function startDevServer(
   const state = new ConversationState(stateDirectory);
   const sessions = new SessionManager((snapshots) => state.save(snapshots));
   sessions.restore(await state.load(), (snapshot) => createBackend(snapshot.buildMode ? 'danger-full-access' : 'read-only', snapshot.threadId));
+  const app = await createAppBackend(appRoot, join(stateDirectory, 'data'));
   const server = createServer((request, response) => {
-    void handleRequest(request, response, sessions, port, host, createBackend).catch((error) => {
+    void (request.url?.startsWith('/api/app/') ? app.handle(request, response) : handleRequest(request, response, sessions, port, host, createBackend, app.reload)).catch((error) => {
       if (!response.headersSent) json(response, 400, { error: error instanceof Error ? error.message : 'Malformed request' });
       else response.destroy();
     });
   });
-  server.once('close', () => { void sessions.disposeAll().then(() => sessions.flushAll()) });
+  server.once('close', () => { void sessions.disposeAll().then(() => sessions.flushAll()).finally(() => app.close()) });
   return new Promise((resolve, reject) => {
     server.once('error', reject);
     server.listen(port, host, () => resolve(server));
@@ -48,11 +50,12 @@ async function handleRequest(
   port: number,
   host: string,
   createBackend: (mode: SandboxMode, threadId?: string) => SessionBackend,
+  reloadServer: () => Promise<void>,
 ): Promise<void> {
     const url = new URL(request.url ?? '/', 'http://127.0.0.1');
     decodeURIComponent(url.pathname);
     if (url.pathname.startsWith('/api/')) {
-      await handleApi(request, response, url, sessions, createBackend);
+      await handleApi(request, response, url, sessions, createBackend, reloadServer);
       return;
     }
     let pathname: string;
@@ -106,24 +109,15 @@ async function body(request: import('node:http').IncomingMessage): Promise<unkno
   try { return JSON.parse(text || '{}'); } catch { throw new Error('Request body must be valid JSON'); }
 }
 
-/** Fires once after a successful build-mode turn; never blocks the turn's own response. */
-function triggerRebuild(session: Session): void {
-  void rebuild().then(
+/**
+ * Fires once after a successful build-mode turn; never blocks the turn's own response.
+ * The app's server module reloads before the refresh, so the new UI never talks to old operations.
+ */
+function triggerRebuild(session: Session, reloadServer: () => Promise<void>): void {
+  void rebuild().then(reloadServer).then(
     () => session.notifyRebuilt(),
     (error) => session.notifyBuildFailed(error instanceof Error ? error.message : String(error)),
   );
-}
-
-function mutationAllowed(request: import('node:http').IncomingMessage): boolean {
-  const origin = request.headers.origin;
-  if (!origin) return true;
-  const authority = request.headers.host;
-  if (!authority) return false;
-  try {
-    return origin === new URL(origin).origin && origin === new URL(`http://${authority}`).origin;
-  } catch {
-    return false;
-  }
 }
 
 async function handleApi(
@@ -132,6 +126,7 @@ async function handleApi(
   url: URL,
   sessions: SessionManager,
   createBackend: (mode: SandboxMode) => SessionBackend,
+  reloadServer: () => Promise<void>,
 ): Promise<void> {
   if (request.method === 'GET' && url.pathname === '/api/runtime') {
     const discoveries = await discoverAgents();
@@ -189,7 +184,7 @@ async function handleApi(
       const accepted = await session.accept(input.text, input.clientMessageId, attachments);
       json(response, 202, { status: session.status, duplicate: accepted.duplicate });
       if (!accepted.duplicate && accepted.completion) void accepted.completion.then(
-        () => { if (session.buildMode) triggerRebuild(session); },
+        () => { if (session.buildMode) triggerRebuild(session, reloadServer); },
         () => {},
       );
     } catch (error) {

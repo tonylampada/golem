@@ -3,11 +3,18 @@
   "version": "0.1.1",
   "description": "Starter kit and local CLI for Golem applications.",
   "type": "module",
+  "exports": {
+    "./client": "./src/client.ts",
+    "./operations": "./src/operations.ts",
+    "./server": "./src/backend/index.ts",
+    "./*": "./*"
+  },
   "files": [
     "README.md",
     "assets/golem-mascot.png",
     "docs/local-cli.md",
     "docs/builder.md",
+    "docs/app-backend.md",
     "docs/source-development.md",
     "golem.config.ts",
     "index.html",
@@ -44,6 +51,7 @@
     "tsx": "4.23.13",
     "golem-ui": "0.1.1",
     "react": "19.2.0",
-    "react-dom": "19.2.0"
+    "react-dom": "19.2.0",
+    "zod": "4.6.5"
   }
 }
