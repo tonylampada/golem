@@ -106,21 +106,23 @@ export function App() {
   const invited = new URLSearchParams(window.location.search).has('invite')
   const shellAdapters = { identity: accounts ? identity : anonymousIdentity, navigation }
   const hasBrain = (projectConfig as { brain?: boolean }).brain === true
+  // The bottom menu bar: the app's own screen first, then Brain, then Admin for managers.
   const menu = [
+    { id: 'app', label: projectConfig.title, icon: '🏠' },
     ...(hasBrain ? [{ id: 'brain', label: 'Brain', icon: '🧠' }] : []),
     ...(manages ? [{ id: 'admin', label: 'Admin', icon: '🛠️' }] : []),
   ]
-  // An item is a toggle: tapping the current one is the way back to the app.
+  // The app item leaves `?brain=` and the Admin view; the other two open theirs.
   const select = (id: string) => {
-    if (id === 'brain') navigation.go(showBrain ? window.location.pathname : brainUrl('index.md'))
-    else if (id === 'admin') { if (showBrain) navigation.go(window.location.pathname); setView(view === 'account' ? 'app' : 'account') }
+    if (id === 'brain') { if (!showBrain) navigation.go(brainUrl('index.md')) }
+    else { if (showBrain) navigation.go(window.location.pathname); setView(id === 'admin' ? 'account' : 'app') }
   }
   const barButton = 'golem-browser-bar-button flex size-8 items-center justify-center rounded-lg border'
   return (
     <ShellFrame
       config={{ title: projectConfig.title, chatSide: 'left', breakpoint: 768,
         // Builder on raises the chat; a mode that is off leaves the chat where the reader left it.
-        ...(ShellSetting ? { menu, activeId: showBrain ? 'brain' : view === 'account' ? 'admin' : undefined, chatOpen: builder === true } : {}) }}
+        ...(ShellSetting ? { menu, activeId: showBrain ? 'brain' : view === 'account' ? 'admin' : 'app', chatOpen: builder === true } : {}) }}
       adapters={shellAdapters}
       onSelect={select}
       settings={ShellSetting && canBuild && builder !== undefined && (
