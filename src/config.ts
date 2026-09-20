@@ -8,8 +8,9 @@ export type AppConfig = { host: string; port: number; storage: 'jsonl' | 'sqlite
  * Normal-mode chat, the app's rule: `false` (or absent) means no chat column outside builder mode.
  * `anthropic` is the API agent (same shape as `agents.ordinary`, which it fills); `tmux` is a
  * terminal agent in the `chat` window of the app's tmux session, briefed from `docs/chat.md`.
+ * `roles` restricts chat to those account roles; absent, anyone signed in may chat.
  */
-export type ChatConfig = { provider: 'anthropic' } | { provider: 'tmux'; agent?: 'codex' | 'claude' }
+export type ChatConfig = ({ provider: 'anthropic' } | { provider: 'tmux'; agent?: 'codex' | 'claude' }) & { roles?: string[] }
 /** `brain: true` serves the app's `brain/` folder read-only and mounts the Brain reader beside the app. */
 
 /**
@@ -61,15 +62,16 @@ export async function loadAppConfig(root = process.cwd()): Promise<AppConfig> {
   const config: AppConfig = { host, port, storage, ...(origin === undefined ? {} : { origin }), ...(configured.accounts === undefined ? {} : { accounts: accounts(configured.accounts) }), ...(configured.agents === undefined ? {} : { agents: agents(configured.agents) }), ...(configured.brain ? { brain: true } : {}) }
   if (configured.chat !== undefined && configured.chat !== false) {
     if (!configured.chat || typeof configured.chat !== 'object' || Array.isArray(configured.chat)) throw new Error('golem.config.ts chat must be false or { provider, ... }')
-    const { provider, ...rest } = configured.chat as Record<string, unknown>
+    const { provider, roles, ...rest } = configured.chat as Record<string, unknown>
+    const chatRoles = roles === undefined ? {} : { roles: chatRolesOf(roles, config.accounts) }
     if (provider === 'anthropic') {
       config.agents = { ...config.agents, ordinary: ordinaryAgent({ backend: 'anthropic', ...rest }) }
-      config.chat = { provider }
+      config.chat = { provider, ...chatRoles }
     } else if (provider === 'tmux') {
       const { agent, ...unknown } = rest
       if (Object.keys(unknown).length) throw new Error(`golem.config.ts chat has unknown fields: ${Object.keys(unknown).join(', ')}`)
       if (agent !== undefined && agent !== 'codex' && agent !== 'claude') throw new Error("golem.config.ts chat.agent must be 'codex' or 'claude'")
-      config.chat = { provider, ...(agent ? { agent } : {}) }
+      config.chat = { provider, ...(agent ? { agent } : {}), ...chatRoles }
     } else throw new Error("golem.config.ts chat.provider must be 'anthropic' or 'tmux'")
   } else if (config.agents?.ordinary) config.chat = { provider: 'anthropic' }
   return config
@@ -91,6 +93,15 @@ function accounts(value: unknown): AccountsConfig {
   if (!parsed.some((role) => role.manages)) throw new Error('golem.config.ts accounts roles need one role with manages: true')
   if (allowSignUp && !parsed.some(isPlain)) throw new Error("golem.config.ts accounts allowSignUp needs a role that neither manages nor is 'builder'")
   return { guests, allowSignUp, roles: parsed }
+}
+
+/** A typo here would lock everyone out of chat, so every named role must be one the app declares. */
+function chatRolesOf(value: unknown, accounts: AccountsConfig | undefined): string[] {
+  if (!Array.isArray(value) || !value.length || !value.every((role) => typeof role === 'string' && role)) throw new Error('golem.config.ts chat.roles must be a nonempty list of role ids')
+  if (!accounts) throw new Error('golem.config.ts chat.roles needs accounts: without them nobody has a role')
+  const unknown = (value as string[]).filter((role) => !accounts.roles.some((one) => one.id === role))
+  if (unknown.length) throw new Error(`golem.config.ts chat.roles names roles the app does not declare: ${unknown.join(', ')}`)
+  return value as string[]
 }
 
 function agents(value: unknown): AgentsConfig {

@@ -276,16 +276,26 @@ async function handleApi(
   const principal = await app.app.resolvePrincipal(request);
   // Ordinary chat never touches the build routes below: its conversations belong to one owner.
   const chatOwner = chat.owner(request, principal);
-  const mayChat = !(accounts && !accounts.config.guests && principal.kind === 'anonymous');
+  // The app's chat rule: signed in (or a guest where guests are allowed), and holding one of
+  // `chat.roles` when the app names them. Builder mode is a separate permission below.
+  const chatRoles = app.config.chat?.roles;
+  const chats = (who: typeof principal) => !(accounts && !accounts.config.guests && who.kind === 'anonymous')
+    && (!chatRoles || (who.kind === 'user' && who.roles.some((role) => chatRoles.includes(role))));
+  const mayChat = chats(principal);
+  const denied = (what: 'build' | 'chat') => json(response, principal.kind === 'anonymous' ? 401 : 403,
+    { error: principal.kind === 'anonymous' ? `Sign in to ${what}.` : `Your account may not ${what === 'build' ? 'build this app' : 'chat in this app'}.` });
   if (url.pathname === '/api/chat') {
-    if (!mayChat) return json(response, 401, { error: 'Sign in to chat.' });
     if (request.method === 'GET') {
+      // Signed out with guests off, or a role the app does not let chat: this app offers you no
+      // chat, so the shell shows no chat toggle. Builder mode has its own permission below.
+      if (!mayChat) return json(response, 200, { provider: null, available: false });
       const latest = chatOwner ? sessions.latest((session) => session.backend === 'anthropic' && session.owner === chatOwner) : undefined;
       // `provider` is the app's rule for normal mode: null means no chat column outside builder mode.
       const provider = app.config.chat?.provider ?? null;
       return json(response, 200, { provider, agent: app.config.chat?.provider === 'tmux' ? app.config.chat.agent : undefined, available: provider === 'tmux' || chat.available, detail: provider === 'tmux' ? undefined : chat.detail, views: chat.views(), latest: latest && { id: latest.id, status: latest.status } });
     }
     if (request.method !== 'POST') return json(response, 404, { error: 'Unknown API route' });
+    if (!mayChat) return denied('chat');
     if (!mutationAllowed(request)) return json(response, 403, { error: 'Cross-origin mutations are not allowed' });
     if (!chat.available) return json(response, 503, { error: chat.detail });
     const issued = chatOwner ? undefined : chat.issue();
@@ -305,10 +315,9 @@ async function handleApi(
     await said.flush();
     return json(response, 202, { status: said.status });
   }
-  const chatSession = sessionMatch && sessions.get(sessionMatch[1])?.backend === 'anthropic';
+  const mayBuild = !accounts || accounts.canBuild(principal);
   // The Builder switch: whoever may build flips it; everyone else reads it as off.
   if (url.pathname === '/api/builder') {
-    const mayBuild = !accounts || accounts.canBuild(principal);
     if (request.method === 'GET') return json(response, 200, { builder: mayBuild && builder.get() });
     if (request.method !== 'POST') return json(response, 404, { error: 'Unknown API route' });
     if (!mayBuild) return json(response, principal.kind === 'anonymous' ? 401 : 403, { error: 'Your account may not build this app.' });
@@ -319,9 +328,15 @@ async function handleApi(
     if (!input.builder) await sessions.parkOthers(true); // leaving builder mode parks the builder agent
     return json(response, 200, { builder: input.builder });
   }
-  if (!chatSession && accounts && !accounts.canBuild(principal)) {
-    return json(response, principal.kind === 'anonymous' ? 401 : 403, { error: principal.kind === 'anonymous' ? 'Sign in to build.' : 'Your account may not build this app.' });
-  }
+  // The session routes below serve build mode and normal-mode chat alike, so each needs the rights
+  // of the mode it belongs to: a conversation carries its own `buildMode`, `/api/sessions/latest`
+  // says which it wants, and `POST /api/sessions` is judged below once its intent is parsed.
+  const targetSession = sessionMatch ? sessions.get(sessionMatch[1]) : undefined;
+  const routeIsChat = targetSession ? !targetSession.buildMode
+    : url.pathname === '/api/sessions/latest' ? url.searchParams.get('chat') === '1'
+    : url.pathname === '/api/sessions' ? undefined
+    : false;
+  if (routeIsChat !== undefined && !(routeIsChat ? mayChat : mayBuild)) return denied(routeIsChat ? 'chat' : 'build');
   const owner = accounts && principal.kind === 'user' ? principal.id : undefined;
   const visible = (session: Session) => session.backend === 'anthropic'
     ? mayChat && chatOwner !== null && session.owner === chatOwner
@@ -338,6 +353,7 @@ async function handleApi(
       if (input.backend !== 'codex' && input.backend !== 'claude') return json(response, 400, { error: 'backend must be claude or codex' });
       // Every agent session runs with the CLI's own bypass flags in the app root, the way Bridge Commander runs its workers.
       const buildMode = input.intent === 'build';
+      if (!(buildMode ? mayBuild : mayChat)) return denied(buildMode ? 'build' : 'chat');
       await sessions.parkOthers(buildMode); // one agent per window: the new one takes it
       const session = await sessions.start(input.backend, await createBackend(input.backend, undefined, buildMode), buildMode, owner);
       json(response, 201, { id: session.id, backend: session.backend, status: session.status });
@@ -424,7 +440,8 @@ async function handleApi(
     const recheck = (accountId: string) => {
       if (accountId !== owner) return;
       void app.app.resolvePrincipal(request).then((now) => {
-        const allowed = session.backend === 'anthropic' ? now.kind === 'user' && now.id === session.owner : accounts!.canBuild(now);
+        const allowed = session.backend === 'anthropic' ? chats(now) && now.kind === 'user' && now.id === session.owner
+          : session.buildMode ? accounts!.canBuild(now) : chats(now);
         if (!allowed) response.end();
       }, () => response.end());
     };
