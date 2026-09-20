@@ -1,7 +1,7 @@
-import { useEffect, useRef, useState, type ComponentProps, type ReactNode } from 'react'
+import { useEffect, useRef, useState, type ComponentProps, type ComponentType, type ReactNode } from 'react'
 import * as GolemUI from 'golem-ui'
 import { Auth, Chat, Shell } from 'golem-ui'
-import UserApp from '@golem/app'
+import * as AppModule from '@golem/app'
 import projectConfig from '@golem/config'
 import { currentSession, identity, type Me } from '../client'
 import { anonymousIdentity, brain, chat, currentBrowserBackend, leaveBrowserSession, forgetBrowserSession, navigation, restoreBrowserSession, startBrowserSession, subscribeBrowserSession, subscribeBrowserStatus, type SessionKind } from './adapters'
@@ -22,6 +22,15 @@ const ShellFrame = Shell as unknown as (props: Omit<ComponentProps<typeof Shell>
   settings?: ReactNode
   onSelect?: (id: string) => void
 }) => ReactNode
+// An app with more than one screen lists them (`export const screens`); each becomes an item in the
+// menu row, and the chosen one's id goes to the app as `screen`. Read through a cast, like the other
+// optional things here, because an app that lists none is the single-screen app it always was.
+const UserApp = AppModule.default as ComponentType<{ screen?: string }>
+type AppScreen = { id: string; label: string; icon?: string }
+const appScreens = (AppModule as { screens?: AppScreen[] }).screens ?? []
+/** The `?screen=` route param: which of the app's own screens is showing. */
+const screenParam = () => new URLSearchParams(window.location.search).get('screen') ?? undefined
+const screenUrl = (id?: string) => (id ? `${window.location.pathname}?screen=${encodeURIComponent(id)}` : window.location.pathname)
 /** The `?brain=` route param: the location the Brain panel shows, or undefined when the app is showing. */
 const brainParam = () => new URLSearchParams(window.location.search).get('brain') ?? undefined
 const brainUrl = (location: string) => `${window.location.pathname}?brain=${encodeURIComponent(location)}`
@@ -46,8 +55,11 @@ export function App() {
   // The Admin screen is app state; any navigation (the title, a Brain item, a chip) leaves it.
   const [view, setView] = useState<'app' | 'account'>('app')
   const [brainAt, setBrainAt] = useState(brainParam)
-  useEffect(() => navigation.subscribe(() => { setBrainAt(brainParam()); setView('app') }), [])
+  const [screenAt, setScreenAt] = useState(screenParam)
+  useEffect(() => navigation.subscribe(() => { setBrainAt(brainParam()); setScreenAt(screenParam()); setView('app') }), [])
   const showBrain = (projectConfig as { brain?: boolean }).brain === true && brainAt !== undefined
+  // An unknown `?screen=` is the app's first screen, not an error.
+  const screen = appScreens.some((one) => one.id === screenAt) ? screenAt : undefined
   const [terminal, setTerminal] = useState(false)
   const signedInAs = useRef<string | null>(null)
   useEffect(() => {
@@ -106,23 +118,26 @@ export function App() {
   const invited = new URLSearchParams(window.location.search).has('invite')
   const shellAdapters = { identity: accounts ? identity : anonymousIdentity, navigation }
   const hasBrain = (projectConfig as { brain?: boolean }).brain === true
-  // The bottom menu bar: the app's own screen first, then Brain, then Admin for managers.
+  // The bottom menu bar: the app's own screens first, then Brain, then Admin for managers.
   const menu = [
     { id: 'app', label: projectConfig.title, icon: '🏠' },
+    ...appScreens.map((one) => ({ id: `screen:${one.id}`, label: one.label, ...(one.icon ? { icon: one.icon } : {}) })),
     ...(hasBrain ? [{ id: 'brain', label: 'Brain', icon: '🧠' }] : []),
     ...(manages ? [{ id: 'admin', label: 'Admin', icon: '🛠️' }] : []),
   ]
-  // The app item leaves `?brain=` and the Admin view; the other two open theirs.
+  // An app item leaves `?brain=` and the Admin view and carries its own `?screen=`; Brain opens its own.
   const select = (id: string) => {
-    if (id === 'brain') { if (!showBrain) navigation.go(brainUrl('index.md')) }
-    else { if (showBrain) navigation.go(window.location.pathname); setView(id === 'admin' ? 'account' : 'app') }
+    if (id === 'brain') { if (!showBrain) navigation.go(brainUrl('index.md')); return }
+    const target = id.startsWith('screen:') ? id.slice('screen:'.length) : undefined
+    if (showBrain || screenAt !== target) navigation.go(screenUrl(target))
+    setView(id === 'admin' ? 'account' : 'app')
   }
   const barButton = 'golem-browser-bar-button flex size-8 items-center justify-center rounded-lg border'
   return (
     <ShellFrame
       config={{ title: projectConfig.title, chatSide: 'left', breakpoint: 768,
         // Builder on raises the chat; a mode that is off leaves the chat where the reader left it.
-        ...(ShellSetting ? { menu, activeId: showBrain ? 'brain' : view === 'account' ? 'admin' : 'app', chatOpen: builder === true } : {}) }}
+        ...(ShellSetting ? { menu, activeId: showBrain ? 'brain' : view === 'account' ? 'admin' : screen ? `screen:${screen}` : 'app', chatOpen: builder === true } : {}) }}
       adapters={shellAdapters}
       onSelect={select}
       settings={ShellSetting && canBuild && builder !== undefined && (
@@ -155,14 +170,14 @@ export function App() {
             </div>
           )}
           <div className="h-full" style={(source && sourceShown) || showBrain ? { display: 'none' } : undefined}>{
-          !authConfig ? <UserApp />
+          !authConfig ? <UserApp screen={screen} />
           : view === 'account' || (invited && !me.user)
             ? <div className="golem-browser-admin flex h-full flex-col overflow-auto">
                 <Auth config={authConfig} adapters={authAdapters} />
                 {manages && <Groups />}
               </div>
-          : accounts.guests ? <UserApp />
-          : <Auth.Guard config={authConfig} adapters={authAdapters}><UserApp /></Auth.Guard>
+          : accounts.guests ? <UserApp screen={screen} />
+          : <Auth.Guard config={authConfig} adapters={authAdapters}><UserApp screen={screen} /></Auth.Guard>
           }</div>
         </>
       }
