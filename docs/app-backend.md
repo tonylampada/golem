@@ -75,13 +75,29 @@ type AppServerModule = {
 }
 type AuthorizeRequest = { operation: string; input: unknown; principal: Principal; via: 'http' | 'agent' | 'server'; record: Row | null }
 type Principal = { kind: 'anonymous' } | { kind: 'user'; id: string; name: string; roles: string[]; groups: string[]; session?: string }
-type OperationContext = { principal; via; records: RecordStore; files: FileStore; permits(record: Row): Promise<boolean>; job?: JobContext }
+type OperationContext = { principal; via; records: RecordStore; files: FileStore; model: Model; permits(record: Row): Promise<boolean>; job?: JobContext }
+type Model = { extract<S extends z.ZodType>(request: { schema: S; text: string; instructions?: string }): Promise<z.output<S>> }
 ```
 
 - **One invoke path.** HTTP (`POST /api/app/operations/<name>`), the raw file routes and in-process agent tools (`app.agentTools(principal)`) all call the same `invoke`: validate input, load the `record` the operation names, `authorize`, run, validate output.
 - **Principal** comes from the server, never from request input: local accounts when `accounts` is configured (see below), else `resolvePrincipal`. Without either, every caller is `anonymous` and `authorize` defaults to allowing everything: the local single-person mode existing apps run in.
 - **authorize** runs once per call with the target `record` (or `null`), and again per row for `records.list` and `files.list`, where `false` hides the row. App operations that return lists filter with `context.permits(row)`; `context.records` and `context.files` are unfiltered.
 - **Builtin operations** back the adapters and go through the same hook: `records.list|get|create|update|remove`, `files.list|upload|read|caption|remove`. File metadata lives in the internal `_files` collection, so `authorize` sees it as `record` for file reads and writes.
+
+## Calling a model
+
+`context.model.extract` turns free text into a value one of the app's own schemas accepts:
+
+```ts
+const meeting = await model.extract({ schema: z.object({ date: z.string(), attendees: z.array(z.string()) }), text, instructions: 'Leave a field empty rather than guessing.' })
+```
+
+The app names the shape it wants and never which model answered. Today that is the local Claude
+Code CLI — the runtime build mode already depends on, and the one that asks for no API key; the prompt
+goes in on stdin and the call runs in a temporary directory, so neither `ps` nor the app's folder
+is part of it. When no model can answer — the runtime is missing, times out, or gives nothing the
+schema accepts — it throws `ModelUnavailableError`. Catch it and store the failure as a state of
+the record: the text a person sent is worth keeping whether or not the structure came back.
 
 ## Knowledge files
 
@@ -222,6 +238,7 @@ Throw these from `golem-kit/server`; the HTTP status and the browser error follo
 | `NotFoundError` | 404 | No such record, file or operation |
 | `VersionConflictError` | 409 | `expectedVersion` no longer matches; carries `current` |
 | `RecordRefusedError` | 422 | A business rule refused the write; `fields` name the controls |
+| `ModelUnavailableError` | 503 | No model could answer `context.model` |
 
 Any other thrown error answers 500 with a generic message and is logged on the server.
 

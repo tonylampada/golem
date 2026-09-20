@@ -50,12 +50,24 @@ export interface FileStore {
   remove(id: string): Promise<void>
 }
 
+/**
+ * A model call for app server code: free text in, a value the schema accepts out. The app names
+ * the shape it wants and never which model or runtime answered, so a box with an API key swaps the
+ * implementation behind this and no operation changes. Throws `ModelUnavailableError` when no
+ * model could answer; treat that as a state of the record, not a crash.
+ */
+export interface Model {
+  extract<S extends z.ZodType>(request: { schema: S; text: string; instructions?: string }): Promise<z.output<S>>
+}
+
 export type OperationContext = {
   principal: Principal
   via: Via
   /** Trusted, unfiltered stores. Filter what you return with `permits`. */
   records: RecordStore
   files: FileStore
+  /** Free text in, structure out. Unavailable runtimes throw `ModelUnavailableError`. */
+  model: Model
   /** Asks `authorize` about this same call for one row; list-style operations drop rows it refuses. */
   permits(record: Row): Promise<boolean>
   /** Set when a job run called this operation (then `via` is `server`). */
@@ -115,6 +127,11 @@ export class ForbiddenError extends AppError {
 export class NotFoundError extends AppError {
   override name = 'NotFoundError'
   override status = 404
+}
+/** No model could answer: the runtime is missing, timed out, or gave nothing the schema accepts. */
+export class ModelUnavailableError extends AppError {
+  override name = 'ModelUnavailableError'
+  override status = 503
 }
 /** Same name and `current` shape as golem-ui's, so the browser binding can rethrow it as one. */
 export class VersionConflictError extends AppError {

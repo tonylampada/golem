@@ -8,6 +8,7 @@ import { FILES_COLLECTION } from './files.ts'
 import { knowledgeOperations, type KnowledgeRoots } from './knowledge.ts'
 import { createViews, type Views } from './views.ts'
 import { createJobs, JOBS_CHANGE, type JobDefinition } from './jobs.ts'
+import { openModel } from './model.ts'
 
 /** What an app's src/server/index.ts may default-export. Every field is optional. */
 export type AppServerModule = {
@@ -71,6 +72,7 @@ export function createApp(stores: { records: RecordStore; files: (records: Recor
     invoke: (name, input, principal, job) => invoke(name, input, principal, 'server', job),
     emit: () => changes.emit('change', JOBS_CHANGE),
   })
+  const model = openModel()
   const load = (next: AppServerModule) => compile(next, jobs.operations, stores.root)
   let current = load(module)
 
@@ -92,7 +94,7 @@ export function createApp(stores: { records: RecordStore; files: (records: Recor
     const request = { operation: name, input, principal, via }
     if (!(await authorize({ ...request, record }))) throw new ForbiddenError(`Not allowed: ${name}`)
     const permits = async (row: Row) => Boolean(await authorize({ ...request, record: row }))
-    return operation.output.parse(await operation.run(input, { principal, via, records, files, permits, ...(job ? { job } : {}) }))
+    return operation.output.parse(await operation.run(input, { principal, via, records, files, model, permits, ...(job ? { job } : {}) }))
   }
 
   const views = createViews({
