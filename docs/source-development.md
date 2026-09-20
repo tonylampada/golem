@@ -68,8 +68,29 @@ editing the isolated UI checkout. Ordinary source mode expects the normal Messag
 No package scripts or lockfiles need to change when switching modes. `golem-ui` itself uses Vite
 and its package build is `pnpm build`; source mode consumes its TypeScript entry point directly.
 
+## An app against the checkouts
+
 For generated apps, `GOLEM_SOURCE=/path/to/golem /path/to/app/golem dev` opts into
 the framework checkout while preserving the app cwd and lockfile. Omit
 `GOLEM_SOURCE` to use the installed pinned `golem-kit`; combine it with
 `GOLEM_UI_SOURCE=/path/to/golem-ui` when developing both checkouts. Source-mode
 builds print each source path and short git revision.
+
+Source mode covers the app's own code too, not only the shell's. An app that imports
+`golem-kit/server` in `src/server/index.ts`, `golem-kit/client` or `golem-ui` in `src/app.tsx`
+resolves those imports from the checkouts, in all three places the app's code is read:
+
+- the **app typecheck** (`tsc` over `src/app.tsx`, `golem.config.ts` and `src/server/index.ts`),
+  through a generated tsconfig whose `paths` point at the checkouts;
+- the **browser bundle**, through Vite aliases;
+- the **app server bundle**, where `golem-kit/server` resolves to the checkout's file and stays
+  external, so the app and the running server share one module instance.
+
+Nothing is written into the app folder and `node_modules` is never edited: the app keeps the
+published `golem-kit` and `golem-ui` it installed, and drops back to them the moment the
+variables are absent. `golem-ui` is read from its `src/`, so its checkout needs no `pnpm build`.
+
+An exported `GOLEM_SOURCE` also decides which `entry.mjs` the app's `./golem` script launches, so
+source mode works even when the installed `golem-kit` is older than the checkout. `GOLEM_SOURCE`
+set in `.env.local` is read by node instead, which needs the installed `golem-kit` to be recent
+enough to have `src/entry.mjs`.

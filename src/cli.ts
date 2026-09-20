@@ -197,5 +197,5 @@ Before changing this app, read \`docs/domain.md\` (this app's DNA) and the insta
     // App code imports golem-ui directly, so pin the same version golem-kit builds with.
     execFileSync('pnpm', ['add', '--save-exact', packageSpec, `golem-ui@${framework.dependencies['golem-ui']}`], { cwd: root, stdio: 'inherit' });
   }
-  writeFileSync(resolve(root, 'golem'), '#!/bin/sh\nset -eu\ncd -- "$(dirname -- "$0")"\nexec node --env-file-if-exists=.env.local node_modules/golem-kit/src/entry.mjs "$@"\n', { mode: 0o755 });
+  writeFileSync(resolve(root, 'golem'), "#!/bin/sh\nset -eu\ncd -- \"$(dirname -- \"$0\")\"\n# An exported GOLEM_SOURCE launches from the checkout, so source mode does not depend on what\n# node_modules/golem-kit happens to hold. Anything else (including a bad path, and GOLEM_SOURCE\n# set in .env.local, which only node reads) goes through the installed entry and its errors.\nentry=node_modules/golem-kit/src/entry.mjs\n[ -f \"${GOLEM_SOURCE:-}/src/entry.mjs\" ] && entry=\"$GOLEM_SOURCE/src/entry.mjs\" || true\nexec node --env-file-if-exists=.env.local \"$entry\" \"$@\"\n", { mode: 0o755 });
 }

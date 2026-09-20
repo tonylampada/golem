@@ -1,9 +1,11 @@
 import { execFileSync } from 'node:child_process';
-import { existsSync } from 'node:fs';
+import { existsSync, mkdtempSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
 import { fileURLToPath } from 'node:url';
 import { resolve } from 'node:path';
 import { build } from 'vite';
 import { resolveUiSource } from '../vite.config.ts';
+import { sourcePaths } from './source-mode.ts';
 
 const frameworkRoot = resolve(fileURLToPath(new URL('..', import.meta.url)));
 
@@ -28,13 +30,23 @@ export async function buildBrowser(): Promise<void> {
     cwd: process.cwd(),
     stdio: 'inherit',
   });
-  execFileSync(tsc, [
-    '--ignoreConfig', '--noEmit', '--jsx', 'react-jsx', '--module', 'ESNext',
-    '--moduleResolution', 'Bundler', '--skipLibCheck', '--allowImportingTsExtensions', '--types', 'node,react,react-dom',
-    '--typeRoots', typeRoots,
-    resolve(process.cwd(), 'src/app.tsx'), resolve(process.cwd(), 'golem.config.ts'),
-    ...[resolve(process.cwd(), 'src/server/index.ts')].filter(existsSync),
-  ], { cwd: process.cwd(), stdio: 'inherit' });
+  // A generated config rather than bare flags: `paths` is the only way to tell tsc that the app's
+  // own `golem-kit`/`golem-ui` imports come from the source checkouts, and it has no CLI flag. It
+  // lives in a temp dir so source mode never writes into the app folder.
+  const appTsconfig = resolve(mkdtempSync(resolve(tmpdir(), 'golem-typecheck-')), 'tsconfig.json');
+  writeFileSync(appTsconfig, JSON.stringify({
+    compilerOptions: {
+      noEmit: true, jsx: 'react-jsx', module: 'ESNext', moduleResolution: 'Bundler',
+      skipLibCheck: true, allowImportingTsExtensions: true,
+      types: ['node', 'react', 'react-dom'], typeRoots: [typeRoots],
+      paths: sourcePaths(),
+    },
+    files: [
+      resolve(process.cwd(), 'src/app.tsx'), resolve(process.cwd(), 'golem.config.ts'),
+      ...[resolve(process.cwd(), 'src/server/index.ts')].filter(existsSync),
+    ],
+  }));
+  execFileSync(tsc, ['-p', appTsconfig], { cwd: process.cwd(), stdio: 'inherit' });
   await build({ configFile: resolve(frameworkRoot, 'vite.config.ts') });
 }
 

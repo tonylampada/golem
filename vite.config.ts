@@ -4,6 +4,7 @@ import { resolve } from 'node:path'
 import { pathToFileURL } from 'node:url'
 import { defineConfig, type UserConfig } from 'vite'
 import react from '@vitejs/plugin-react'
+import { sourceAliases } from './src/source-mode.ts'
 
 const frameworkRoot = import.meta.dirname
 
@@ -61,10 +62,7 @@ export default defineConfig(async (): Promise<UserConfig> => {
     plugins,
     resolve: {
       alias: [
-        ...(ui ? [
-          { find: /^golem-ui$/, replacement: resolve(ui.root, 'src/index.ts') },
-          { find: /^golem-ui\/styles\.css$/, replacement: resolve(ui.root, 'src/styles.css') },
-        ] : []),
+        ...sourceAliases(),
         { find: /^@golem\/app$/, replacement: resolve(appRoot, 'src/app.tsx') },
         { find: /^@golem\/config$/, replacement: resolve(appRoot, 'golem.config.ts') },
       ],

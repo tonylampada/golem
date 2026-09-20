@@ -9,6 +9,7 @@ import { createAccounts, type Accounts } from './accounts.ts'
 import { createApp, type App, type AppServerModule } from './app.ts'
 import { diskFiles } from './files.ts'
 import { jsonlStore } from './jsonl.ts'
+import { resolveSourceModule } from '../source-mode.ts'
 
 const maxJson = 1_000_000
 // Uploads are buffered in memory; stream to disk if apps need files past this size.
@@ -79,9 +80,16 @@ async function loadServerModule(appRoot: string, outDir: string): Promise<AppSer
   if (!existsSync(entry)) return {}
   await build({
     configFile: false, root: appRoot, logLevel: 'silent',
+    // Source mode: the app's `golem-kit/server` is the checkout's file, and stays external so the
+    // app and the running server share one module instance and `instanceof` still holds. A plugin
+    // rather than `resolve.alias` because rollup asks `external` about a bare specifier first.
+    plugins: [{ name: 'golem-source-modules', enforce: 'pre', resolveId: (source: string) => {
+      const file = resolveSourceModule(source)
+      return file ? { id: file, external: true } : undefined
+    } }],
     build: {
       ssr: entry, outDir, emptyOutDir: true, minify: false,
-      rollupOptions: { external: (id) => !id.startsWith('.') && !isAbsolute(id) && !id.startsWith('\0'), output: { entryFileNames: 'index.mjs' } },
+      rollupOptions: { external: (id) => !resolveSourceModule(id) && !id.startsWith('.') && !isAbsolute(id) && !id.startsWith('\0'), output: { entryFileNames: 'index.mjs' } },
     },
   })
   const loaded = (await import(`${pathToFileURL(join(outDir, 'index.mjs')).href}?generation=${++generation}`)).default as unknown
