@@ -60,12 +60,15 @@ test('chat.roles: the roles the app names may chat, the others get 403 on every 
     assert.equal((await fieldhand.post('/api/builder', { builder: true })).status, 403)
     assert.equal((await fieldhand.post('/api/sessions', { backend: 'claude', intent: 'build' })).status, 403)
     assert.equal((await fieldhand.get('/api/builder')).body.builder, false)
+    // Chat needs to know which agents this computer has, so the discovery route serves both modes.
+    assert.equal((await fieldhand.get('/api/runtime')).status, 200)
 
     // Auditor: no chat column to show, and no way to start or reach one.
     assert.deepEqual((await auditor.get('/api/chat')).body, { provider: null, available: false })
     assert.equal((await auditor.post('/api/sessions', { backend: 'claude', intent: 'chat' })).status, 403)
     assert.equal((await auditor.post('/api/sessions', { backend: 'claude', intent: 'build' })).status, 403)
     assert.equal((await auditor.get('/api/sessions/latest?chat=1')).status, 403)
+    assert.equal((await auditor.get('/api/runtime')).status, 403)
     assert.equal((await auditor.get(`/api/sessions/${chat.body.id}/commands`)).status, 403)
     assert.equal((await auditor.post(`/api/sessions/${chat.body.id}/command`, { line: '/reset' })).status, 403)
     assert.equal((await auditor.get(`/api/sessions/${chat.body.id}/pane/stream`)).status, 403)

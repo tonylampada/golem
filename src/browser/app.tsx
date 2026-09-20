@@ -85,10 +85,10 @@ export function App() {
     const open = async () => {
       // A terminal agent: the configured one, else what this computer has (the server picks per intent).
       const runtime = kind === 'anthropic' ? undefined : await fetch('/api/runtime').then((response) => response.json()) as { discoveries: Discovery[]; builder?: string } | undefined
-      const ready = runtime?.discoveries.filter((item) => item.status === 'available' && item.runnable).map((item) => item.agent) ?? []
+      const ready = runtime?.discoveries?.filter((item) => item.status === 'available' && item.runnable).map((item) => item.agent) ?? []
       const agent = kind === 'anthropic' ? undefined : [kind === 'chat' ? chatInfo?.agent : undefined, runtime?.builder, 'codex', 'claude'].find((one) => one && ready.includes(one))
       if (await restoreBrowserSession(kind)) return
-      if (kind !== 'anthropic' && !agent) throw new Error(`No agent to chat with: ${runtime?.discoveries.map((item) => `${agentNames[item.agent] ?? item.agent} ${item.status === 'missing' ? 'not installed' : item.detail ?? item.status}`).join(', ') || 'checking agents…'}`)
+      if (kind !== 'anthropic' && !agent) throw new Error(`No agent to chat with: ${runtime?.discoveries?.map((item) => `${agentNames[item.agent] ?? item.agent} ${item.status === 'missing' ? 'not installed' : item.detail ?? item.status}`).join(', ') || 'checking agents…'}`)
       if (kind === 'anthropic' && !chatInfo?.available) throw new Error(chatInfo?.detail ?? 'Chat is not available.')
       await startBrowserSession(agent, kind)
     }

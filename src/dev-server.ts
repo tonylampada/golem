@@ -281,7 +281,8 @@ async function handleApi(
   const chatRoles = app.config.chat?.roles;
   const chats = (who: typeof principal) => !(accounts && !accounts.config.guests && who.kind === 'anonymous')
     && (!chatRoles || (who.kind === 'user' && who.roles.some((role) => chatRoles.includes(role))));
-  const mayChat = chats(principal);
+  // Without accounts the app is the local single-person mode, where everything is open.
+  const mayChat = (Boolean(app.config.chat) || !accounts) && chats(principal);
   const denied = (what: 'build' | 'chat') => json(response, principal.kind === 'anonymous' ? 401 : 403,
     { error: principal.kind === 'anonymous' ? `Sign in to ${what}.` : `Your account may not ${what === 'build' ? 'build this app' : 'chat in this app'}.` });
   if (url.pathname === '/api/chat') {
@@ -331,12 +332,14 @@ async function handleApi(
   // The session routes below serve build mode and normal-mode chat alike, so each needs the rights
   // of the mode it belongs to: a conversation carries its own `buildMode`, `/api/sessions/latest`
   // says which it wants, and `POST /api/sessions` is judged below once its intent is parsed.
+  // `/api/runtime` is which agents this computer has; a terminal-agent chat needs it to pick one too.
   const targetSession = sessionMatch ? sessions.get(sessionMatch[1]) : undefined;
-  const routeIsChat = targetSession ? !targetSession.buildMode
-    : url.pathname === '/api/sessions/latest' ? url.searchParams.get('chat') === '1'
+  const needs: 'chat' | 'build' | 'either' | undefined = targetSession ? (targetSession.buildMode ? 'build' : 'chat')
+    : url.pathname === '/api/runtime' ? (app.config.chat?.provider === 'tmux' ? 'either' : 'build')
+    : url.pathname === '/api/sessions/latest' ? (url.searchParams.get('chat') === '1' ? 'chat' : 'build')
     : url.pathname === '/api/sessions' ? undefined
-    : false;
-  if (routeIsChat !== undefined && !(routeIsChat ? mayChat : mayBuild)) return denied(routeIsChat ? 'chat' : 'build');
+    : 'build';
+  if (needs && !(needs === 'chat' ? mayChat : needs === 'build' ? mayBuild : mayBuild || mayChat)) return denied(needs === 'chat' ? 'chat' : 'build');
   const owner = accounts && principal.kind === 'user' ? principal.id : undefined;
   const visible = (session: Session) => session.backend === 'anthropic'
     ? mayChat && chatOwner !== null && session.owner === chatOwner
