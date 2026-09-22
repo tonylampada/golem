@@ -57,7 +57,8 @@ export interface FileStore {
  * model could answer; treat that as a state of the record, not a crash.
  */
 export interface Model {
-  extract<S extends z.ZodType>(request: { schema: S; text: string; instructions?: string }): Promise<z.output<S>>
+  /** `images`: absolute paths on the server's disk, at most 10. Whether a runtime reads them is its own business; the app learns it only from the error. */
+  extract<S extends z.ZodType>(request: { schema: S; text: string; instructions?: string; images?: string[] }): Promise<z.output<S>>
 }
 
 export type OperationContext = {

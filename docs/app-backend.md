@@ -76,7 +76,7 @@ type AppServerModule = {
 type AuthorizeRequest = { operation: string; input: unknown; principal: Principal; via: 'http' | 'agent' | 'server'; record: Row | null }
 type Principal = { kind: 'anonymous' } | { kind: 'user'; id: string; name: string; roles: string[]; groups: string[]; session?: string }
 type OperationContext = { principal; via; records: RecordStore; files: FileStore; model: Model; permits(record: Row): Promise<boolean>; job?: JobContext }
-type Model = { extract<S extends z.ZodType>(request: { schema: S; text: string; instructions?: string }): Promise<z.output<S>> }
+type Model = { extract<S extends z.ZodType>(request: { schema: S; text: string; instructions?: string; images?: string[] }): Promise<z.output<S>> }
 ```
 
 - **One invoke path.** HTTP (`POST /api/app/operations/<name>`), the raw file routes and in-process agent tools (`app.agentTools(principal)`) all call the same `invoke`: validate input, load the `record` the operation names, `authorize`, run, validate output.
@@ -98,6 +98,10 @@ goes in on stdin and the call runs in a temporary directory, so neither `ps` nor
 is part of it. When no model can answer — the runtime is missing, times out, or gives nothing the
 schema accepts — it throws `ModelUnavailableError`. Catch it and store the failure as a state of
 the record: the text a person sent is worth keeping whether or not the structure came back.
+
+Photos go in next to the text as `images: string[]` — absolute paths on the server's disk, up to
+10, read by the runtime itself and never copied. A runtime that reads no images throws
+`ModelUnavailableError`; a path that is missing, unreadable or not absolute is `InvalidError`.
 
 ## Knowledge files
 

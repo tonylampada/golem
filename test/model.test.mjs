@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict'
-import { chmodSync, mkdtempSync, readFileSync, writeFileSync } from 'node:fs'
+import { chmodSync, existsSync, mkdtempSync, readFileSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { test } from 'node:test'
@@ -108,4 +108,69 @@ test('a failed codex turn and a missing codex both read as unavailable', async (
   await withCli(empty, async () => {
     await assert.rejects(() => openModel({ runtime: 'codex' }).extract({ schema, text: 'x' }), { name: 'ModelUnavailableError', message: /codex is not installed/ })
   }, true)
+})
+
+test('the codex runtime hands each image to the CLI as -i, in order, and the prompt says how many', async () => {
+  const dir = fakeCodex([
+    { type: 'item.completed', item: { id: 'i', type: 'agent_message', text: '{"title":"Board","people":[]}' } },
+    { type: 'turn.completed', usage: {} },
+  ])
+  const a = join(dir, 'a.png')
+  const b = join(dir, 'b.png')
+  writeFileSync(a, 'png')
+  writeFileSync(b, 'png')
+  await withCli(dir, () => openModel({ runtime: 'codex' }).extract({ schema, text: 'Read the board.', images: [a, b] }))
+  assert.match(readFileSync(join(dir, 'argv.txt'), 'utf8'), new RegExp(`^exec -i ${a} -i ${b} --skip-git-repo-check `))
+  assert.match(readFileSync(join(dir, 'prompt.txt'), 'utf8'), /Images: 2 attached, in the order given\./)
+})
+
+test('no images leaves the codex argv and the prompt exactly as they were', async () => {
+  const dir = fakeCodex([
+    { type: 'item.completed', item: { id: 'i', type: 'agent_message', text: '{"title":"t","people":[]}' } },
+    { type: 'turn.completed', usage: {} },
+  ])
+  await withCli(dir, () => openModel({ runtime: 'codex', name: 'gpt-5.6-sol' }).extract({ schema, text: 'x' }))
+  assert.equal(readFileSync(join(dir, 'argv.txt'), 'utf8'), 'exec -m gpt-5.6-sol --skip-git-repo-check --ephemeral -s read-only --json -')
+  assert.doesNotMatch(readFileSync(join(dir, 'prompt.txt'), 'utf8'), /Images:/)
+})
+
+test('the claude runtime reads no images and says so before it spawns anything', async () => {
+  // The fake marks the disk the moment it runs, so an unspawned CLI is a marker that is not there.
+  const dir = fakeCli(`touch "$(dirname "$0")/spawned"\n${answer('{"title":"t","people":[]}')}`)
+  const image = join(dir, 'a.png')
+  writeFileSync(image, 'png')
+  await withCli(dir, async () => {
+    await assert.rejects(() => openModel().extract({ schema, text: 'x', images: [image] }), {
+      name: 'ModelUnavailableError',
+      message: /reads no images/,
+    })
+  })
+  assert.equal(existsSync(join(dir, 'spawned')), false)
+})
+
+test('a path that is missing, relative or past the cap is bad input, on either runtime, and never spawns', async () => {
+  const codex = fakeCodex([{ type: 'turn.completed', usage: {} }])
+  const claude = fakeCli(`touch "$(dirname "$0")/spawned"\n${answer('{"title":"t","people":[]}')}`)
+  const present = join(codex, 'a.png')
+  writeFileSync(present, 'png')
+  const cases = [
+    [join(codex, 'nope.png'), /Image not readable: nope\.png/],
+    ['a.png', /Image not readable: a\.png/],
+  ]
+  for (const [image, message] of cases) {
+    await withCli(codex, async () => {
+      await assert.rejects(() => openModel({ runtime: 'codex' }).extract({ schema, text: 'x', images: [image] }), { name: 'InvalidError', message })
+    })
+    await withCli(claude, async () => {
+      await assert.rejects(() => openModel().extract({ schema, text: 'x', images: [image] }), { name: 'InvalidError', message })
+    })
+  }
+  await withCli(codex, async () => {
+    await assert.rejects(() => openModel({ runtime: 'codex' }).extract({ schema, text: 'x', images: Array(11).fill(present) }), {
+      name: 'InvalidError',
+      message: /At most 10 images per call\./,
+    })
+  })
+  assert.equal(existsSync(join(codex, 'argv.txt')), false)
+  assert.equal(existsSync(join(claude, 'spawned')), false)
 })
