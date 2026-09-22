@@ -8,6 +8,7 @@ import { FILES_COLLECTION } from './files.ts'
 import { knowledgeOperations, type KnowledgeRoots } from './knowledge.ts'
 import { createViews, type Views } from './views.ts'
 import { createJobs, JOBS_CHANGE, type JobDefinition } from './jobs.ts'
+import type { ModelConfig } from '../config.ts'
 import { openModel } from './model.ts'
 
 /** What an app's src/server/index.ts may default-export. Every field is optional. */
@@ -59,7 +60,7 @@ export type Identity = {
   resolveAccount(id: string): Promise<Principal>
 }
 
-export function createApp(stores: { records: RecordStore; files: (records: RecordStore) => FileStore; root?: string }, module: AppServerModule = {}, identity?: Identity): App {
+export function createApp(stores: { records: RecordStore; files: (records: RecordStore) => FileStore; root?: string; model?: ModelConfig }, module: AppServerModule = {}, identity?: Identity): App {
   const changes = new EventEmitter().setMaxListeners(0)
   const records = watched(stores.records, (collection) => changes.emit('change', collection))
   const files = stores.files(records)
@@ -72,7 +73,7 @@ export function createApp(stores: { records: RecordStore; files: (records: Recor
     invoke: (name, input, principal, job) => invoke(name, input, principal, 'server', job),
     emit: () => changes.emit('change', JOBS_CHANGE),
   })
-  const model = openModel()
+  const model = openModel(stores.model)
   const load = (next: AppServerModule) => compile(next, jobs.operations, stores.root)
   let current = load(module)
 

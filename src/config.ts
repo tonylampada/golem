@@ -3,7 +3,9 @@ import { pathToFileURL } from 'node:url'
 import { toolNameProblem } from './runtime/tool-names.ts'
 
 /** Browser-visible settings: never put secrets in golem.config.ts. */
-export type AppConfig = { host: string; port: number; storage: 'jsonl' | 'sqlite'; origin?: string; accounts?: AccountsConfig; agents?: AgentsConfig; brain?: boolean; chat?: ChatConfig }
+export type AppConfig = { host: string; port: number; storage: 'jsonl' | 'sqlite'; origin?: string; accounts?: AccountsConfig; agents?: AgentsConfig; brain?: boolean; chat?: ChatConfig; model?: ModelConfig }
+/** Which local agent CLI answers `context.model`; absent, Claude Code as before. `name` is that runtime's model id. */
+export type ModelConfig = { runtime: 'claude' | 'codex'; name?: string }
 /**
  * Normal-mode chat, the app's rule: `false` (or absent) means no chat column outside builder mode.
  * `anthropic` is the API agent (same shape as `agents.ordinary`, which it fills); `tmux` is a
@@ -41,7 +43,7 @@ export async function loadAppConfig(root = process.cwd()): Promise<AppConfig> {
   if (!value || typeof value !== 'object' || Array.isArray(value)) {
     throw new Error('golem.config.ts must default-export an object')
   }
-  const configured = value as { host?: unknown; port?: unknown; storage?: unknown; origin?: unknown; accounts?: unknown; agents?: unknown; brain?: unknown; chat?: unknown }
+  const configured = value as { host?: unknown; port?: unknown; storage?: unknown; origin?: unknown; accounts?: unknown; agents?: unknown; brain?: unknown; chat?: unknown; model?: unknown }
   if (configured.brain !== undefined && typeof configured.brain !== 'boolean') throw new Error('golem.config.ts brain must be a boolean')
   const host: unknown = configured.host === undefined ? '127.0.0.1' : configured.host
   const port: unknown = configured.port === undefined ? 3000 : configured.port
@@ -59,7 +61,7 @@ export async function loadAppConfig(root = process.cwd()): Promise<AppConfig> {
   if (origin !== undefined && (typeof origin !== 'string' || !/^https?:$/.test(safeUrl(origin)?.protocol ?? '') || safeUrl(origin)?.origin !== origin)) {
     throw new Error("golem.config.ts origin must be an exact origin like 'https://notes.example.com'")
   }
-  const config: AppConfig = { host, port, storage, ...(origin === undefined ? {} : { origin }), ...(configured.accounts === undefined ? {} : { accounts: accounts(configured.accounts) }), ...(configured.agents === undefined ? {} : { agents: agents(configured.agents) }), ...(configured.brain ? { brain: true } : {}) }
+  const config: AppConfig = { host, port, storage, ...(origin === undefined ? {} : { origin }), ...(configured.accounts === undefined ? {} : { accounts: accounts(configured.accounts) }), ...(configured.agents === undefined ? {} : { agents: agents(configured.agents) }), ...(configured.brain ? { brain: true } : {}), ...(configured.model === undefined ? {} : { model: modelConfig(configured.model) }) }
   if (configured.chat !== undefined && configured.chat !== false) {
     if (!configured.chat || typeof configured.chat !== 'object' || Array.isArray(configured.chat)) throw new Error('golem.config.ts chat must be false or { provider, ... }')
     const { provider, roles, ...rest } = configured.chat as Record<string, unknown>
@@ -75,6 +77,15 @@ export async function loadAppConfig(root = process.cwd()): Promise<AppConfig> {
     } else throw new Error("golem.config.ts chat.provider must be 'anthropic' or 'tmux'")
   } else if (config.agents?.ordinary) config.chat = { provider: 'anthropic' }
   return config
+}
+
+function modelConfig(value: unknown): ModelConfig {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) throw new Error('golem.config.ts model must be { runtime, name? }')
+  const { runtime, name, ...unknown } = value as Record<string, unknown>
+  if (Object.keys(unknown).length) throw new Error(`golem.config.ts model has unknown fields: ${Object.keys(unknown).join(', ')}`)
+  if (runtime !== 'claude' && runtime !== 'codex') throw new Error("golem.config.ts model.runtime must be 'claude' or 'codex'")
+  if (name !== undefined && (typeof name !== 'string' || !name)) throw new Error('golem.config.ts model.name must be a nonempty string')
+  return { runtime, ...(name ? { name } : {}) }
 }
 
 function accounts(value: unknown): AccountsConfig {

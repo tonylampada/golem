@@ -76,3 +76,36 @@ test('the prompt carries the schema and the text, and never rides in argv', asyn
   assert.match(prompt, /"people"/)
   assert.doesNotMatch(readFileSync(join(dir, 'argv.txt'), 'utf8'), /Ada was there/)
 })
+
+/** A stand-in `codex` on PATH: it answers in `codex exec --json` JSONL, and records its argv. */
+function fakeCodex(events, dir = mkdtempSync(join(tmpdir(), 'golem-model-codex-'))) {
+  const path = join(dir, 'codex')
+  writeFileSync(path, `#!/bin/sh\ncat > ${dir}/prompt.txt\nprintf '%s' "$*" > ${dir}/argv.txt\ncat <<'JSONL'\n${events.map((event) => JSON.stringify(event)).join('\n')}\nJSONL\n`)
+  chmodSync(path, 0o755)
+  return dir
+}
+
+test('the codex runtime answers with its last agent message and is asked for the configured model', async () => {
+  const dir = fakeCodex([
+    { type: 'thread.started', thread_id: 't' },
+    { type: 'item.completed', item: { id: 'i', type: 'agent_message', text: '{"title":"Standup","people":["Ada"]}' } },
+    { type: 'turn.completed', usage: {} },
+  ])
+  const value = await withCli(dir, () => openModel({ runtime: 'codex', name: 'gpt-5.6-sol' }).extract({ schema, text: 'Standup with Ada.' }))
+  assert.deepEqual(value, { title: 'Standup', people: ['Ada'] })
+  const argv = readFileSync(join(dir, 'argv.txt'), 'utf8')
+  assert.match(argv, /^exec -m gpt-5\.6-sol /)
+  assert.doesNotMatch(argv, /Standup with Ada/)
+  assert.match(readFileSync(join(dir, 'prompt.txt'), 'utf8'), /Standup with Ada\./)
+})
+
+test('a failed codex turn and a missing codex both read as unavailable', async () => {
+  const failed = fakeCodex([{ type: 'turn.failed', error: { message: 'The model is not supported' } }])
+  await withCli(failed, async () => {
+    await assert.rejects(() => openModel({ runtime: 'codex' }).extract({ schema, text: 'x' }), { name: 'ModelUnavailableError', message: /not supported/ })
+  })
+  const empty = mkdtempSync(join(tmpdir(), 'golem-model-empty-'))
+  await withCli(empty, async () => {
+    await assert.rejects(() => openModel({ runtime: 'codex' }).extract({ schema, text: 'x' }), { name: 'ModelUnavailableError', message: /codex is not installed/ })
+  }, true)
+})

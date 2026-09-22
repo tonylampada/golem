@@ -1,20 +1,56 @@
 import { spawn } from 'node:child_process'
 import { tmpdir } from 'node:os'
+import type { ModelConfig } from '../config.ts'
 import { ModelUnavailableError, z, type Model } from '../operations.ts'
 
 /**
- * `context.model`, over the local Claude Code CLI: the model runtime Golem already depends on for
- * build mode, and the only one that answers without an API key. An app never learns which model
- * answered — a box with `ANTHROPIC_API_KEY` replaces this file's insides, not the app's operation.
+ * `context.model`, over a local agent CLI: Claude Code (the default, haiku) or Codex, whichever
+ * `golem.config.ts` names in `model`. An app never learns which one answered — the runtime is the
+ * app owner's choice, not the operation's.
  *
  * The prompt goes in on stdin, never in argv where `ps` would show it, and the call runs in a
  * temporary directory so nothing in the app's folder becomes part of it.
  */
-const executable = 'claude'
-const model = 'haiku'
 const timeoutMs = 180_000
 
-export function openModel(): Model {
+type Runtime = {
+  executable: string
+  args: string[]
+  /** The answer text out of the CLI's own stdout format, or a reason there is none. */
+  answer(out: string): { text: string } | { error: string }
+}
+
+const runtimes: Record<ModelConfig['runtime'], (name?: string) => Runtime> = {
+  claude: (name = 'haiku') => ({
+    executable: 'claude',
+    args: ['-p', '--output-format', 'json', '--model', name, '--allowed-tools', '', '--strict-mcp-config'],
+    answer(out) {
+      const { is_error: failed, result } = JSON.parse(out) as { is_error?: boolean; result?: unknown }
+      if (failed || typeof result !== 'string') return { error: typeof result === 'string' ? result : 'The model runtime reported an error.' }
+      return { text: result }
+    },
+  }),
+  // `--ephemeral` keeps the call out of ~/.codex/sessions; `-` reads the prompt from stdin.
+  codex: (name) => ({
+    executable: 'codex',
+    args: ['exec', ...(name ? ['-m', name] : []), '--skip-git-repo-check', '--ephemeral', '-s', 'read-only', '--json', '-'],
+    answer(out) {
+      // JSONL events; the answer is the last agent message, a failed turn carries its reason.
+      let text: string | undefined
+      let error: string | undefined
+      for (const line of out.split('\n')) {
+        if (!line.trim()) continue
+        const event = JSON.parse(line) as { type: string; item?: { type: string; text?: string }; error?: { message?: string } }
+        if (event.type === 'item.completed' && event.item?.type === 'agent_message' && typeof event.item.text === 'string') text = event.item.text
+        if (event.type === 'turn.failed') error = event.error?.message ?? 'The model runtime reported an error.'
+      }
+      return error ? { error } : text === undefined ? { error: 'The model gave no answer.' } : { text }
+    },
+  }),
+}
+
+export function openModel(config: ModelConfig = { runtime: 'claude' }): Model {
+  const runtime = runtimes[config.runtime](config.name)
   return {
     async extract({ schema, text, instructions }) {
       const prompt = [
@@ -23,7 +59,7 @@ export function openModel(): Model {
         JSON.stringify(z.toJSONSchema(schema, { unrepresentable: 'any' })),
         `Text:\n${text}`,
       ].join('\n\n')
-      const answer = await ask(prompt)
+      const answer = await ask(runtime, prompt)
       let value: unknown
       try {
         value = JSON.parse(unfence(answer))
@@ -38,9 +74,9 @@ export function openModel(): Model {
 }
 
 /** The answer text, or `ModelUnavailableError` for every way the runtime can fail to give one. */
-function ask(prompt: string): Promise<string> {
+function ask({ executable, args, answer }: Runtime, prompt: string): Promise<string> {
   return new Promise((resolve, reject) => {
-    const child = spawn(executable, ['-p', '--output-format', 'json', '--model', model, '--allowed-tools', '', '--strict-mcp-config'], { cwd: tmpdir(), stdio: ['pipe', 'pipe', 'pipe'] })
+    const child = spawn(executable, args, { cwd: tmpdir(), stdio: ['pipe', 'pipe', 'pipe'] })
     let out = ''
     let error = ''
     const timer = setTimeout(() => { timedOut = true; child.kill('SIGKILL') }, timeoutMs)
@@ -55,15 +91,14 @@ function ask(prompt: string): Promise<string> {
       clearTimeout(timer)
       if (timedOut) return reject(new ModelUnavailableError('The model did not answer in time.'))
       if (code !== 0) return reject(new ModelUnavailableError(`The model runtime exited with code ${code}${error.trim() ? `: ${error.trim().slice(0, 200)}` : ''}`))
-      let result: unknown
+      let result: ReturnType<Runtime['answer']>
       try {
-        result = JSON.parse(out)
+        result = answer(out)
       } catch {
         return reject(new ModelUnavailableError('The model runtime did not answer in its own format.'))
       }
-      const { is_error: failed, result: answer } = result as { is_error?: boolean; result?: unknown }
-      if (failed || typeof answer !== 'string') return reject(new ModelUnavailableError(typeof answer === 'string' ? answer.slice(0, 200) : 'The model runtime reported an error.'))
-      resolve(answer)
+      if ('error' in result) return reject(new ModelUnavailableError(result.error.slice(0, 200)))
+      resolve(result.text)
     })
     child.stdin.end(prompt)
   })
