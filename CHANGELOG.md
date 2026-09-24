@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.2.2
+
+- An app pins the model its terminal agents run on: `chat: { provider: 'tmux', agent, model }` for normal-mode chat and `agents.builderModel` for the builder. The pin rides the launch args (`-m` for Codex, `--model` for Claude Code) and is replayed on resume.
+
 ## 0.2.1
 
 - `./golem` runs on a fresh `pnpm install`: the installed entry resolves `tsx` from golem-kit's own tree instead of the app's `node_modules/.bin`.
