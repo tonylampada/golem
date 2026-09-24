@@ -209,9 +209,12 @@ async function handleAuth({ accounts, config, cookie }: Server, principal: Princ
     return send(response, 200, { result: null }, session('', 0))
   }
   if (route === 'invites') return send(response, 200, { result: await accounts.invite(principal, input, originOf(config, request.headers.host)) })
-  const member = route.match(/^members\/([^/]+)\/(role|groups|remove)$/)
+  // Spending a reset link is the one auth write a signed-out caller makes: the token is the credential.
+  if (route === 'password') { await accounts.setPassword(input); return send(response, 200, { result: null }) }
+  const member = route.match(/^members\/([^/]+)\/(role|groups|remove|reset)$/)
   if (!member) return send(response, 404, { error: 'Unknown API route' })
   const id = decodeURIComponent(member[1])
+  if (member[2] === 'reset') return send(response, 200, { result: await accounts.reset(principal, id, originOf(config, request.headers.host)) })
   if (member[2] === 'role') await accounts.setRole(principal, id, input)
   else if (member[2] === 'groups') await accounts.setGroups(principal, id, input)
   else await accounts.remove(principal, id)

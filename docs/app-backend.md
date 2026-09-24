@@ -175,7 +175,7 @@ The roles above are the default. A role with `manages: true` may invite, change 
 - **guests: true**: signed-out callers run as `anonymous` through `authorize`. The default `authorize` allows everything, so write one that refuses what guests may not do.
 - **Policy** stays in `authorize`: check `principal.roles`, `principal.groups` and `record`. Without an `authorize`, every signed-in member may do everything.
 - **Build mode** needs a signed-in member who may build; `/api/runtime` and every `/api/sessions` route answer 401 or 403 to anyone else. A build conversation belongs to the member who started it. Conversations saved before accounts were enabled are visible to managers only. Losing build access, or signing out everywhere, interrupts a running build turn.
-- **Managing**: managers get a Admin item in the shell menu row: golem-ui's member list for invites, roles and removal, plus a groups editor. Apps can use `identity` and `setGroups` from `golem-kit/client`.
+- **Managing**: managers get a Admin item in the shell menu row: golem-ui's member list for invites, roles, password resets and removal, plus a groups editor. Apps can use `identity` and `setGroups` from `golem-kit/client`.
 - **Identity in the UI**: `identity` from `golem-kit/client` is golem-ui's `IdentityAdapter`. Pass it to `Auth.Guard` or `Timeline`. It exposes nothing a server rule trusts.
 
 ### First admin and recovery
@@ -194,7 +194,8 @@ When the store has no account yet, `./golem dev` prints a one-use admin invite l
 - Accounts, sessions and invites live in reserved `_` collections. The records operations refuse those collections, and the change stream never names them.
 - Five failed sign-ins lock that email, and separately that client address, for 15 minutes.
 - Browser writes must come from this origin. Without `origin`, the `Origin` header must match the `Host` header. Behind a proxy, set `origin` to the public origin; then it is the only one accepted. Forwarding headers such as `X-Forwarded-For` are never read, so behind a proxy the per-address lockout counts the proxy's address.
-- This protects one app's data between people who use it. It is not a hosted identity provider: there is no email verification, password reset (a manager removes and re-invites), external sign-in or two-factor. Server code and anyone with the data directory can read everything.
+- A member who forgets their password gets a new one from a manager, not by email: **Reset password** in the member list mints a one-use link, good for 24 hours, that opens the sign-in card in "choose a new password" mode. The account keeps its id, email, roles and groups — so whatever the app tied to that id survives — and every session it had is revoked, so an open browser elsewhere is signed out.
+- This protects one app's data between people who use it. It is not a hosted identity provider: there is no email verification, self-service password reset, external sign-in or two-factor. Server code and anyone with the data directory can read everything.
 
 ## Jobs
 

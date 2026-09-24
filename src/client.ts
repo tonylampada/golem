@@ -126,6 +126,8 @@ export const identity: IdentityAdapter = {
   invite: (role) => auth<string>('invites', { role }),
   removeMember: async (userId) => { await auth(`members/${encodeURIComponent(userId)}/remove`); await reloadIdentity() },
   setRole: async (userId, role) => { await auth(`members/${encodeURIComponent(userId)}/role`, { role }); await reloadIdentity() },
+  resetPassword: (userId) => auth<string>(`members/${encodeURIComponent(userId)}/reset`),
+  setPassword: async (reset, password) => { await auth('password', { reset, password }); await reloadIdentity() },
 }
 
 /** Re-reads who is signed in and tells identity subscribers; for callers that saw a 401 or 403. */

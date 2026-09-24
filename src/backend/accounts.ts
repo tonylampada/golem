@@ -33,6 +33,7 @@ export const inputs = {
   signIn: z.object({ email, password: z.string().max(256) }),
   signUp: z.object({ name: z.string().trim().min(1).max(120), email, password, invite: z.string().max(128).optional() }),
   invite: z.object({ role: z.string() }),
+  setPassword: z.object({ reset: z.string().max(128), password }),
   role: z.object({ role: z.string() }),
   groups: z.object({ groups: z.array(group).max(64) }),
 }
@@ -127,27 +128,44 @@ export function createAccounts(records: RecordStore, config: AccountsConfig) {
     return user(account)
   }
 
+  /** Spends a one-use link's token and returns the row it carries; `kind` only names it for the reader. */
+  async function claim(token: string, kind: 'invite' | 'reset'): Promise<Row> {
+    const spent = () => new InvalidError(`That ${kind} link has expired or was already used.`)
+    const found = /^[A-Za-z0-9_-]{43}$/.test(token) ? await records.get(INVITES, digest(token)) : null
+    if (!found || Date.parse(String(found.expiresAt)) <= Date.now()) throw spent()
+    // Removing first claims the link: a second use finds it gone.
+    await records.remove(INVITES, found.id).catch(() => { throw spent() })
+    if (!found[kind === 'invite' ? 'role' : 'account']) throw spent()
+    return found
+  }
+
   async function createAccount(name: string, email: string, hashed: string, invite: string | undefined): Promise<Account> {
     if ((await records.list(ACCOUNTS, { filter: { email }, limit: 1 })).rows.length) throw new InvalidError('That email already has an account. Sign in instead.')
     // Without an invite, only a role that neither manages nor builds, whatever the role order.
     let role = config.roles.find(isPlain)?.id
     if (invite) {
-      const found = /^[A-Za-z0-9_-]{43}$/.test(invite) ? await records.get(INVITES, digest(invite)) : null
-      if (!found || Date.parse(String(found.expiresAt)) <= Date.now()) throw new InvalidError('That invite link has expired or was already used.')
-      // Removing first claims the invite: a second sign-up on the same link finds it gone.
-      await records.remove(INVITES, found.id).catch(() => { throw new InvalidError('That invite link has expired or was already used.') })
-      role = String(found.role)
+      role = String((await claim(invite, 'invite')).role)
     } else if (!config.allowSignUp || !role) {
       throw new ForbiddenError('This app is invite-only. Ask an admin for an invite link.')
     }
     return await records.create(ACCOUNTS, { email, name, password: hashed, roles: [role], groups: [] }) as Account
   }
 
+  /** A one-use link: an invite carries the role it grants, a reset carries the account it belongs to. */
+  async function mintLink(carries: { role: string } | { account: string }, origin: string, lifetime: number): Promise<string> {
+    const token = randomBytes(32).toString('base64url')
+    await records.create(INVITES, { id: digest(token), ...carries, expiresAt: new Date(Date.now() + lifetime).toISOString() })
+    return `${origin}/?${'role' in carries ? 'invite' : 'reset'}=${token}`
+  }
+
   async function mintInvite(role: string, origin: string, lifetime: number): Promise<string> {
     if (!roleIds.has(role)) throw new InvalidError(`Unknown role: ${role}`)
-    const token = randomBytes(32).toString('base64url')
-    await records.create(INVITES, { id: digest(token), role, expiresAt: new Date(Date.now() + lifetime).toISOString() })
-    return `${origin}/?invite=${token}`
+    return mintLink({ role }, origin, lifetime)
+  }
+
+  async function endSessions(id: string): Promise<void> {
+    const sessions = await records.list(SESSIONS, { filter: { userId: id }, limit: 500 })
+    for (const session of sessions.rows) await records.remove(SESSIONS, session.id).catch(() => {})
   }
 
   return {
@@ -248,9 +266,28 @@ export function createAccounts(records: RecordStore, config: AccountsConfig) {
       requireManager(actor)
       const account = await target(id)
       await keepsAManager(account, null)
-      const sessions = await records.list(SESSIONS, { filter: { userId: account.id }, limit: 500 })
-      for (const session of sessions.rows) await records.remove(SESSIONS, session.id).catch(() => {})
+      await endSessions(account.id)
       await records.remove(ACCOUNTS, account.id)
+      changes.emit('change', account.id)
+    },
+
+    /**
+     * A one-use link, good for 24 hours, that lets this member choose a new password. Nothing is
+     * removed, so the last-manager rule does not apply and the account keeps everything but its hash.
+     */
+    async reset(actor: Principal, id: string, origin: string): Promise<string> {
+      requireManager(actor)
+      return mintLink({ account: (await target(id)).id }, origin, day)
+    },
+
+    /** Spends a reset link: the new hash, and every session of that account gone. */
+    async setPassword(input: unknown): Promise<void> {
+      const { reset, password } = parse(inputs.setPassword, input)
+      const hashed = await hash(password)
+      const id = String((await claim(reset, 'reset')).account)
+      const account = await target(id)
+      await records.update(ACCOUNTS, account.id, { password: hashed })
+      await endSessions(account.id)
       changes.emit('change', account.id)
     },
 

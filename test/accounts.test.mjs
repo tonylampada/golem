@@ -230,3 +230,49 @@ test('guests: false refuses anonymous on every invoke path; open sign-up never g
     await backend.close()
   }
 })
+
+test('a reset link gives a member a new password: one use, 24 hours, and the account itself untouched', async () => {
+  const { createAccounts, INVITES } = await import('../src/backend/accounts.ts')
+  const { jsonlStore } = await import('../src/backend/index.ts')
+  const records = await jsonlStore(join(mkdtempSync(join(tmpdir(), 'golem-reset-')), 'records'))
+  const accounts = createAccounts(records, {
+    guests: false, allowSignUp: false,
+    roles: [{ id: 'member', label: 'Member', manages: false }, { id: 'admin', label: 'Admin', manages: true }],
+  })
+  const token = (url) => new URL(url).searchParams.get('invite') ?? new URL(url).searchParams.get('reset')
+  const origin = 'http://app.test'
+  const admin = await accounts.signUp({ name: 'Ada Admin', email: 'admin@example.test', password: 'correct horse', invite: token(await accounts.managerInvite(origin, false)) })
+  const actor = await accounts.fromToken(admin.token)
+  const member = await accounts.signUp({ name: 'Mo Member', email: 'member@example.test', password: 'field notes 1', invite: token(await accounts.invite(actor, { role: 'member' }, origin)) })
+  await accounts.setGroups(actor, member.user.id, { groups: ['field'] })
+  try {
+    // Only a manager mints one, and only for an account that is there.
+    await assert.rejects(accounts.reset(await accounts.fromToken(member.token), member.user.id, origin), { name: 'ForbiddenError' })
+    await assert.rejects(accounts.reset(actor, 'nobody', origin), { name: 'NotFoundError' })
+
+    const link = await accounts.reset(actor, member.user.id, origin)
+    assert.match(link, /^http:\/\/app\.test\/\?reset=[A-Za-z0-9_-]{43}$/)
+    await assert.rejects(accounts.setPassword({ reset: token(link), password: 'short' }), { name: 'InvalidError' })
+    await accounts.setPassword({ reset: token(link), password: 'new notes 2' })
+
+    // Same account, same roles and groups; the old session and the old password are dead.
+    assert.equal((await accounts.fromToken(member.token)).kind, 'anonymous')
+    assert.equal(await accounts.signedIn(member.user.id), false)
+    await assert.rejects(accounts.signIn({ email: 'member@example.test', password: 'field notes 1' }, 'old'), { name: 'InvalidError' })
+    const back = await accounts.signIn({ email: 'member@example.test', password: 'new notes 2' }, 'new')
+    assert.deepEqual(back.user, { ...member.user, groups: ['field'] })
+
+    // One use only; an expired link is no link; and an invite link is not a reset link.
+    await assert.rejects(accounts.setPassword({ reset: token(link), password: 'new notes 3' }), /reset link has expired or was already used/)
+    const second = await accounts.reset(actor, member.user.id, origin)
+    const pending = (await records.list(INVITES, { limit: 10 })).rows
+    assert.equal(pending.length, 1)
+    assert.ok(Date.parse(pending[0].expiresAt) - Date.now() > 23 * 3600_000, 'good for 24 hours')
+    await records.update(INVITES, pending[0].id, { expiresAt: new Date(Date.now() - 1000).toISOString() })
+    await assert.rejects(accounts.setPassword({ reset: token(second), password: 'new notes 4' }), /reset link has expired/)
+    const spare = await accounts.invite(actor, { role: 'member' }, origin)
+    await assert.rejects(accounts.setPassword({ reset: token(spare), password: 'new notes 5' }), /reset link has expired or was already used/)
+  } finally {
+    await records.close()
+  }
+})

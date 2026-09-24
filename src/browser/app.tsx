@@ -70,7 +70,7 @@ export function App() {
       if ((next.user?.id ?? null) !== signedInAs.current) {
         // A used invite link must not reopen sign-up on the next load.
         const url = new URL(window.location.href)
-        url.searchParams.delete('invite')
+        for (const param of ['invite', 'reset']) url.searchParams.delete(param)
         forgetBrowserSession()
         window.location.replace(url)
       }
@@ -115,7 +115,9 @@ export function App() {
   const accounts = me?.accounts
   const authConfig = accounts && { workspaceName: projectConfig.title, mode: 'password' as const, allowSignUp: accounts.allowSignUp, roles: accounts.roles }
   const manages = Boolean(me?.user?.roles.some((role) => accounts?.roles.some((one) => one.id === role && one.manages)))
-  const invited = new URLSearchParams(window.location.search).has('invite')
+  // An invite or a reset link opens the Auth card even before anyone is signed in. Read once, so
+  // spending the link — which takes its token out of the URL — does not swap the card mid-flow.
+  const [invited] = useState(() => ['invite', 'reset'].some((param) => new URLSearchParams(window.location.search).has(param)))
   const shellAdapters = { identity: accounts ? identity : anonymousIdentity, navigation }
   const hasBrain = (projectConfig as { brain?: boolean }).brain === true
   // The bottom menu bar: the app's own screens first, then Brain, then Admin for managers.
