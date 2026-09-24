@@ -24,11 +24,15 @@ const { execFileSync } = require('node:child_process');
 
 // The hook runs inside the agent's own pane, so tmux identifies it exactly.
 // Empty when not under tmux; never fails the hook when tmux is absent.
-// golem: '#S:#W' rather than '#S' — see runtimeKey.
+// golem: '#S:#W', and -t $TMUX_PANE, because a bare display-message answers for
+// the session's ACTIVE window — from the builder's pane, while the chat window
+// was current, it said ':chat'. The pane id is the only self-reference a hook
+// running outside the active window can trust.
 function tmuxPane() {
   if (!process.env.TMUX) return '';
+  const target = process.env.TMUX_PANE ? ['-t', process.env.TMUX_PANE] : [];
   try {
-    return execFileSync('tmux', ['display-message', '-p', '#S:#W'], { encoding: 'utf8' }).trim();
+    return execFileSync('tmux', ['display-message', '-p'].concat(target, ['#S:#W']), { encoding: 'utf8' }).trim();
   } catch {
     return '';
   }

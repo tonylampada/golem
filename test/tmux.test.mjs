@@ -188,22 +188,25 @@ test('the turn-end hook keys its file by the window it actually ran in, not the 
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'golem-turnend-'))
   const bin = path.join(dir, 'bin')
   fs.mkdirSync(bin)
-  fs.writeFileSync(path.join(bin, 'tmux'), '#!/bin/sh\necho "s:w"\n')
+  // A stand-in tmux that answers for the ACTIVE window unless the caller targets a pane,
+  // which is what the real one does and what sent the builder's turn ends to the chat's file.
+  fs.writeFileSync(path.join(bin, 'tmux'), '#!/bin/sh\ncase "$*" in *-t*%9*) echo "s:w" ;; *) echo "s:active" ;; esac\n')
   fs.chmodSync(path.join(bin, 'tmux'), 0o755)
   const hook = new URL('../src/runtime/harness/turnend-hook.js', import.meta.url).pathname
 
   const run = (key, env) =>
     execFileSync(process.execPath, [hook, dir, key], { input: '{}', env: { ...process.env, ...env } })
 
-  run('s:builder', { TMUX: '/tmp/fake,1,0', PATH: `${bin}:${process.env.PATH}` })
-  assert.ok(fs.existsSync(path.join(dir, 's:w.turnend.jsonl')), 'under tmux the live window wins')
+  run('s:builder', { TMUX: '/tmp/fake,1,0', TMUX_PANE: '%9', PATH: `${bin}:${process.env.PATH}` })
+  assert.ok(fs.existsSync(path.join(dir, 's:w.turnend.jsonl')), 'the hook keys by its OWN pane, not the active window')
+  assert.ok(!fs.existsSync(path.join(dir, 's:active.turnend.jsonl')))
 
   const noTmux = { ...process.env }
   delete noTmux.TMUX
   execFileSync(process.execPath, [hook, dir, 's:builder'], { input: '{}', env: noTmux })
   assert.ok(fs.existsSync(path.join(dir, 's:builder.turnend.jsonl')), 'no tmux: the argv key stands')
 
-  run('plain-session', { TMUX: '/tmp/fake,1,0', PATH: `${bin}:${process.env.PATH}` })
+  run('plain-session', { TMUX: '/tmp/fake,1,0', TMUX_PANE: '%9', PATH: `${bin}:${process.env.PATH}` })
   assert.ok(fs.existsSync(path.join(dir, 'plain-session.turnend.jsonl')), 'session-granular keys are left alone')
   fs.rmSync(dir, { recursive: true, force: true })
 })
