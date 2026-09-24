@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.2.4
+
+- Chat and builder no longer fight over one Stop hook: the turn-end relay asks tmux which window it ran in instead of trusting the key baked in when it was installed, so a chat message sent after the builder was opened gets its reply and the composer unlocks. `installHooks` also keeps exactly one entry for itself, matched by script name, so a source-pin change between releases replaces it instead of stacking another.
+
 ## 0.2.3
 
 - A model pin follows its agent: change `chat.agent` (or `agents.builder`) and the conversation saved on the old agent is retired on the next start instead of resumed with the new agent's pin. It stays readable in `.golem/conversations.json`, marked, and the next message opens a fresh conversation on the configured agent.
