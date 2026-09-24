@@ -53,9 +53,10 @@ export const brainInstructions = 'This app has a brain: `brain/` is an Open Know
 /**
  * `window` names this agent's window in the app's session (`builder`, `chat`); `instructions` its launch prompt;
  * `permissions` its launch profile: `bypass` (default) may do anything, `readonly` can read the app and run
- * `./golem say`, nothing else, and refuses rather than prompts.
+ * `./golem say`, nothing else, and refuses rather than prompts. `model` pins the agent's model, in that
+ * CLI's own spelling (`gpt-6-luna` for codex, `claude-opus-5-5` for claude).
  */
-export type TmuxOptions = { harness?: Harness; stateDir?: string; api?: string; window?: string; instructions?: string; permissions?: 'bypass' | 'readonly' }
+export type TmuxOptions = { harness?: Harness; stateDir?: string; api?: string; window?: string; instructions?: string; permissions?: 'bypass' | 'readonly'; model?: string }
 
 /** The one tmux session of an app's build mode: `tmux attach -t golem-<app dir>` is always the place to look. */
 export const tmuxSessionName = (cwd: string): string => `golem-${basename(cwd).replace(/[^A-Za-z0-9_-]/g, '-')}`
@@ -96,7 +97,10 @@ export class TmuxBackend implements SessionBackend {
       // codex 0.155: the update prompt at launch would take the typed brief as its answer, the
       // paste-burst fold swallows the first Enter of a long line, and the rate-limit "keep current
       // model" nudge after the first turn eats the first message. All off; replayed on resume.
-      extraArgs: this.agent === 'codex' ? ['-c', 'check_for_update_on_startup=false', '-c', 'disable_paste_burst=true', '-c', 'notice.hide_rate_limit_model_nudge=true'] : [],
+      extraArgs: [
+        ...(this.agent === 'codex' ? ['-c', 'check_for_update_on_startup=false', '-c', 'disable_paste_burst=true', '-c', 'notice.hide_rate_limit_model_nudge=true'] : []),
+        ...(this.opts.model ? [this.agent === 'codex' ? '-m' : '--model', this.opts.model] : []),
+      ],
     }
     try {
       // A ref saved under an older naming (`golem-<uuid>`) comes back in the app's fixed session: only

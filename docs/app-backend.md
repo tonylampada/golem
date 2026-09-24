@@ -94,7 +94,9 @@ type Model = { extract<S extends z.ZodType>(request: { schema: S; text: string; 
 const meeting = await model.extract({ schema: z.object({ date: z.string(), attendees: z.array(z.string()) }), text, instructions: 'Leave a field empty rather than guessing.' })
 ```
 
-The app names the shape it wants and never which model answered. Today that is the local Claude
+The app names the shape it wants and never which model answered. Which runtime does is the app's
+`model: { runtime, name }` — `{ runtime: 'codex', name: 'gpt-6-luna' }` is the cheap everyday pick
+for extraction and scheduled jobs. Absent, it is the local Claude
 Code CLI — the runtime build mode already depends on, and the one that asks for no API key; the prompt
 goes in on stdin and the call runs in a temporary directory, so neither `ps` nor the app's folder
 is part of it. When no model can answer — the runtime is missing, times out, or gives nothing the

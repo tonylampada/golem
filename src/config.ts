@@ -12,14 +12,14 @@ export type ModelConfig = { runtime: 'claude' | 'codex'; name?: string }
  * terminal agent in the `chat` window of the app's tmux session, briefed from `docs/chat.md`.
  * `roles` restricts chat to those account roles; absent, anyone signed in may chat.
  */
-export type ChatConfig = ({ provider: 'anthropic' } | { provider: 'tmux'; agent?: 'codex' | 'claude' }) & { roles?: string[] }
+export type ChatConfig = ({ provider: 'anthropic' } | { provider: 'tmux'; agent?: 'codex' | 'claude'; model?: string }) & { roles?: string[] }
 /** `brain: true` serves the app's `brain/` folder read-only and mounts the Brain reader beside the app. */
 
 /**
  * `builder` is the agent build mode starts with. `ordinary` turns on everyday chat: an API agent
  * whose only tools are the listed app operations, run as the person chatting.
  */
-export type AgentsConfig = { builder?: 'codex' | 'claude'; ordinary?: OrdinaryAgentConfig }
+export type AgentsConfig = { builder?: 'codex' | 'claude'; builderModel?: string; ordinary?: OrdinaryAgentConfig }
 export type OrdinaryAgentConfig = { backend: 'anthropic'; model: string; operations: string[]; collections?: string[]; roots?: string[]; instructions?: string }
 
 /** golem-ui's Auth role shape: `manages` roles run accounts and may build; `builder` may build. */
@@ -70,10 +70,11 @@ export async function loadAppConfig(root = process.cwd()): Promise<AppConfig> {
       config.agents = { ...config.agents, ordinary: ordinaryAgent({ backend: 'anthropic', ...rest }) }
       config.chat = { provider, ...chatRoles }
     } else if (provider === 'tmux') {
-      const { agent, ...unknown } = rest
+      const { agent, model, ...unknown } = rest
       if (Object.keys(unknown).length) throw new Error(`golem.config.ts chat has unknown fields: ${Object.keys(unknown).join(', ')}`)
       if (agent !== undefined && agent !== 'codex' && agent !== 'claude') throw new Error("golem.config.ts chat.agent must be 'codex' or 'claude'")
-      config.chat = { provider, ...(agent ? { agent } : {}), ...chatRoles }
+      if (model !== undefined && (typeof model !== 'string' || !model)) throw new Error('golem.config.ts chat.model must be a nonempty string')
+      config.chat = { provider, ...(agent ? { agent } : {}), ...(model ? { model: model as string } : {}), ...chatRoles }
     } else throw new Error("golem.config.ts chat.provider must be 'anthropic' or 'tmux'")
   } else if (config.agents?.ordinary) config.chat = { provider: 'anthropic' }
   return config
@@ -117,10 +118,11 @@ function chatRolesOf(value: unknown, accounts: AccountsConfig | undefined): stri
 
 function agents(value: unknown): AgentsConfig {
   if (!value || typeof value !== 'object' || Array.isArray(value)) throw new Error('golem.config.ts agents must be an object')
-  const { builder, ordinary, ...unknown } = value as Record<string, unknown>
+  const { builder, builderModel, ordinary, ...unknown } = value as Record<string, unknown>
   if (Object.keys(unknown).length) throw new Error(`golem.config.ts agents has unknown fields: ${Object.keys(unknown).join(', ')}`)
   if (builder !== undefined && builder !== 'codex' && builder !== 'claude') throw new Error("golem.config.ts agents.builder must be 'codex' or 'claude'")
-  return { ...(builder ? { builder } : {}), ...(ordinary === undefined ? {} : { ordinary: ordinaryAgent(ordinary) }) }
+  if (builderModel !== undefined && (typeof builderModel !== 'string' || !builderModel)) throw new Error('golem.config.ts agents.builderModel must be a nonempty string')
+  return { ...(builder ? { builder } : {}), ...(builderModel ? { builderModel: builderModel as string } : {}), ...(ordinary === undefined ? {} : { ordinary: ordinaryAgent(ordinary) }) }
 }
 
 // Operations whose input or output is raw bytes, which a chat tool cannot carry.

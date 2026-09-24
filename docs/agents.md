@@ -18,6 +18,7 @@ export default {
   title: 'Field Notes',
   agents: {
     builder: 'claude', // or 'codex': the agent build mode starts with
+    builderModel: 'claude-opus-5-5', // pins that CLI's model
     ordinary: {
       backend: 'anthropic',
       operations: ['records.list', 'records.get', 'records.update', 'notes.archive'],
@@ -29,6 +30,7 @@ export default {
 ```
 
 - `builder` is the default choice in build mode. A person's own pick in the browser still wins and is remembered.
+- `builderModel` pins the builder CLI's model, in that CLI's own spelling (`--model` for Claude Code, `-m` for Codex). A terminal chat pins its own the same way: `chat: { provider: 'tmux', agent: 'codex', model: 'gpt-6-luna' }`. Both survive a resume. Left out, each CLI picks its default.
 - `ordinary` turns on the **Start a chat** button. Leave it out and there is no ordinary chat.
 - `ordinary.model` defaults to `claude-opus-5`.
 - `golem.config.ts` is bundled into the browser. Keep the API key in `.env.local` or the server environment, never in this file.

@@ -45,7 +45,8 @@ export async function startDevServer(
   // A new session needs a runnable CLI; a restored one keeps its ref and resumes on its next message.
   createBackend ??= async (backend, ref, buildMode = true) => {
     if (!ref && !(await discoverAgents()).some((found) => found.agent === backend && found.runnable)) throw new Error(`${backend} is not runnable here`);
-    return new TmuxBackend(appRoot, backend, ref, { stateDir: join(stateDirectory, 'harness'), api: serverUrl(host, port), window: buildMode ? 'builder' : 'chat', ...(buildMode ? {} : { instructions: chatInstructions(appRoot), permissions: 'readonly' }) });
+    const model = buildMode ? app.config.agents?.builderModel : app.config.chat?.provider === 'tmux' ? app.config.chat.model : undefined;
+    return new TmuxBackend(appRoot, backend, ref, { stateDir: join(stateDirectory, 'harness'), api: serverUrl(host, port), window: buildMode ? 'builder' : 'chat', ...(model ? { model } : {}), ...(buildMode ? {} : { instructions: chatInstructions(appRoot), permissions: 'readonly' }) });
   };
   const builder = await builderFlag(stateDirectory);
   const state = new ConversationState(stateDirectory);

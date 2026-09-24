@@ -307,6 +307,17 @@ test('ordinary agent config refuses what it cannot enforce', async () => {
   await assert.rejects(load({ ordinary: { backend: 'anthropic', operations: ['a._b', 'a_.b'] } }), /both become the tool name 'a___b'/)
   await assert.rejects(load({ ordinary: { backend: 'anthropic', operations: ['notes archive'] } }), /'notes archive' is not a valid tool name/)
   await assert.rejects(load({ builder: 'other' }), /agents.builder/)
+  await assert.rejects(load({ builder: 'claude', builderModel: '' }), /agents.builderModel must be a nonempty string/)
+  await assert.rejects(load({ builder: 'claude', model: 'claude-opus-5-5' }), /agents has unknown fields: model/)
+  assert.equal((await load({ builder: 'claude', builderModel: 'claude-opus-5-5' })).agents.builderModel, 'claude-opus-5-5')
+})
+
+test('tmux chat config pins a model', async () => {
+  const { loadAppConfig } = await import('../src/config.ts')
+  const load = (chat) => { const root = mkdtempSync(join(tmpdir(), 'golem-chat-model-')); writeFileSync(join(root, 'golem.config.ts'), `export default { chat: ${JSON.stringify(chat)} }\n`); return loadAppConfig(root) }
+  assert.deepEqual((await load({ provider: 'tmux', agent: 'codex', model: 'gpt-6-luna' })).chat, { provider: 'tmux', agent: 'codex', model: 'gpt-6-luna' })
+  await assert.rejects(load({ provider: 'tmux', agent: 'codex', model: 42 }), /chat.model must be a nonempty string/)
+  await assert.rejects(load({ provider: 'tmux', agent: 'codex', modl: 'gpt-6-luna' }), /chat has unknown fields: modl/)
 })
 
 test('assistant refuses colliding tool names before calling the provider', async () => {

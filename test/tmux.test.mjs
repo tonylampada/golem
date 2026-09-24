@@ -110,6 +110,22 @@ test('launch profile: the chat window runs read-only and never prompts; the buil
   await backend.shutdown()
 })
 
+test('a pinned model rides the spawn args, in each CLI\'s own spelling (MNC-218)', async () => {
+  const args = async (agent, model) => {
+    fake.reset()
+    let seen
+    const spy = { ...fake, spawn: (cwd, prompt, opts) => { seen = opts; return fake.spawn(cwd, prompt, opts) } }
+    const backend = new TmuxBackend('/tmp', agent, undefined, { harness: spy, api: 'http://127.0.0.1:1', window: 'chat', ...(model ? { model } : {}) })
+    await backend.start(() => {}, 'sid')
+    await backend.shutdown()
+    return seen.extraArgs
+  }
+  assert.deepEqual(await args('claude', 'claude-opus-5-5'), ['--model', 'claude-opus-5-5'])
+  assert.deepEqual((await args('codex', 'gpt-6-luna')).slice(-2), ['-m', 'gpt-6-luna'])
+  assert.deepEqual(await args('claude'), [])
+  assert.equal((await args('codex')).includes('-m'), false)
+})
+
 test('/reset after a restart: a restored, unresumed conversation still holds its window; the new agent takes it over (MNC-185)', async () => {
   fake.reset()
   const cwd = '/tmp/my.app'
