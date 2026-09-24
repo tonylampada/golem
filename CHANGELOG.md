@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.2.3
+
+- A model pin follows its agent: change `chat.agent` (or `agents.builder`) and the conversation saved on the old agent is retired on the next start instead of resumed with the new agent's pin. It stays readable in `.golem/conversations.json`, marked, and the next message opens a fresh conversation on the configured agent.
+- `chat: { provider: 'tmux', sandbox: 'none' }` launches the chat agent on the builder's bypass profile, for boxes where the CLI's own sandbox cannot start.
+
 ## 0.2.2
 
 - An app pins the model its terminal agents run on: `chat: { provider: 'tmux', agent, model }` for normal-mode chat and `agents.builderModel` for the builder. The pin rides the launch args (`-m` for Codex, `--model` for Claude Code) and is replayed on resume.
