@@ -392,6 +392,8 @@ export type SessionSnapshot = {
   harness?: unknown
   transcript?: unknown
   updatedAt?: string
+  /** Set when the app's configured agent no longer matches `backend`: kept in the file, never restored. */
+  retired?: boolean
 }
 
 export class SessionManager {

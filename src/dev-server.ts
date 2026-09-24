@@ -7,7 +7,7 @@ import { buildBrowser, rebuild } from './browser-build.ts';
 import { createAppBackend, type AppBackend } from './backend/http.ts';
 import { ordinaryChat, type OrdinaryChat } from './chat.ts';
 import { openBrain } from './brain.ts';
-import { serverUrl } from './config.ts';
+import { chatPermissions, serverUrl } from './config.ts';
 import { discoverAgents, runtimeState, type AgentName } from './runtime/discovery.ts';
 import { SessionManager, type Session, type SessionBackend, type SessionSnapshot } from './runtime/session.ts';
 import { TmuxBackend, chatInstructions, type HarnessRef } from './runtime/tmux.ts';
@@ -46,11 +46,13 @@ export async function startDevServer(
   createBackend ??= async (backend, ref, buildMode = true) => {
     if (!ref && !(await discoverAgents()).some((found) => found.agent === backend && found.runnable)) throw new Error(`${backend} is not runnable here`);
     const model = buildMode ? app.config.agents?.builderModel : app.config.chat?.provider === 'tmux' ? app.config.chat.model : undefined;
-    return new TmuxBackend(appRoot, backend, ref, { stateDir: join(stateDirectory, 'harness'), api: serverUrl(host, port), window: buildMode ? 'builder' : 'chat', ...(model ? { model } : {}), ...(buildMode ? {} : { instructions: chatInstructions(appRoot), permissions: 'readonly' }) });
+    return new TmuxBackend(appRoot, backend, ref, { stateDir: join(stateDirectory, 'harness'), api: serverUrl(host, port), window: buildMode ? 'builder' : 'chat', ...(model ? { model } : {}), ...(buildMode ? {} : { instructions: chatInstructions(appRoot), permissions: chatPermissions(app.config.chat) }) });
   };
   const builder = await builderFlag(stateDirectory);
   const state = new ConversationState(stateDirectory);
-  const sessions = new SessionManager((snapshots) => state.save(snapshots));
+  // Retired conversations are no longer live, but they stay in the file: `save` writes them back beside the rest.
+  let retired: SessionSnapshot[] = [];
+  const sessions = new SessionManager((snapshots) => state.save([...retired, ...snapshots]));
   const app = await createAppBackend(appRoot, join(stateDirectory, 'data'));
   const chat = ordinaryChat(app);
   const brain = app.config.brain ? openBrain(join(appRoot, 'brain')) : undefined;
@@ -60,7 +62,16 @@ export async function startDevServer(
     owns: (conversation, owner) => { const session = sessions.get(conversation); return session?.backend === 'anthropic' && session.owner === owner; },
   });
   // Restored conversations wait for their next message; nothing is re-run.
-  const restored = await state.load();
+  const saved = await state.load();
+  // A pin follows its agent: when the app changes `chat.agent` (or `agents.builder`), the conversation saved
+  // on the old agent is retired rather than resumed, so the new agent's model never reaches the old CLI. It
+  // stays readable in the file, marked; the browser finds no conversation and starts one on the new agent.
+  const agentOf = (buildMode: boolean) => buildMode ? app.config.agents?.builder : app.config.chat?.provider === 'tmux' ? app.config.chat.agent : undefined;
+  const stale = saved.filter((snapshot) => !snapshot.retired && snapshot.backend !== 'anthropic'
+    && agentOf(snapshot.buildMode) !== undefined && agentOf(snapshot.buildMode) !== snapshot.backend);
+  for (const snapshot of stale) console.log(`Retired the ${snapshot.buildMode ? 'builder' : 'chat'} conversation on ${snapshot.backend}: this app now runs ${agentOf(snapshot.buildMode)}.`);
+  retired = saved.filter((snapshot) => snapshot.retired || stale.includes(snapshot)).map((snapshot) => ({ ...snapshot, retired: true }));
+  const restored = saved.filter((snapshot) => !snapshot.retired && !stale.includes(snapshot));
   const workers = await Promise.all(restored.map((snapshot) => snapshot.backend === 'anthropic'
     ? chat.backend(snapshot.transcript)
     : createBackend(snapshot.backend, snapshot.harness as HarnessRef | undefined, snapshot.buildMode)));

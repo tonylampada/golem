@@ -31,6 +31,8 @@ export default {
 
 - `builder` is the default choice in build mode. A person's own pick in the browser still wins and is remembered.
 - `builderModel` pins the builder CLI's model, in that CLI's own spelling (`--model` for Claude Code, `-m` for Codex). A terminal chat pins its own the same way: `chat: { provider: 'tmux', agent: 'codex', model: 'gpt-6-luna' }`. Both survive a resume. Left out, each CLI picks its default.
+- Change `chat.agent` (or `agents.builder`) and the conversation saved on the old agent is retired on the next server start, so its pin never follows it: it stays readable in `.golem/conversations.json`, marked `retired`, and the next message opens a fresh conversation on the configured agent.
+- `chat.sandbox` picks the terminal chat's launch profile: `'read-only'` (the default) is the CLI's own read-only sandbox, `'none'` is the builder's bypass profile. Use `'none'` where the sandbox cannot start, e.g. codex's `bwrap: loopback: Failed RTM_NEWADDR: Operation not permitted` under `kernel.apparmor_restrict_unprivileged_userns=1`.
 - `ordinary` turns on the **Start a chat** button. Leave it out and there is no ordinary chat.
 - `ordinary.model` defaults to `claude-opus-5`.
 - `golem.config.ts` is bundled into the browser. Keep the API key in `.env.local` or the server environment, never in this file.

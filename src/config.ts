@@ -12,7 +12,14 @@ export type ModelConfig = { runtime: 'claude' | 'codex'; name?: string }
  * terminal agent in the `chat` window of the app's tmux session, briefed from `docs/chat.md`.
  * `roles` restricts chat to those account roles; absent, anyone signed in may chat.
  */
-export type ChatConfig = ({ provider: 'anthropic' } | { provider: 'tmux'; agent?: 'codex' | 'claude'; model?: string }) & { roles?: string[] }
+export type ChatConfig = ({ provider: 'anthropic' } | { provider: 'tmux'; agent?: 'codex' | 'claude'; model?: string; sandbox?: 'read-only' | 'none' }) & { roles?: string[] }
+/**
+ * The terminal chat's launch profile: the CLI's own read-only sandbox, or — where that sandbox cannot start
+ * (codex's bwrap under `kernel.apparmor_restrict_unprivileged_userns=1`) — the builder's bypass profile.
+ */
+export const chatPermissions = (chat: ChatConfig | undefined): 'bypass' | 'readonly' =>
+  chat?.provider === 'tmux' && chat.sandbox === 'none' ? 'bypass' : 'readonly'
+
 /** `brain: true` serves the app's `brain/` folder read-only and mounts the Brain reader beside the app. */
 
 /**
@@ -70,11 +77,12 @@ export async function loadAppConfig(root = process.cwd()): Promise<AppConfig> {
       config.agents = { ...config.agents, ordinary: ordinaryAgent({ backend: 'anthropic', ...rest }) }
       config.chat = { provider, ...chatRoles }
     } else if (provider === 'tmux') {
-      const { agent, model, ...unknown } = rest
+      const { agent, model, sandbox, ...unknown } = rest
       if (Object.keys(unknown).length) throw new Error(`golem.config.ts chat has unknown fields: ${Object.keys(unknown).join(', ')}`)
       if (agent !== undefined && agent !== 'codex' && agent !== 'claude') throw new Error("golem.config.ts chat.agent must be 'codex' or 'claude'")
       if (model !== undefined && (typeof model !== 'string' || !model)) throw new Error('golem.config.ts chat.model must be a nonempty string')
-      config.chat = { provider, ...(agent ? { agent } : {}), ...(model ? { model: model as string } : {}), ...chatRoles }
+      if (sandbox !== undefined && sandbox !== 'read-only' && sandbox !== 'none') throw new Error("golem.config.ts chat.sandbox must be 'read-only' or 'none'")
+      config.chat = { provider, ...(agent ? { agent } : {}), ...(model ? { model: model as string } : {}), ...(sandbox ? { sandbox: sandbox as 'read-only' | 'none' } : {}), ...chatRoles }
     } else throw new Error("golem.config.ts chat.provider must be 'anthropic' or 'tmux'")
   } else if (config.agents?.ordinary) config.chat = { provider: 'anthropic' }
   return config

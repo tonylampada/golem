@@ -4,6 +4,7 @@ import { createServer } from 'node:http'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { test } from 'node:test'
+import { createRequire } from 'node:module'
 import { fixtureApp } from './fixtures/app.mjs'
 
 // Field notes: signed-in people read everything; a note changes only for its team's group or a manager.
@@ -318,6 +319,15 @@ test('tmux chat config pins a model', async () => {
   assert.deepEqual((await load({ provider: 'tmux', agent: 'codex', model: 'gpt-6-luna' })).chat, { provider: 'tmux', agent: 'codex', model: 'gpt-6-luna' })
   await assert.rejects(load({ provider: 'tmux', agent: 'codex', model: 42 }), /chat.model must be a nonempty string/)
   await assert.rejects(load({ provider: 'tmux', agent: 'codex', modl: 'gpt-6-luna' }), /chat has unknown fields: modl/)
+  // The sandbox choice, and what it becomes: 'none' is the builder's bypass profile, whose args carry no --sandbox.
+  const codex = createRequire(import.meta.url)('../src/runtime/harness/codex-tmux.js')
+  const { chatPermissions } = await import('../src/config.ts')
+  assert.equal((await load({ provider: 'tmux', agent: 'codex', sandbox: 'none' })).chat.sandbox, 'none')
+  await assert.rejects(load({ provider: 'tmux', agent: 'codex', sandbox: 'off' }), /chat.sandbox must be 'read-only' or 'none'/)
+  assert.equal(chatPermissions({ provider: 'tmux', agent: 'codex', sandbox: 'none' }), 'bypass')
+  assert.equal(chatPermissions({ provider: 'tmux', agent: 'codex' }), 'readonly')
+  assert.doesNotMatch(codex.permissionFlags(chatPermissions({ provider: 'tmux', sandbox: 'none' })), /--sandbox\b/)
+  assert.match(codex.permissionFlags(chatPermissions({ provider: 'tmux' })), /--sandbox read-only/)
 })
 
 test('assistant refuses colliding tool names before calling the provider', async () => {
