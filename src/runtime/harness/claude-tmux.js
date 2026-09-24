@@ -161,18 +161,19 @@ async function installHooks(cwd, session, stateDir, callbackUrl) {
   const command = ['node', s.shellQuote(HOOK_SCRIPT), s.shellQuote(stateDir), s.shellQuote(session)]
     .concat(callbackUrl ? [s.shellQuote(callbackUrl)] : [])
     .join(' ');
+  const hookName = path.basename(HOOK_SCRIPT);
   mergeLocalSettings(cwd, (settings) => {
     if (!settings.hooks || typeof settings.hooks !== 'object') settings.hooks = {};
     if (!Array.isArray(settings.hooks.Stop)) settings.hooks.Stop = [];
-    const ours = settings.hooks.Stop.some((m) =>
-      Array.isArray(m.hooks) && m.hooks.some((h) => h.command === command));
-    if (!ours) {
-      // Drop stale bc hook entries (e.g. a previous session in this cwd) first.
-      settings.hooks.Stop = settings.hooks.Stop.filter((m) =>
-        !(Array.isArray(m.hooks) && m.hooks.some((h) =>
-          typeof h.command === 'string' && h.command.includes(HOOK_SCRIPT))));
-      settings.hooks.Stop.push({ hooks: [{ type: 'command', command }] });
-    }
+    // Exactly ONE entry for our script, always. Matched on the basename, not the
+    // full path: a source pin (or an npx cache) moves the script between releases,
+    // and a path match let one entry per path pile up — every turn end then wrote
+    // every stale key's file. The hook resolves its own key at run time, so the
+    // single surviving entry serves every window in this cwd.
+    settings.hooks.Stop = settings.hooks.Stop.filter((m) =>
+      !(Array.isArray(m.hooks) && m.hooks.some((h) =>
+        typeof h.command === 'string' && h.command.includes(hookName))));
+    settings.hooks.Stop.push({ hooks: [{ type: 'command', command }] });
   });
   await excludeLocalSettings(cwd);
 }

@@ -22,16 +22,27 @@ const fs = require('node:fs');
 const path = require('node:path');
 const { execFileSync } = require('node:child_process');
 
-// The hook runs inside the agent's own pane, so its tmux session identifies
-// the session exactly (the server attributes lieutenant turn-ends by it).
+// The hook runs inside the agent's own pane, so tmux identifies it exactly.
 // Empty when not under tmux; never fails the hook when tmux is absent.
-function tmuxSession() {
+// golem: '#S:#W' rather than '#S' — see runtimeKey.
+function tmuxPane() {
   if (!process.env.TMUX) return '';
   try {
-    return execFileSync('tmux', ['display-message', '-p', '#S'], { encoding: 'utf8' }).trim();
+    return execFileSync('tmux', ['display-message', '-p', '#S:#W'], { encoding: 'utf8' }).trim();
   } catch {
     return '';
   }
+}
+
+// golem: runtimeKey(argvKey) — which agent's turn just ended.
+// Claude Code keeps ONE Stop hook per cwd, and window-granular agents (the
+// builder and the chat) share a cwd: the key baked into argv at install time is
+// whichever spawned last, so the other one's turn ends would land in the wrong
+// file and its send() would wait forever. Ask tmux instead. Session-granular
+// agents own their whole session (no ':' in their key) and keep the argv key.
+function runtimeKey(argvKey) {
+  if (!argvKey.includes(':')) return argvKey;
+  return tmuxPane() || argvKey;
 }
 
 function readStdin() {
@@ -53,7 +64,7 @@ function readStdin() {
 
 async function main() {
   const stateDir = process.argv[2];
-  const session = process.argv[3];
+  const session = runtimeKey(process.argv[3] || '');
   const url = process.argv[4] || process.env.BC_TURNEND_URL || '';
   if (!stateDir || !session) return;
 
@@ -70,7 +81,7 @@ async function main() {
     event: payload.hook_event_name || 'Stop',
     session_id: payload.session_id || null,
     cwd: payload.cwd || null,
-    tmux_session: tmuxSession(),
+    tmux_session: tmuxPane().split(':')[0],
   };
   // What the agent last said, when the harness hands it over — the stall
   // alert quotes it so the board knows what a silent worker was waiting on.

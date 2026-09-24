@@ -1,6 +1,10 @@
 import assert from 'node:assert/strict'
 import { test } from 'node:test'
 import { createRequire } from 'node:module'
+import fs from 'node:fs'
+import os from 'node:os'
+import path from 'node:path'
+import { execFileSync } from 'node:child_process'
 import { Session, SessionManager } from '../src/runtime/session.ts'
 import { TmuxBackend, builderInstructions } from '../src/runtime/tmux.ts'
 
@@ -153,4 +157,53 @@ test('/reset after a restart: a restored, unresumed conversation still holds its
   assert.equal(restored.status, 'ready')
   assert.equal(restored.snapshot().harness.resumeId, ref.resumeId, 'resumed with its own id')
   assert.equal(fake.transcript(ref).at(-1), 'and this')
+})
+
+test('installHooks leaves exactly one Stop entry for our script, whatever path the stale ones carry', async () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'golem-hooks-'))
+  const settings = path.join(dir, '.claude', 'settings.local.json')
+  fs.mkdirSync(path.dirname(settings), { recursive: true })
+  fs.writeFileSync(settings, JSON.stringify({
+    hooks: {
+      Stop: [
+        { hooks: [{ type: 'command', command: 'node /old/pin/a/turnend-hook.js /state golem-x:builder' }] },
+        { hooks: [{ type: 'command', command: 'node /old/pin/b/turnend-hook.js /state golem-x:chat' }] },
+        { hooks: [{ type: 'command', command: 'node /someone/else/hook.js' }] },
+      ],
+    },
+  }))
+
+  const claudeTmux = createRequire(import.meta.url)('../src/runtime/harness/claude-tmux.js')
+  await claudeTmux.installHooks(dir, 'golem-x:chat', '/state', '')
+
+  const stop = JSON.parse(fs.readFileSync(settings, 'utf8')).hooks.Stop
+  const ours = stop.filter((m) => m.hooks.some((h) => h.command.includes('turnend-hook.js')))
+  assert.equal(ours.length, 1)
+  assert.match(ours[0].hooks[0].command, /golem-x:chat/)
+  assert.ok(stop.some((m) => m.hooks.some((h) => h.command === 'node /someone/else/hook.js')), 'other hooks survive')
+  fs.rmSync(dir, { recursive: true, force: true })
+})
+
+test('the turn-end hook keys its file by the window it actually ran in, not the one baked in at install', () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'golem-turnend-'))
+  const bin = path.join(dir, 'bin')
+  fs.mkdirSync(bin)
+  fs.writeFileSync(path.join(bin, 'tmux'), '#!/bin/sh\necho "s:w"\n')
+  fs.chmodSync(path.join(bin, 'tmux'), 0o755)
+  const hook = new URL('../src/runtime/harness/turnend-hook.js', import.meta.url).pathname
+
+  const run = (key, env) =>
+    execFileSync(process.execPath, [hook, dir, key], { input: '{}', env: { ...process.env, ...env } })
+
+  run('s:builder', { TMUX: '/tmp/fake,1,0', PATH: `${bin}:${process.env.PATH}` })
+  assert.ok(fs.existsSync(path.join(dir, 's:w.turnend.jsonl')), 'under tmux the live window wins')
+
+  const noTmux = { ...process.env }
+  delete noTmux.TMUX
+  execFileSync(process.execPath, [hook, dir, 's:builder'], { input: '{}', env: noTmux })
+  assert.ok(fs.existsSync(path.join(dir, 's:builder.turnend.jsonl')), 'no tmux: the argv key stands')
+
+  run('plain-session', { TMUX: '/tmp/fake,1,0', PATH: `${bin}:${process.env.PATH}` })
+  assert.ok(fs.existsSync(path.join(dir, 'plain-session.turnend.jsonl')), 'session-granular keys are left alone')
+  fs.rmSync(dir, { recursive: true, force: true })
 })
