@@ -17,9 +17,10 @@ test('init creates the editable boundary and refuses repeat overwrite', { timeou
     const first = spawnSync(process.execPath, [cli, 'init'], { cwd: root, encoding: 'utf8' })
     assert.equal(first.status, 0, first.stderr)
     assert.equal(readFileSync(join(root, 'package.json'), 'utf8'), packageBefore)
-    for (const file of ['package.json', 'golem.config.ts', 'eslint.config.mjs', 'src/app.tsx', 'docs/domain.md', 'AGENTS.md', 'CLAUDE.md', 'golem']) {
+    for (const file of ['package.json', 'golem.config.ts', 'tsconfig.json', 'eslint.config.mjs', 'src/app.tsx', 'src/globals.d.ts', 'docs/domain.md', 'AGENTS.md', 'CLAUDE.md', 'golem']) {
       assert.ok(readFileSync(join(root, file)))
     }
+    assert.deepEqual(JSON.parse(readFileSync(join(root, 'tsconfig.json'), 'utf8')).include, ['src/**/*', 'golem.config.ts'])
     assert.match(readFileSync(join(root, '.gitignore'), 'utf8'), /^\.golem\/$/m)
     assert.match(readFileSync(join(root, '.gitignore'), 'utf8'), /^\.env\.local$/m)
     assert.match(readFileSync(join(root, 'AGENTS.md'), 'utf8'), /golem-kit\/docs\/builder\.md/)
@@ -95,6 +96,31 @@ test('generated wrapper loads app-local dotenv settings before source selection'
     const invalid = spawnSync(wrapper, ['help'], { cwd: '/', encoding: 'utf8', env: { ...process.env, GOLEM_SOURCE: '/not/a/golem/source' } })
     assert.equal(invalid.status, 1)
     assert.match(invalid.stderr, /GOLEM_SOURCE must point to a Golem checkout containing src\/cli\.ts/)
+  } finally {
+    rmSync(root, { recursive: true, force: true })
+  }
+})
+
+test('a fresh app is typecheckable: scripts and the compiler devDependencies it needs', () => {
+  const root = mkdtempSync(join(tmpdir(), 'golem-init-'))
+  const bin = join(root, 'bin')
+  try {
+    mkdirSync(bin)
+    writeFileSync(join(bin, 'pnpm'), '#!/bin/sh\nexit 0\n')
+    chmodSync(join(bin, 'pnpm'), 0o755)
+    const app = join(root, 'app')
+    mkdirSync(app)
+    const result = spawnSync(process.execPath, [cli, 'init'], {
+      cwd: app, encoding: 'utf8', env: { ...process.env, PATH: `${bin}:${process.env.PATH}` },
+    })
+    assert.equal(result.status, 0, result.stderr)
+    const framework = JSON.parse(readFileSync(join(frameworkRoot, 'package.json'), 'utf8'))
+    const manifest = JSON.parse(readFileSync(join(app, 'package.json'), 'utf8'))
+    assert.equal(manifest.scripts.typecheck, 'tsc --noEmit')
+    for (const script of ['dev', 'build', 'lint']) assert.equal(manifest.scripts[script], `./golem ${script}`)
+    for (const name of ['typescript', '@types/node', '@types/react']) {
+      assert.equal(manifest.devDependencies[name], framework.dependencies[name], name)
+    }
   } finally {
     rmSync(root, { recursive: true, force: true })
   }

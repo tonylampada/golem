@@ -13,6 +13,8 @@ Business rules stay in the app; this package supplies storage, the operation bou
 | `src/server/index.ts` | server | `golem-kit/server`, `src/shared/`, `src/server/**` |
 | `src/server/persistence/` | server | the only place for backend-specific code (`records.native`) |
 
+App styling is the app's own: golem-ui ships a packaged stylesheet holding only the classes its components use, so anything beyond those is CSS written in `src/` and imported from UI code.
+
 UI code reaches data only through `golem-kit/client`. Secrets come from `process.env` (loaded from `.env.local`) inside `src/server/`; `golem.config.ts` is bundled into the browser, so it holds no secrets.
 
 ## Configuration

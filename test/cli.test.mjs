@@ -1,7 +1,9 @@
 import assert from 'node:assert/strict';
 import { spawn, spawnSync } from 'node:child_process';
 import { once } from 'node:events';
-import { rmSync } from 'node:fs';
+import { chmodSync, cpSync, existsSync, mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { test } from 'node:test';
 
@@ -68,4 +70,30 @@ test('invalid UI source paths fail clearly', () => {
   });
   assert.equal(result.status, 1);
   assert.match(result.stderr, /GOLEM_UI_SOURCE must point to a golem-ui checkout/);
+});
+
+// pnpm does not link a transitive dependency's bin into the app's node_modules/.bin, so an
+// installed golem-kit cannot count on `tsx` being on the app's PATH — and Node refuses to strip
+// types from a .ts file under node_modules. The entry must find tsx in its own tree.
+test('the installed entry runs the TypeScript CLI without tsx on the app PATH', { timeout: 30000 } , () => {
+  const frameworkRoot = fileURLToPath(new URL('..', import.meta.url));
+  const app = mkdtempSync(join(tmpdir(), 'golem-installed-'));
+  try {
+    const kit = join(app, 'node_modules/golem-kit');
+    mkdirSync(join(kit, 'src'), { recursive: true });
+    mkdirSync(join(kit, 'node_modules'), { recursive: true });
+    cpSync(join(frameworkRoot, 'src/entry.mjs'), join(kit, 'src/entry.mjs'));
+    writeFileSync(join(kit, 'package.json'), '{"name":"golem-kit","type":"module"}\n');
+    writeFileSync(join(kit, 'src/cli.ts'), "const ran: string = 'installed'\nconsole.log(`cli:${ran}`)\n");
+    symlinkSync(join(frameworkRoot, 'node_modules/tsx'), join(kit, 'node_modules/tsx'), 'dir');
+    const golem = join(app, 'golem');
+    writeFileSync(golem, '#!/bin/sh\nset -eu\ncd -- "$(dirname -- "$0")"\nexec node node_modules/golem-kit/src/entry.mjs "$@"\n');
+    chmodSync(golem, 0o755);
+    assert.equal(existsSync(join(app, 'node_modules/.bin')), false, 'the app must have no .bin to fall back to');
+    const result = spawnSync(golem, [], { encoding: 'utf8', cwd: '/' });
+    assert.equal(result.status, 0, result.stderr);
+    assert.match(result.stdout, /cli:installed/);
+  } finally {
+    rmSync(app, { recursive: true, force: true });
+  }
 });

@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.2.1
+
+- `./golem` runs on a fresh `pnpm install`: the installed entry resolves `tsx` from golem-kit's own tree instead of the app's `node_modules/.bin`.
+- `init` leaves a typecheckable app: a `tsconfig.json`, `src/globals.d.ts`, `dev`/`build`/`lint`/`typecheck` scripts, and the `typescript`, `@types/node`, `@types/react` devDependencies they need.
+- `./golem build` sees the app's own `src/*.d.ts`, so an app can `import './app.css'` without `@ts-ignore`.
+- The new-app scaffold uses only classes golem-ui's packaged stylesheet ships; an app styles the rest with its own CSS.
+
 ## 0.2.0
 
 - `golem-kit/server` export and an `exports` map, so an app imports the backend by name instead of by path.

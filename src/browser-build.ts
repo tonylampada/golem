@@ -39,12 +39,17 @@ export async function buildBrowser(): Promise<void> {
       noEmit: true, jsx: 'react-jsx', module: 'ESNext', moduleResolution: 'Bundler',
       skipLibCheck: true, allowImportingTsExtensions: true,
       types: ['node', 'react', 'react-dom'], typeRoots: [typeRoots],
-      paths: sourcePaths(),
+      // The same two aliases vite.config.ts resolves, because `include` now sweeps in any shell
+      // file a checkout used as its own app keeps beside the app's.
+      paths: {
+        ...sourcePaths(),
+        '@golem/app': [resolve(process.cwd(), 'src/app.tsx')],
+        '@golem/config': [resolve(process.cwd(), 'golem.config.ts')],
+      },
     },
-    files: [
-      resolve(process.cwd(), 'src/app.tsx'), resolve(process.cwd(), 'golem.config.ts'),
-      ...[resolve(process.cwd(), 'src/server/index.ts')].filter(existsSync),
-    ],
+    // `include`, not a `files` list: the app's own ambient declarations (`src/*.d.ts`, so that
+    // `import './app.css'` resolves) only enter the program when the whole of `src/` does.
+    include: [resolve(process.cwd(), 'src/**/*'), resolve(process.cwd(), 'golem.config.ts')],
   }));
   execFileSync(tsc, ['-p', appTsconfig], { cwd: process.cwd(), stdio: 'inherit' });
   await build({ configFile: resolve(frameworkRoot, 'vite.config.ts') });

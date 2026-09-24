@@ -55,9 +55,12 @@ and rebuilds the shared `dist/` directory; requires port 3000).
 
 ## Generated projects
 
-`golem-kit init` creates `package.json`, `golem.config.ts`, `eslint.config.mjs`, `src/app.tsx`,
-`docs/domain.md` (the app's DNA template), small `AGENTS.md` and `CLAUDE.md` pointers to the
-installed framework guide, and an executable `./golem`. Normal initialization writes the
+`golem-kit init` creates `package.json`, `golem.config.ts`, `tsconfig.json`, `eslint.config.mjs`,
+`src/app.tsx`, `src/globals.d.ts`, `docs/domain.md` (the app's DNA template), small `AGENTS.md` and
+`CLAUDE.md` pointers to the installed framework guide, and an executable `./golem`. The generated
+`package.json` carries the scripts `dev`, `build`, `lint` (each one the matching `./golem` command)
+and `typecheck` (`tsc --noEmit` over `tsconfig.json`), plus the `typescript`, `@types/node` and
+`@types/react` devDependencies those scripts need at the versions golem-kit itself uses. Normal initialization writes the
 pinned npm dependency `golem-kit@<framework version>` and installs it with pnpm, along with
 the exact `golem-ui` version golem-kit uses so app code can import its components directly.
 For local packed-tarball acceptance only, set `GOLEM_KIT_TARBALL=/path/to/golem-kit.tgz`.

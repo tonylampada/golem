@@ -116,7 +116,7 @@ See node_modules/golem-kit/docs/architecture.md to add eslint.config.mjs.`);
 
 function initProject(): void {
   const root = resolve(process.cwd());
-  const files = ['golem.config.ts', 'eslint.config.mjs', 'src/app.tsx', 'docs/domain.md', 'AGENTS.md', 'CLAUDE.md', 'golem', 'brain/index.md', 'brain/log.md'];
+  const files = ['golem.config.ts', 'tsconfig.json', 'eslint.config.mjs', 'src/app.tsx', 'src/globals.d.ts', 'docs/domain.md', 'AGENTS.md', 'CLAUDE.md', 'golem', 'brain/index.md', 'brain/log.md'];
   const existing = files.filter((file) => existsSync(resolve(root, file)));
   if (existing.length) throw new Error(`refusing to overwrite existing files: ${existing.join(', ')}`);
   const packagePath = resolve(root, 'package.json');
@@ -134,10 +134,27 @@ function initProject(): void {
     writeFileSync(packagePath, JSON.stringify({
       name: 'golem-app', private: true, type: 'module', packageManager: 'pnpm@10.28.2',
       engines: { node: '>=22.18.0', pnpm: '10.28.2' },
+      scripts: { dev: './golem dev', build: './golem build', lint: './golem lint', typecheck: 'tsc --noEmit' },
       ...(process.env.GOLEM_KIT_TARBALL ? {} : { dependencies: { 'golem-kit': framework.version } }),
+      // The app's own tsconfig needs a compiler and the React/Node types in the app's tree;
+      // golem-kit has them for its own program, and pnpm does not share them with the app.
+      devDependencies: Object.fromEntries(['typescript', '@types/node', '@types/react']
+        .map((name) => [name, framework.dependencies[name]])),
     }, null, 2) + '\n');
   }
   writeFileSync(resolve(root, 'golem.config.ts'), "export default { title: 'Golem', brain: true }\n");
+  writeFileSync(resolve(root, 'tsconfig.json'), JSON.stringify({
+    compilerOptions: {
+      target: 'ES2023', module: 'ESNext', moduleResolution: 'Bundler',
+      strict: true, noEmit: true, allowImportingTsExtensions: true,
+      jsx: 'react-jsx', skipLibCheck: true, types: ['node'],
+    },
+    include: ['src/**/*', 'golem.config.ts'],
+  }, null, 2) + '\n');
+  writeFileSync(resolve(root, 'src/globals.d.ts'), `// golem-ui ships its own compiled stylesheet; any class beyond the ones its components use is
+// CSS this app writes and imports itself.
+declare module '*.css'
+`);
   writeFileSync(resolve(root, 'brain/index.md'), `---
 okf_version: "0.2"
 ---
@@ -148,7 +165,7 @@ This folder is an Open Knowledge Format bundle: one concept per markdown file wi
   writeFileSync(resolve(root, 'brain/log.md'), '# Log\n');
   writeFileSync(resolve(root, 'src/app.tsx'), `export default function App() {
   return (
-    <section className="flex h-full min-h-64 items-center justify-center bg-neutral-50 p-6 text-center">
+    <section className="flex h-full items-center justify-center bg-neutral-50 p-6 text-center">
       <div>
         <h1 className="text-lg font-semibold">Welcome to Golem</h1>
         <p className="mt-2 text-sm text-neutral-500">Edit src/app.tsx to build your app.</p>
