@@ -1,6 +1,6 @@
 {
   "name": "golem-kit",
-  "version": "0.2.4",
+  "version": "0.2.5",
   "description": "Starter kit and local CLI for Golem applications.",
   "type": "module",
   "exports": {

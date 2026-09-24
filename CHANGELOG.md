@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.2.5
+
+- A manager resets a member's password from the member list instead of removing and re-inviting them. **Reset password** mints a one-use link, good for 24 hours, that opens the sign-in card in choose-a-new-password mode; the account keeps its id, email, roles and groups, and every session it had is revoked. New: `accounts.reset`, `POST /api/auth/members/<id>/reset` and `POST /api/auth/password`, on golem-ui 0.2.1.
+
 ## 0.2.4
 
 - Chat and builder no longer fight over one Stop hook: the turn-end relay asks tmux which window it ran in instead of trusting the key baked in when it was installed, so a chat message sent after the builder was opened gets its reply and the composer unlocks. `installHooks` also keeps exactly one entry for itself, matched by script name, so a source-pin change between releases replaces it instead of stacking another.
