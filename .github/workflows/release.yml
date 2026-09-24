@@ -1,0 +1,37 @@
+name: Release
+
+on:
+  push:
+    tags: ['v*']
+
+permissions:
+  contents: read
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      # Trusted publishing: npm mints the credential from this token. No NPM_TOKEN secret exists.
+      id-token: write
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+      - uses: actions/setup-node@v6
+        with:
+          node-version: 22
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm test
+      # No build step: the package ships src/ as TypeScript on purpose (see `files`).
+      # Trusted publishing needs npm 11.5.1 or newer; the Node 22 image ships an older one.
+      - run: npm install -g npm@latest
+      - name: Check the tag matches the version in package.json
+        run: |
+          tag="${GITHUB_REF_NAME#v}"
+          pkg="$(node -p "require('./package.json').version")"
+          test "$tag" = "$pkg" || {
+            echo "tag v$tag does not match package.json $pkg"
+            exit 1
+          }
+      - run: npm publish --provenance --access public
