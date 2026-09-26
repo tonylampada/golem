@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.2.8
+
+- A UI action an agent asks for applies at once, in the tab the message came from, with a transient line under the chat naming what moved. Navigating is a round trip the person undoes by asking again, so it needs no permission. An action the app declares `confirm: true` — a one-way door such as deleting, sending or paying — keeps the **Open** / **Dismiss** offer, as does `source.open`. The terminal agent's launch brief marks each command *runs at once* or *the person confirms first*, and `./golem show` says which happened.
+
 ## 0.2.7
 
 - The read-only terminal chat profile lets a Claude agent run `./golem show` as well as `./golem say`, so the screen it offers is not refused by its own launch flags.
