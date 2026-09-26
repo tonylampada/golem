@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.2.9
+
+- Speech to text, when the app asks for it: `speech: { provider: 'whisper', url }` (any faster-whisper HTTP server) or `speech: { provider: 'openai', apiKeyEnv }` puts a microphone on the chat composer, and `POST /api/speech/transcribe` turns the recording into text behind the same origin and session checks as a record write. The service is probed once at startup and logged, never blocking the boot; without `speech` the route answers 404 and no microphone is shown. Pins golem-ui 0.2.2, whose `Chat` takes the `transcribe` prop.
+
 ## 0.2.8
 
 - A UI action an agent asks for applies at once, in the tab the message came from, with a transient line under the chat naming what moved. Navigating is a round trip the person undoes by asking again, so it needs no permission. An action the app declares `confirm: true` — a one-way door such as deleting, sending or paying — keeps the **Open** / **Dismiss** offer, as does `source.open`. The terminal agent's launch brief marks each command *runs at once* or *the person confirms first*, and `./golem show` says which happened.
