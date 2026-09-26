@@ -14,6 +14,8 @@ const wrapper = fileURLToPath(new URL('../golem', import.meta.url))
 // A plainly invented business: a reading app whose screens an agent may point at.
 const views = [
   { name: 'chapter.open', description: 'Open one chapter full-screen. Use when the person asks to see or go to a chapter you named.', input: z.object({ id: z.string() }).strict() },
+  // A one-way door, so this one keeps the Open / Dismiss offer.
+  { name: 'chapter.burn', description: 'Burn one chapter. Use when the person asks to destroy a chapter you named.', input: z.object({ id: z.string() }).strict(), confirm: true },
 ]
 
 async function open(module) {
@@ -24,7 +26,8 @@ async function open(module) {
 
 test('a reload validates declared UI actions and lists the good ones for an agent', async () => {
   const app = await open({ views })
-  assert.deepEqual(app.views.actions().map((one) => one.name), ['chapter.open'])
+  assert.deepEqual(app.views.actions().map((one) => one.name), ['chapter.open', 'chapter.burn'])
+  assert.deepEqual(app.views.actions().map((one) => one.confirm), [false, true])
   assert.deepEqual(app.views.actions()[0].inputSchema.properties, { id: { type: 'string' } })
 
   const refused = [
@@ -34,15 +37,16 @@ test('a reload validates declared UI actions and lists the good ones for an agen
     [{ views: [{ name: 'chapter.open', description: 'x' }] }, /needs an input schema/],
     [{ views: [{ ...views[0], name: 'source.open' }] }, /source\.\* names are Golem's own/],
     [{ views: [views[0], views[0]] }, /defined twice/],
+    [{ views: [{ ...views[0], confirm: 'yes' }] }, /confirm must be a boolean/],
   ]
   for (const [module, message] of refused) assert.throws(() => app.use(module), message)
   // A refused module changes nothing: the old one keeps serving.
-  assert.deepEqual(app.views.actions().map((one) => one.name), ['chapter.open'])
+  assert.deepEqual(app.views.actions().map((one) => one.name), ['chapter.open', 'chapter.burn'])
   app.use({})
   assert.deepEqual(app.views.actions(), [], 'no declaration, nothing to offer')
 })
 
-test('an app action is offered to the tab that handles it and applied only where accepted', async () => {
+test('an app action applies at once in the tab that handles it, and only a confirm action is offered', async () => {
   const app = await open({ views })
   const request = { headers: {} }
   app.views.useConversations({ owner: () => 'local', owns: (id) => id === 'chat-1' })
@@ -55,7 +59,7 @@ test('an app action is offered to the tab that handles it and applied only where
   }
   const reading = await tab()
   const plain = await tab()
-  await app.views.handlers(request, anonymous, reading, ['chapter.open'])
+  await app.views.handlers(request, anonymous, reading, ['chapter.open', 'chapter.burn'])
 
   const binding = { principal: anonymous, owner: 'local', conversation: 'chat-1' }
   // A tab with no handler for it is refused at request time, so the agent can say so.
@@ -64,19 +68,26 @@ test('an app action is offered to the tab that handles it and applied only where
   // A bad input comes back as the schema's own message.
   await assert.rejects(app.views.request({ ...binding, view: reading }, 'chapter.open', { chapter: 7 }), /chapter\.open: .*id/s)
 
-  const { offer, delivered } = await app.views.request({ ...binding, view: reading }, 'chapter.open', { id: '7' })
-  assert.equal(delivered, true)
-  assert.deepEqual(events.get(reading), [{ type: 'offer', offer }])
+  // A round trip: it lands in the bound tab as an apply, with nothing for the person to accept.
+  const { offer, delivered, applied } = await app.views.request({ ...binding, view: reading }, 'chapter.open', { id: '7' })
+  assert.deepEqual([delivered, applied], [true, true])
+  assert.deepEqual(events.get(reading), [{ type: 'apply', offer, immediate: true }], 'no offer, just the effect')
   assert.deepEqual(offer.input, { id: '7' })
-  assert.equal(offer.label, 'Open one chapter full-screen.', 'the offer shows the app\'s own words')
+  assert.equal(offer.label, 'Open one chapter full-screen.', 'the line the chat shows is the app\'s own words')
   assert.deepEqual(events.get(plain), [], 'only the tab the request named')
+  await assert.rejects(app.views.answer(request, anonymous, reading, offer.id, true), { name: 'NotFoundError' }, 'nothing left to answer')
 
-  await assert.rejects(app.views.answer(request, anonymous, plain, offer.id, true), { name: 'NotFoundError' }, 'answered in its own tab')
-  await app.views.answer(request, anonymous, reading, offer.id, true)
-  assert.deepEqual(events.get(reading).at(-1), { type: 'apply', offer }, 'no file version: the app handler takes the input')
-  await assert.rejects(app.views.answer(request, anonymous, reading, offer.id, true), { name: 'NotFoundError' }, 'answered once')
+  // A one-way door still asks.
+  const burn = await app.views.request({ ...binding, view: reading }, 'chapter.burn', { id: '7' })
+  assert.deepEqual([burn.delivered, burn.applied], [true, false])
+  assert.deepEqual(events.get(reading).at(-1), { type: 'offer', offer: burn.offer })
 
-  const dismissed = (await app.views.request({ ...binding, view: reading }, 'chapter.open', { id: '9' })).offer
+  await assert.rejects(app.views.answer(request, anonymous, plain, burn.offer.id, true), { name: 'NotFoundError' }, 'answered in its own tab')
+  await app.views.answer(request, anonymous, reading, burn.offer.id, true)
+  assert.deepEqual(events.get(reading).at(-1), { type: 'apply', offer: burn.offer }, 'no file version: the app handler takes the input')
+  await assert.rejects(app.views.answer(request, anonymous, reading, burn.offer.id, true), { name: 'NotFoundError' }, 'answered once')
+
+  const dismissed = (await app.views.request({ ...binding, view: reading }, 'chapter.burn', { id: '9' })).offer
   await app.views.answer(request, anonymous, reading, dismissed.id, false)
   assert.deepEqual(events.get(reading).at(-1), { type: 'withdrawn', id: dismissed.id })
 })
@@ -85,7 +96,8 @@ test('the chat brief teaches the exact command for each app action', async () =>
   const app = await open({ views })
   const brief = chatInstructions('/tmp/reading-app', app.views.actions())
   assert.match(brief, /`\.\/golem show chapter\.open id=<id>`/)
-  assert.match(brief, /Use when the person asks to see or go to a chapter/)
+  assert.match(brief, /Use when the person asks to see or go to a chapter you named\. \(runs at once\)/)
+  assert.match(brief, /Use when the person asks to destroy a chapter you named\. \(the person confirms first\)/)
   assert.equal(chatInstructions('/tmp/reading-app').includes('golem show'), false, 'an app with no actions gets no such block')
 })
 
@@ -98,7 +110,7 @@ test('golem show sends the action and its input, and reports a refusal', async (
       seen.push({ url: request.url, body: JSON.parse(body) })
       const refuse = seen.length > 2
       response.writeHead(refuse ? 400 : 202, { 'content-type': 'application/json' })
-      response.end(JSON.stringify(refuse ? { error: 'chapter.open: invalid input' } : { offered: 'chapter.open' }))
+      response.end(JSON.stringify(refuse ? { error: 'chapter.open: invalid input' } : { offered: 'chapter.open', applied: seen.length === 1 }))
     })
   })
   await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve))
@@ -109,10 +121,12 @@ test('golem show sends the action and its input, and reports a refusal', async (
   try {
     const ok = await show('chapter.open', 'id=7')
     assert.equal(ok.status, 0, ok.stderr)
-    assert.match(ok.stdout, /Offered chapter\.open/)
+    assert.match(ok.stdout, /Showed chapter\.open\. The screen has already changed/)
     assert.deepEqual(seen[0], { url: '/api/sessions/session-1/show', body: { action: 'chapter.open', input: { id: '7' } } })
 
-    assert.equal((await show('chapter.open', '--json', '{"id":"7"}')).status, 0)
+    const offered = await show('chapter.open', '--json', '{"id":"7"}')
+    assert.equal(offered.status, 0)
+    assert.match(offered.stdout, /Offered chapter\.open\. The person sees an Open button/, 'a confirm action reports the button')
     assert.deepEqual(seen[1].body.input, { id: '7' })
 
     const refused = await show('chapter.open', 'id=nope')

@@ -7,17 +7,20 @@ import { answerOffer, subscribeChatView } from './adapters'
 export type OpenSource = SourceOffer['input'] & { key: string; version: number; text: string }
 
 /**
- * This tab's view of the open chat: the agent's offers, answered here. A `source.open` opens the file in
- * the Editor; an app action runs the handler the app registered with `views.on`. Only an offer the person
- * accepts in this tab is applied, and only here.
+ * This tab's view of the open chat: what the agent does here, and the offers it has to ask for first. A
+ * `source.open` opens the file in the Editor; an app action runs the handler the app registered with
+ * `views.on`, at once unless it was declared `confirm: true`. Either way it lands in this tab alone.
  */
 export function useViewOffers(conversation: string | undefined, onOpen: (source: OpenSource) => void) {
   const [offers, setOffers] = useState<ViewOffer[]>([])
+  // What an action did without asking, said once under the chat and gone again, so the person sees what moved.
+  const [notes, setNotes] = useState<Array<{ id: string; text: string }>>([])
   const [error, setError] = useState<string>()
   const open = useRef(onOpen)
   open.current = onOpen
   useEffect(() => {
     setOffers([])
+    setNotes([])
     if (!conversation) return
     return subscribeChatView((event) => {
       if (event.type === 'offer' && event.offer.conversation === conversation) setOffers((list) => [...list.filter((one) => one.id !== event.offer.id), event.offer])
@@ -27,6 +30,10 @@ export function useViewOffers(conversation: string | undefined, onOpen: (source:
         open.current({ ...(event.offer as SourceOffer).input, key: event.offer.id, version: event.version!, text: event.text! })
       } else if (!viewHandlerRegistry.run(event.offer.action, event.offer.input)) {
         setError(`This screen can no longer ${event.offer.action}.`)
+      } else if (event.immediate) {
+        const note = { id: event.offer.id, text: label(event.offer) }
+        setNotes((list) => [...list, note])
+        setTimeout(() => setNotes((list) => list.filter((one) => one.id !== note.id)), noteLifetime)
       }
     })
   }, [conversation])
@@ -35,7 +42,7 @@ export function useViewOffers(conversation: string | undefined, onOpen: (source:
     setOffers((list) => list.filter((one) => one.id !== offer.id))
     try { await answerOffer(offer.id, accept) } catch (cause) { setError(cause instanceof Error ? cause.message : String(cause)) }
   }
-  const panel = (offers.length > 0 || error) && (
+  const panel = (offers.length > 0 || notes.length > 0 || error) && (
     <div className="golem-browser-offers golem-browser-header border-t border-neutral-200 px-4 py-2 text-sm">
       {offers.map((offer) => (
         <div key={offer.id} className="golem-browser-offer flex flex-wrap items-center gap-2 py-1">
@@ -44,13 +51,16 @@ export function useViewOffers(conversation: string | undefined, onOpen: (source:
           <button className="golem-browser-new rounded border border-neutral-300 px-2 py-1" onClick={() => void answer(offer, false)}>Dismiss</button>
         </div>
       ))}
+      {notes.map((note) => <p key={note.id} className="golem-browser-runtime py-1 text-neutral-500">{note.text}</p>)}
       {error && <p className="golem-browser-error text-red-700">{error}</p>}
     </div>
   )
   return panel || null
 }
 
-/** The one line an offer shows: the file and lines for a source, else the app's own description of the action. */
+const noteLifetime = 6000
+
+/** The one line an action shows: the file and lines for a source, else the app's own description of the action. */
 function label(offer: ViewOffer): string {
   if (offer.action !== 'source.open') return offer.label ?? offer.action
   const { path, line, endLine } = (offer as SourceOffer).input

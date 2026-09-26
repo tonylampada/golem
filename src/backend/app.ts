@@ -134,7 +134,7 @@ export function createApp(stores: { records: RecordStore; files: (records: Recor
         call: async () => views.actions(),
       }, {
         name: 'view.request',
-        description: 'Offer one view action (see view.actions) in this conversation. The person accepts or dismisses it; nothing opens until they accept.',
+        description: 'Run one view action (see view.actions) in this conversation. It takes effect straight away unless the action says confirm, and then the person accepts or dismisses it first.',
         inputSchema: { type: 'object', properties: { action: { type: 'string' }, input: { type: 'object' } }, required: ['action', 'input'], additionalProperties: false },
         call: async (raw: unknown) => {
           const { action, input } = (raw ?? {}) as { action?: unknown; input?: unknown }
@@ -172,6 +172,7 @@ function compile(module: AppServerModule, jobOperations: Operation[], root?: str
     if (typeof view.description !== 'string' || !view.description) throw new Error(`View action ${view.name} needs a description saying when to use it`)
     if (typeof (view.input as { safeParse?: unknown })?.safeParse !== 'function') throw new Error(`View action ${view.name} needs an input schema`)
     if (view.name.startsWith('source.')) throw new Error(`View action ${view.name}: the source.* names are Golem's own`)
+    if (view.confirm !== undefined && typeof view.confirm !== 'boolean') throw new Error(`View action ${view.name}: confirm must be a boolean`)
     if (viewNames.has(view.name)) throw new Error(`View action ${view.name} is defined twice`)
     viewNames.add(view.name)
   }

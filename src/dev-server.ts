@@ -335,8 +335,8 @@ async function handleApi(
     await said.flush();
     return json(response, 202, { status: said.status });
   }
-  // `golem show` from the agent's own tmux session: an offer to point the app at one of its screens.
-  // Local-only and unauthenticated like `say`; the offer is applied only where the person accepts it.
+  // `golem show` from the agent's own tmux session: pointing the app at one of its screens.
+  // Local-only and unauthenticated like `say`; it lands only in the view the person has open.
   if (request.method === 'POST' && sessionMatch && url.pathname === `/api/sessions/${sessionMatch[1]}/show`) {
     const shown = sessions.get(sessionMatch[1]);
     if (!shown || shown.backend === 'anthropic') return json(response, 404, { error: 'Unknown session' });
@@ -348,8 +348,8 @@ async function handleApi(
     try {
       // The agent acts as the person whose conversation this is; their rules still decide what it may read.
       const acting = shown.owner && accounts ? await accounts.resolveAccount(shown.owner) : anonymous;
-      const { offer } = await app.app.views.request({ principal: acting, owner, conversation: shown.id, view: shown.view }, input.action, input.input ?? {});
-      return json(response, 202, { offered: offer.action });
+      const { offer, applied } = await app.app.views.request({ principal: acting, owner, conversation: shown.id, view: shown.view }, input.action, input.input ?? {});
+      return json(response, 202, { offered: offer.action, applied });
     } catch (error) {
       return json(response, 400, { error: error instanceof Error ? error.message : String(error) });
     }

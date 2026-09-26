@@ -54,15 +54,20 @@ With knowledge roots (see `knowledge.md`) and `view.actions` and `view.request` 
 ## Opening a screen of the app
 
 With `views` in the server module (see `app-backend.md`), both agents can point the app at one of its own
-screens. The offer appears under the chat in the tab the message came from, with **Open** and **Dismiss**,
-and the handler the app registered with `views.on` runs when the person taps **Open**.
+screens. The handler the app registered with `views.on` runs in the tab the message came from, and a
+transient line under the chat names what moved.
 
-- **Ordinary chat** asks through `view.request` (list them with `view.actions`), so `operations` must include
-  both, as for source offers.
+- **A round trip applies at once; a one-way door asks.** Navigating is undone by asking again, so nothing
+  is shown but the effect. An action the app declared `confirm: true` — deleting, sending, paying — appears
+  under the chat with **Open** and **Dismiss** and runs only when the person taps **Open**. Source offers
+  (`source.open`) always ask.
+- **Ordinary chat** asks through `view.request` (list them with `view.actions`, where each action carries its
+  `confirm`), so `operations` must include both, as for source offers.
 - **A terminal chat agent** runs `./golem show <action> key=value…` from the app root, or
   `./golem show <action> --json '<input>'` for an input that is not all strings. Its launch brief lists the
-  app's actions, one line each with the exact command. The offer goes to the tab the person's last message
-  came from; with nobody looking, or with no handler for that action, the command fails and says why.
+  app's actions, one line each with the exact command and whether it *runs at once* or *the person confirms
+  first*, and the command says which happened. It reaches the tab the person's last message came from; with
+  nobody looking, or with no handler for that action, the command fails and says why.
 - An input the action's schema refuses comes back as the zod message, for the agent to correct.
 
 ## Conversations

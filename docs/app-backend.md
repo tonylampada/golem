@@ -153,8 +153,9 @@ An agent can offer to open a knowledge file with a passage highlighted. The pers
 ## UI actions: pointing the app at one of its own screens
 
 An app declares the screens an agent may open, and the browser registers a handler for each. The agent
-offers one; the person taps **Open** and the screen changes. Nothing moves until they accept, and only in
-the tab the message came from.
+asks for one and the screen changes, in the tab the message came from and nowhere else. Navigating is a
+round trip — the person asks again and they are back — so it needs no permission; a one-way door
+(deleting, sending, paying) is declared `confirm: true` and shows **Open** / **Dismiss** first.
 
 ```ts
 // src/server/index.ts
@@ -166,6 +167,11 @@ export default {
     name: 'note.open',
     description: 'Open one note full-screen. Use when the person asks to see, open or go to a note you named.',
     input: z.object({ id: z.string() }),
+  }, {
+    name: 'note.archive',
+    description: 'Archive one note. Use when the person asks to put a note away.',
+    input: z.object({ id: z.string() }),
+    confirm: true, // a one-way door: the person taps Open first
   }],
 } satisfies AppServerModule
 ```
@@ -183,11 +189,15 @@ useEffect(() => views.on('note.open', ({ id }) => setRoute({ screen: 'note', id 
   line the offer shows the person. Write it as the app's own words.
 - **`input`** is a zod schema. An agent's input is parsed against it, and a refusal goes back as the zod
   message, so the agent can correct itself.
+- **`confirm`** defaults to false: the action applies the moment the agent asks, and a transient line under
+  the chat names what moved. With `confirm: true` the person gets **Open** / **Dismiss** and nothing runs
+  until they accept. `source.open` always asks, whatever the app declares.
 - **`views.on(name, handler)`** returns a function that unregisters the handler. Each tab publishes the names
   it handles. An action no open tab handles is refused when an agent asks for it, with a message the agent
   can repeat to the person.
 - **Asking** is the same `view.request` the `source.open` offer uses: `view.actions` lists the app's actions
-  beside it, and a terminal agent runs `./golem show <action> key=value…` (see `agents.md`).
+  beside it, each with its `confirm`, and a terminal agent runs `./golem show <action> key=value…` (see
+  `agents.md`), whose launch brief marks each action *runs at once* or *the person confirms first*.
 
 ## Accounts
 

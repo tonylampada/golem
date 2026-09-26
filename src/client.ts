@@ -166,8 +166,9 @@ export type SourceOffer = ViewOffer & { action: 'source.open'; input: { root: st
  * A `source.open` `apply` carries the file `version` its lines were counted in and the `text` of those
  * lines: show them once the editor has that version, and look for `text` instead when the editor shows an
  * unsaved draft. An app action's `apply` carries neither; its registered handler takes `offer.input`.
+ * `immediate` marks an app action that ran without being offered, so the chat can say what moved.
  */
-export type ViewEvent = { type: 'offer'; offer: ViewOffer } | { type: 'apply'; offer: ViewOffer; version?: number; text?: string } | { type: 'withdrawn'; id: string }
+export type ViewEvent = { type: 'offer'; offer: ViewOffer } | { type: 'apply'; offer: ViewOffer; version?: number; text?: string; immediate?: true } | { type: 'withdrawn'; id: string }
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any -- the app's own schema decides each action's input
 type ViewHandler = (input: any) => void
@@ -176,7 +177,8 @@ let publishHandlers: (() => void) | undefined
 
 /**
  * This tab's handlers for the UI actions the app declares in `views` (src/server/index.ts). An agent can
- * only offer an action some open tab handles; the handler runs when the person taps Open.
+ * only ask for an action some open tab handles; the handler runs as soon as it asks, or, for an action
+ * declared `confirm: true`, when the person taps Open.
  *
  * ```ts
  * useEffect(() => views.on('questao.open', ({ id }) => setRoute({ screen: 'questao', id })), [])
@@ -203,8 +205,9 @@ export const viewHandlerRegistry = {
 
 /**
  * Opens this tab's view of one conversation. `id` is the view to send with this tab's chat messages,
- * so the agent's offers come here. An offer arrives as `offer` (or is shown by the chat); `answer` is
- * the person's choice, and only an accepted offer comes back, to this tab alone, as `apply`.
+ * so the agent's actions come here. An action that needs confirming arrives as `offer` (or is shown by
+ * the chat) and `answer` is the person's choice; every action that runs comes back, to this tab alone,
+ * as `apply`.
  */
 export function openView(conversation: string, listener: (event: ViewEvent) => void): { id: Promise<string>; answer(offer: string, accept: boolean): Promise<void>; close(): void } {
   let source: EventSource | undefined

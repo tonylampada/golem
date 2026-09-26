@@ -78,8 +78,11 @@ The dev server defaults to 127.0.0.1:3000 and uses optional host/port from golem
           return [pair.slice(0, at), pair.slice(at + 1)];
         }));
         const response = await fetch(`${api.replace(/\/$/, '')}/api/sessions/${session}/show`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ action, input }) });
-        if (!response.ok) throw new Error(`${((await response.json().catch(() => ({}))) as { error?: string }).error ?? response.status}`);
-        console.log(`Offered ${action}. The person sees an Open button; the screen changes when they tap it.`);
+        const shown = (await response.json().catch(() => ({}))) as { error?: string; applied?: boolean };
+        if (!response.ok) throw new Error(`${shown.error ?? response.status}`);
+        console.log(shown.applied
+          ? `Showed ${action}. The screen has already changed; tell them what they are looking at, not to tap anything.`
+          : `Offered ${action}. The person sees an Open button; the screen changes when they tap it.`);
       } catch (error) {
         console.error(`Cannot show: ${error instanceof Error ? error.message : String(error)}`);
         process.exitCode = 1;

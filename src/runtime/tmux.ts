@@ -50,19 +50,19 @@ export function chatInstructions(cwd: string, actions: ViewActionDoc[] = []): st
 
 /**
  * The app's own UI actions as commands the agent can run: one line each, and the shape a small model
- * needs — the exact command first, then when to use it.
+ * needs — the exact command first, then when to use it, then whether it moves the screen by itself.
  */
 function uiActions(actions: ViewActionDoc[]): string {
-  const lines = actions.filter((action) => action.name !== 'source.open').map(({ name, description, inputSchema }) => {
+  const lines = actions.filter((action) => action.name !== 'source.open').map(({ name, description, inputSchema, confirm }) => {
     const properties = (inputSchema as { properties?: Record<string, { type?: string }> }).properties ?? {}
     const keys = Object.keys(properties)
     const args = !keys.length ? ''
       : keys.every((key) => properties[key]?.type === 'string') ? ` ${keys.map((key) => `${key}=<${key}>`).join(' ')}`
       : ` --json '${JSON.stringify(Object.fromEntries(keys.map((key) => [key, `<${key}>`])))}'`
-    return `- \`./golem show ${name}${args}\` — ${description}`
+    return `- \`./golem show ${name}${args}\` — ${description} (${confirm ? 'the person confirms first' : 'runs at once'})`
   })
   if (!lines.length) return ''
-  return `\n\nScreens of the app you can open for the person, from the app root:\n${lines.join('\n')}\nRun one and the person gets an Open button; the screen changes when they tap it. When a command prints an error, tell them what it says.`
+  return `\n\nScreens of the app you can open for the person, from the app root:\n${lines.join('\n')}\nA command marked "runs at once" has already changed the screen when it returns: tell them what they are looking at. One marked "the person confirms first" puts an Open button under the chat instead: tell them it is waiting for their tap. When a command prints an error, tell them what it says.`
 }
 
 /** Added when the app has a `brain/` folder: read the root index first, cite what you used. */

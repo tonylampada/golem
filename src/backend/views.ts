@@ -3,8 +3,8 @@ import type { IncomingMessage } from 'node:http'
 import { ForbiddenError, InvalidError, NotFoundError, UnauthorizedError, VersionConflictError, z, type Principal, type Via } from '../operations.ts'
 
 /**
- * Something an agent offered to show; the person accepts it in one browser view, where alone it is
- * applied. `source.open` carries `{ root, path, line, endLine }`; an app action carries whatever its
+ * Something an agent asked to show, in one browser view, where alone it lands — applied at once, or
+ * after the person accepts. `source.open` carries `{ root, path, line, endLine }`; an app action carries whatever its
  * own schema parsed, and `label` is the one line the offer shows the person.
  */
 export type ViewOffer = { id: string; conversation: string; action: string; input: unknown; label?: string }
@@ -15,17 +15,20 @@ export type SourceOffer = ViewOffer & { action: 'source.open'; input: { root: st
  * lines: show them once the editor has that version, and look for `text` instead when the editor shows an
  * unsaved draft. An app action's `apply` carries neither; the app's own handler takes the input.
  */
-export type ViewEvent = { type: 'offer'; offer: ViewOffer } | { type: 'apply'; offer: ViewOffer; version?: number; text?: string } | { type: 'withdrawn'; id: string }
+export type ViewEvent = { type: 'offer'; offer: ViewOffer } | { type: 'apply'; offer: ViewOffer; version?: number; text?: string; immediate?: true } | { type: 'withdrawn'; id: string }
 
 /** What an agent can discover: names, when to use them and their input, never data. */
-export type ViewActionDoc = { name: string; description: string; inputSchema: unknown }
+export type ViewActionDoc = { name: string; description: string; inputSchema: unknown; confirm?: boolean }
 
 /**
  * A UI action the app declares in its server module: the browser registers a handler for it with
  * `views.on(name, handler)`, and an agent offers it by name. Names are namespaced like operations
  * (`questao.open`); `source.` is Golem's own.
+ *
+ * It applies the moment the agent asks: navigating is a round trip the person can undo by asking again.
+ * `confirm: true` is for the one-way door — deleting, sending, paying — and shows Open / Dismiss first.
  */
-export type ViewDefinition = { name: string; description: string; input: z.ZodType }
+export type ViewDefinition = { name: string; description: string; input: z.ZodType; confirm?: boolean }
 
 /**
  * The agent runtime owns conversations and the browser identity of anonymous visitors, so it supplies
@@ -55,11 +58,12 @@ export type Views = {
   /** The app actions this tab has a handler for. An action no tab handles is refused when an agent asks for it. */
   handlers(request: IncomingMessage, principal: Principal, id: string, actions: string[]): Promise<void>
   /**
-   * An agent acting in `binding` offers an action. The source is authorized as the principal first.
-   * With `view` (the tab the message came from) the offer is sent to that view; without one it is only
-   * returned, for the chat to show. Either way it is applied only after the person accepts it.
+   * An agent acting in `binding` asks for an action, in `view` — the tab the message came from. A
+   * declared action with no `confirm` applies there at once (`applied`); `confirm: true` and
+   * `source.open` send an offer the person answers. A `source.open` without a `view` is only returned,
+   * for the chat to show.
    */
-  request(binding: ViewBinding & { view?: string }, action: string, input: unknown): Promise<{ offer: ViewOffer; delivered: boolean }>
+  request(binding: ViewBinding & { view?: string }, action: string, input: unknown): Promise<{ offer: ViewOffer; delivered: boolean; applied: boolean }>
   /** The person's answer from one of their views. Accepting re-authorizes and applies to that view only. */
   answer(request: IncomingMessage, principal: Principal, id: string, offer: string, accept: boolean): Promise<void>
 }
@@ -143,11 +147,13 @@ export function createViews(app: {
   }
 
   /**
-   * An app-declared action: its own schema parses the input, and the offer goes to the tab the message
-   * came from — but only if that tab registered a handler for it. No handler is a refusal the agent can
-   * repeat to the person, not a silent offer nobody can accept.
+   * An app-declared action: its own schema parses the input, and it reaches the tab the message came
+   * from — but only if that tab registered a handler for it. No handler is a refusal the agent can
+   * repeat to the person, not a silent offer nobody can accept. Without `confirm` it applies straight
+   * away; the trust the offer used to establish — bound view, same holder, same owner — is the same
+   * trust, so there is nothing left for the person to authorize.
    */
-  async function appAction(binding: ViewBinding & { view?: string }, declared: ViewDefinition, raw: unknown): Promise<{ offer: ViewOffer; delivered: boolean }> {
+  async function appAction(binding: ViewBinding & { view?: string }, declared: ViewDefinition, raw: unknown): Promise<{ offer: ViewOffer; delivered: boolean; applied: boolean }> {
     const parsed = declared.input.safeParse(raw)
     if (!parsed.success) throw new InvalidError(`${declared.name}: ${z.prettifyError(parsed.error as z.ZodError)}`)
     const { owner, conversation, view } = binding
@@ -157,16 +163,20 @@ export function createViews(app: {
       throw new NotFoundError(`Nothing in the person's open app handles ${declared.name} right now. Tell them that instead of trying again.`)
     }
     const offer: ViewOffer = { id: randomUUID(), conversation, action: declared.name, input: parsed.data, label: firstSentence(declared.description) }
+    if (!declared.confirm) {
+      channel.send({ type: 'apply', offer, immediate: true })
+      return { offer, delivered: true, applied: true }
+    }
     offers.set(offer.id, { offer, holder, owner, view })
     setTimeout(() => { if (offers.has(offer.id)) withdraw(offer.id) }, offerLifetime).unref()
     channel.send({ type: 'offer', offer })
-    return { offer, delivered: true }
+    return { offer, delivered: true, applied: false }
   }
 
   return {
     actions: () => [
       ...(app.has('knowledge.read') ? catalog : []),
-      ...app.definitions().map(({ name, description, input }) => ({ name, description, inputSchema: z.toJSONSchema(input, { unrepresentable: 'any' }) })),
+      ...app.definitions().map(({ name, description, input, confirm }) => ({ name, description, inputSchema: z.toJSONSchema(input, { unrepresentable: 'any' }), confirm: Boolean(confirm) })),
     ],
     useConversations(next) { conversations = next },
     async open(request, principal, conversation) {
@@ -218,7 +228,7 @@ export function createViews(app: {
       offers.set(offer.id, { offer, holder, owner, view: target, sha256: source.sha256, passage: lines.slice(first - 1, last).join('\n') })
       setTimeout(() => { if (offers.has(offer.id)) withdraw(offer.id) }, offerLifetime).unref()
       if (target) channel!.send!({ type: 'offer', offer })
-      return { offer, delivered: Boolean(target) }
+      return { offer, delivered: Boolean(target), applied: false }
     },
     async answer(request, principal, id, offerId, accept) {
       const channel = await owned(request, principal, id)
