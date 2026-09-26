@@ -161,7 +161,8 @@ export function App() {
           {error && <p className="golem-browser-error px-4 pt-3 text-sm text-red-700">{error}</p>}
           {session && (chatting
             ? <><div className="min-h-0 flex-1"><Chat key={session} config={{ agentName: 'Assistant', emptyState: 'Ask about or update what you can see in this app.' }} adapters={chatAdapters} /></div>{offers}{source && !sourceShown && <SourceReturn source={source} onShow={() => setSourceShown(true)} />}</>
-            : <Chat key={kind} config={{ agentName: `Golem ${agentNames[sessionBackend ?? 'codex'] ?? sessionBackend}`, emptyState: kind === 'builder' ? `Ask ${agentNames[sessionBackend ?? 'codex'] ?? sessionBackend} to build or change this app.` : 'Ask about this app.' }} adapters={chatAdapters} />)}
+            // A terminal agent's offers (`./golem show`) land in the same panel under its chat.
+            : <><div className="min-h-0 flex-1"><Chat key={kind} config={{ agentName: `Golem ${agentNames[sessionBackend ?? 'codex'] ?? sessionBackend}`, emptyState: kind === 'builder' ? `Ask ${agentNames[sessionBackend ?? 'codex'] ?? sessionBackend} to build or change this app.` : 'Ask about this app.' }} adapters={chatAdapters} /></div>{offers}</>)}
         </div>
       )}
       canvas={
