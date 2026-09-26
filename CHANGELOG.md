@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.2.7
+
+- The read-only terminal chat profile lets a Claude agent run `./golem show` as well as `./golem say`, so the screen it offers is not refused by its own launch flags.
+
 ## 0.2.6
 
 - An agent can point the app at one of its own screens. The app declares them (`views: [{ name, description, input }]` in `src/server/index.ts`) and registers a handler per tab (`views.on('nota.open', ({ id }) => …)` from `golem-kit/client`); a terminal chat agent asks with `./golem show <action> key=value…`, the API assistant through `view.request`, and its launch brief lists the app's actions with the exact command. The person sees **Open** / **Dismiss** under the chat in the tab the message came from, and only their tap changes the screen. An action no open tab handles is refused when the agent asks, so it can say so.
