@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.2.10
+
+- An app added to an iPhone home screen shows its own icon and name and opens standalone. Drop one square PNG (1024 recommended) in the app directory — `icon.png` to commit it, `.golem/icon.png` to keep it out of git — or point `icon` at another path; the dev server serves it at `/icon.png` as it is and builds `/manifest.webmanifest` from the app's `title` and the PNG's own size, then writes the icon, manifest and Apple meta tags into the page head. With no PNG found, only the `<title>` changes. In standalone the page runs under the status bar and the home indicator: the Shell already pads both edges, and `.golem-shell` now takes `100vh` there, because `100dvh` reports the pre-chrome viewport in a home-screen app.
+
 ## 0.2.9
 
 - Speech to text, when the app asks for it: `speech: { provider: 'whisper', url }` (any faster-whisper HTTP server) or `speech: { provider: 'openai', apiKeyEnv }` puts a microphone on the chat composer, and `POST /api/speech/transcribe` turns the recording into text behind the same origin and session checks as a record write. The service is probed once at startup and logged, never blocking the boot; without `speech` the route answers 404 and no microphone is shown. Pins golem-ui 0.2.2, whose `Chat` takes the `transcribe` prop.
