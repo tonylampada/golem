@@ -92,7 +92,7 @@ test('launch profile: the chat window runs read-only and never prompts; the buil
   const codex = createRequire(import.meta.url)('../src/runtime/harness/codex-tmux.js')
   const s = createRequire(import.meta.url)('../src/runtime/harness/tmux-session.js')
   assert.equal(claude.permissionFlags(undefined), '--dangerously-skip-permissions')
-  assert.equal(claude.permissionFlags('readonly'), "--allowedTools 'Read,Grep,Glob,Bash(./golem say:*)' --disallowedTools 'Edit,Write,NotebookEdit' --permission-mode dontAsk")
+  assert.equal(claude.permissionFlags('readonly'), "--allowedTools 'Read,Grep,Glob,Bash(./golem say:*),Bash(./golem show:*)' --disallowedTools 'Edit,Write,NotebookEdit' --permission-mode dontAsk")
   assert.equal(codex.permissionFlags('bypass'), '--dangerously-bypass-approvals-and-sandbox')
   assert.equal(codex.permissionFlags('readonly'), '--sandbox read-only --ask-for-approval never')
   assert.throws(() => claude.permissionFlags('yolo'))

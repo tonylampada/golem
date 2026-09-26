@@ -187,11 +187,12 @@ async function installHooks(cwd, session, stateDir, callbackUrl) {
 // golem: permissionFlags(profile) — 'bypass' (default) is the builder's YOLO launch; 'readonly'
 // is the chat window's: dontAsk refuses instead of prompting (a prompt in a headless pane hangs
 // the chat forever), reads stay open, and the only Bash allowed is `./golem say`, the agent's
-// one way to answer the user. --allowedTools/--disallowedTools are variadic: --permission-mode
-// closes them so whatever follows on the launch line is never eaten as a tool name.
+// one way to answer the user, and `./golem show`, its one way to open a screen.
+// --allowedTools/--disallowedTools are variadic: --permission-mode closes them so
+// whatever follows on the launch line is never eaten as a tool name.
 const PERMISSION_FLAGS = {
   bypass: '--dangerously-skip-permissions',
-  readonly: "--allowedTools 'Read,Grep,Glob,Bash(./golem say:*)' --disallowedTools 'Edit,Write,NotebookEdit' --permission-mode dontAsk",
+  readonly: "--allowedTools 'Read,Grep,Glob,Bash(./golem say:*),Bash(./golem show:*)' --disallowedTools 'Edit,Write,NotebookEdit' --permission-mode dontAsk",
 };
 function permissionFlags(profile) {
   const flags = PERMISSION_FLAGS[profile || 'bypass'];
