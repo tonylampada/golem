@@ -8,7 +8,7 @@ import { createAppBackend, type AppBackend } from './backend/http.ts';
 import { anonymous } from './operations.ts';
 import { ordinaryChat, type OrdinaryChat } from './chat.ts';
 import { openBrain } from './brain.ts';
-import { chatPermissions, serverUrl } from './config.ts';
+import { chatPermissions, serverUrl, type AppConfig } from './config.ts';
 import { probeSpeech, transcribe } from './backend/speech.ts';
 import { discoverAgents, runtimeState, type AgentName } from './runtime/discovery.ts';
 import { SessionManager, type Session, type SessionBackend, type SessionSnapshot } from './runtime/session.ts';
@@ -58,6 +58,7 @@ export async function startDevServer(
   const app = await createAppBackend(appRoot, join(stateDirectory, 'data'));
   const chat = ordinaryChat(app);
   const brain = app.config.brain ? openBrain(join(appRoot, 'brain')) : undefined;
+  const icon = await findIcon(app.config);
   // Said once at startup and never blocking: a speech service that is down is a failing microphone, not a dead app.
   if (app.config.speech) void probeSpeech(app.config.speech).then((line) => console.log(line));
   // Views of a conversation belong to whoever owns that conversation. A terminal-agent conversation has
@@ -108,7 +109,7 @@ export async function startDevServer(
     });
   }
   const server = createServer((request, response) => {
-    void (request.url?.startsWith('/api/app/') || request.url?.startsWith('/api/auth/') ? app.handle(request, response) : request.url?.startsWith('/api/brain/') ? handleBrain(request, response, app, brain) : handleRequest(request, response, sessions, port, host, createBackend, app, chat, builder)).catch((error) => {
+    void (request.url?.startsWith('/api/app/') || request.url?.startsWith('/api/auth/') ? app.handle(request, response) : request.url?.startsWith('/api/brain/') ? handleBrain(request, response, app, brain) : handleRequest(request, response, sessions, port, host, createBackend, app, chat, builder, icon)).catch((error) => {
       if (!response.headersSent) json(response, 400, { error: error instanceof Error ? error.message : 'Malformed request' });
       else response.destroy();
     });
@@ -120,6 +121,44 @@ export async function startDevServer(
   });
 }
 
+// ---------- home screen: the app's own icon, name and manifest ----------
+// An app opened from an iPhone home screen shows its own picture and name and runs standalone.
+// `icon` in golem.config.ts, else `.golem/icon.png` (an icon that stays out of git), else `icon.png`.
+type HomeIcon = { bytes: Buffer; sizes: string };
+async function findIcon(config: AppConfig): Promise<HomeIcon | undefined> {
+  for (const candidate of [config.icon, '.golem/icon.png', 'icon.png'].filter((one): one is string => Boolean(one))) {
+    const bytes = await readFile(resolve(appRoot, candidate)).catch(() => undefined);
+    // Every PNG's IHDR puts width and height as big-endian uint32 at offset 16; no decoder needed.
+    if (bytes) return { bytes, sizes: `${bytes.readUInt32BE(16)}x${bytes.readUInt32BE(20)}` };
+  }
+  return undefined;
+}
+
+const escapeHtml = (text: string): string => text.replace(/[&<>"]/g, (one) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' })[one] as string);
+
+/** The shipped index.html is titled "Golem" and iconless; every response rewrites its head for this app. */
+function homeScreenHead(html: string, config: AppConfig, icon: HomeIcon | undefined): string {
+  const title = escapeHtml(config.title);
+  const page = html.replace('<title>Golem</title>', `<title>${title}</title>`);
+  if (!icon) return page;
+  const tags = [
+    '<link rel="icon" type="image/png" href="/icon.png">',
+    '<link rel="apple-touch-icon" href="/icon.png">',
+    '<link rel="manifest" href="/manifest.webmanifest">',
+    '<meta name="apple-mobile-web-app-capable" content="yes">',
+    `<meta name="apple-mobile-web-app-title" content="${title}">`,
+    '<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">',
+    '<meta name="theme-color" content="#0e131a">',
+  ];
+  return page.replace(/[ \t]*<\/head>/, `    ${tags.join('\n    ')}\n  </head>`);
+}
+
+const webmanifest = (config: AppConfig, icon: HomeIcon): string => JSON.stringify({
+  name: config.title, short_name: config.title, start_url: '/', scope: '/', display: 'standalone',
+  background_color: '#0e131a', theme_color: '#0e131a',
+  icons: [{ src: '/icon.png', type: 'image/png', sizes: icon.sizes, purpose: 'any' }],
+}, null, 2) + '\n';
+
 async function handleRequest(
   request: import('node:http').IncomingMessage,
   response: import('node:http').ServerResponse,
@@ -130,6 +169,7 @@ async function handleRequest(
   app: AppBackend,
   chat: OrdinaryChat,
   builder: BuilderFlag,
+  icon: HomeIcon | undefined,
 ): Promise<void> {
     const url = new URL(request.url ?? '/', 'http://127.0.0.1');
     decodeURIComponent(url.pathname);
@@ -145,6 +185,13 @@ async function handleRequest(
       response.end('Malformed URL\n');
       return;
     }
+    if (pathname === '/icon.png' || pathname === '/manifest.webmanifest') {
+      if (!icon) { response.writeHead(404, { 'Content-Type': 'text/plain; charset=utf-8' }); response.end('Not found\n'); return; }
+      const png = pathname === '/icon.png';
+      response.writeHead(200, { 'Content-Type': png ? 'image/png' : 'application/manifest+json; charset=utf-8' });
+      response.end(png ? icon.bytes : webmanifest(app.config, icon));
+      return;
+    }
     const relative = pathname === '/' ? 'index.html' : pathname.slice(1);
     const normalized = normalize(join('.', relative));
     const file = new URL(normalized, root);
@@ -156,7 +203,7 @@ async function handleRequest(
     try {
       const body = await readFile(file);
       response.writeHead(200, { 'Content-Type': types[extname(relative)] ?? 'application/octet-stream' });
-      response.end(body);
+      response.end(relative === 'index.html' ? homeScreenHead(body.toString('utf8'), app.config, icon) : body);
     } catch {
       if (extname(relative)) {
         response.writeHead(404, { 'Content-Type': 'text/plain; charset=utf-8' });
@@ -166,7 +213,7 @@ async function handleRequest(
       try {
         const body = await readFile(new URL('index.html', root));
         response.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8' });
-        response.end(body);
+        response.end(homeScreenHead(body.toString('utf8'), app.config, icon));
       } catch {
         response.writeHead(500, { 'Content-Type': 'text/plain; charset=utf-8' });
         response.end('Run `./golem build` before starting the dev server.\n');

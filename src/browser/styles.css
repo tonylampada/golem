@@ -34,3 +34,9 @@
 /* focused == typing: unmistakable, because a pane that silently swallows keystrokes is worse than a read-only one */
 .golem-terminal-screen.typing { border-top-color: oklch(70.7% .165 254.624); background-color: #0c1016; }
 .golem-terminal-msg { color: oklch(70.8% 0 0); }
+/* Standalone (added to a home screen): golem-ui's Shell already pads for the status bar and the home
+   indicator, but its root is `h-dvh`, and 100dvh reports the pre-chrome viewport there — the page ends
+   up taller than the window. 100vh is the honest number in standalone. golem-ui follow-up: the Shell. */
+@media (display-mode: standalone) {
+  .golem-shell { height: 100vh; }
+}

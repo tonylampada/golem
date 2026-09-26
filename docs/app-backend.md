@@ -30,6 +30,16 @@ Data lives under `.golem/data/`: `records/<collection>.jsonl` or `records.sqlite
 - **jsonl**: one append-only log per collection, fsynced per write and compacted on load. A torn final line from a crash is dropped. One server process per app.
 - **sqlite**: one `records` table of JSON documents through the built-in `node:sqlite`, queried with `json_extract`. `records.native` is the open `DatabaseSync` for real SQL in `src/server/persistence/`.
 
+## Home-screen icon
+
+An app added to an iPhone home screen shows its own picture and name and opens standalone. Drop one square PNG (1024×1024 recommended) in the app directory — `icon.png` to commit it, `.golem/icon.png` to keep it out of git — or point `icon` at another path:
+
+```ts
+export default { title: 'Field Notes', icon: 'art/notes-1024.png' }
+```
+
+The dev server then serves `/icon.png` and `/manifest.webmanifest` and writes the icon, manifest and Apple meta tags into the page head; the app's `title` becomes the home-screen name. With no PNG found the page is what it always was, titled with the app's `title`.
+
 ## Browser binding: `golem-kit/client`
 
 ```ts

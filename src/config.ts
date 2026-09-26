@@ -3,7 +3,7 @@ import { pathToFileURL } from 'node:url'
 import { toolNameProblem } from './runtime/tool-names.ts'
 
 /** Browser-visible settings: never put secrets in golem.config.ts. */
-export type AppConfig = { host: string; port: number; storage: 'jsonl' | 'sqlite'; origin?: string; accounts?: AccountsConfig; agents?: AgentsConfig; brain?: boolean; chat?: ChatConfig; model?: ModelConfig; speech?: SpeechConfig }
+export type AppConfig = { title: string; host: string; port: number; storage: 'jsonl' | 'sqlite'; origin?: string; accounts?: AccountsConfig; agents?: AgentsConfig; brain?: boolean; chat?: ChatConfig; icon?: string; model?: ModelConfig; speech?: SpeechConfig }
 /**
  * Speech to text for the app's text inputs. `whisper` is any server with the faster-whisper HTTP shape
  * (`POST <url>/transcribe`, multipart `file`); `openai` is the hosted API, whose key is read from the
@@ -58,8 +58,14 @@ export async function loadAppConfig(root = process.cwd()): Promise<AppConfig> {
   if (!value || typeof value !== 'object' || Array.isArray(value)) {
     throw new Error('golem.config.ts must default-export an object')
   }
-  const configured = value as { host?: unknown; port?: unknown; storage?: unknown; origin?: unknown; accounts?: unknown; agents?: unknown; brain?: unknown; chat?: unknown; model?: unknown; speech?: unknown }
+  const configured = value as { title?: unknown; host?: unknown; port?: unknown; storage?: unknown; origin?: unknown; accounts?: unknown; agents?: unknown; brain?: unknown; chat?: unknown; icon?: unknown; model?: unknown; speech?: unknown }
   if (configured.brain !== undefined && typeof configured.brain !== 'boolean') throw new Error('golem.config.ts brain must be a boolean')
+  const title: unknown = configured.title === undefined ? 'Golem' : configured.title
+  if (typeof title !== 'string' || !title.trim()) throw new Error('golem.config.ts title must be a nonempty string')
+  // One square PNG (1024 recommended), relative to the app directory: the home-screen icon. Absent,
+  // the dev server looks for `.golem/icon.png` then `icon.png`, so an icon can stay out of git.
+  const icon = configured.icon
+  if (icon !== undefined && (typeof icon !== 'string' || !icon.trim())) throw new Error('golem.config.ts icon must be a nonempty path to a square PNG')
   const host: unknown = configured.host === undefined ? '127.0.0.1' : configured.host
   const port: unknown = configured.port === undefined ? 3000 : configured.port
   if (typeof host !== 'string' || !host.trim()) {
@@ -76,7 +82,7 @@ export async function loadAppConfig(root = process.cwd()): Promise<AppConfig> {
   if (origin !== undefined && (typeof origin !== 'string' || !/^https?:$/.test(safeUrl(origin)?.protocol ?? '') || safeUrl(origin)?.origin !== origin)) {
     throw new Error("golem.config.ts origin must be an exact origin like 'https://notes.example.com'")
   }
-  const config: AppConfig = { host, port, storage, ...(origin === undefined ? {} : { origin }), ...(configured.accounts === undefined ? {} : { accounts: accounts(configured.accounts) }), ...(configured.agents === undefined ? {} : { agents: agents(configured.agents) }), ...(configured.brain ? { brain: true } : {}), ...(configured.model === undefined ? {} : { model: modelConfig(configured.model) }), ...(configured.speech === undefined ? {} : { speech: speechConfig(configured.speech) }) }
+  const config: AppConfig = { title, host, port, storage, ...(icon === undefined ? {} : { icon: icon as string }), ...(origin === undefined ? {} : { origin }), ...(configured.accounts === undefined ? {} : { accounts: accounts(configured.accounts) }), ...(configured.agents === undefined ? {} : { agents: agents(configured.agents) }), ...(configured.brain ? { brain: true } : {}), ...(configured.model === undefined ? {} : { model: modelConfig(configured.model) }), ...(configured.speech === undefined ? {} : { speech: speechConfig(configured.speech) }) }
   if (configured.chat !== undefined && configured.chat !== false) {
     if (!configured.chat || typeof configured.chat !== 'object' || Array.isArray(configured.chat)) throw new Error('golem.config.ts chat must be false or { provider, ... }')
     const { provider, roles, ...rest } = configured.chat as Record<string, unknown>
