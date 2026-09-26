@@ -6,7 +6,7 @@ import projectConfig from '@golem/config'
 import { currentSession, identity, type Me } from '../client'
 import { anonymousIdentity, brain, chat, currentBrowserBackend, leaveBrowserSession, forgetBrowserSession, navigation, restoreBrowserSession, startBrowserSession, subscribeBrowserSession, subscribeBrowserStatus, type SessionKind } from './adapters'
 import { Groups } from './groups'
-import { SourcePanel, SourceReturn, useSourceView, type OpenSource } from './sources'
+import { SourcePanel, SourceReturn, useViewOffers, type OpenSource } from './sources'
 import { Terminal } from './terminal'
 
 const chatAdapters = { chat }
@@ -79,7 +79,9 @@ export function App() {
   }, [])
   const canBuild = me?.canBuild === true
   const chatting = sessionBackend === 'anthropic'
-  const offers = useSourceView(!builder && chatting && chatInfo?.views ? session : undefined, (next) => { setSource(next); setSourceShown(true) })
+  // Offers ride on the shown conversation's stream: the API assistant's (when the app lists `view.request`)
+  // and a terminal agent's `./golem show` alike.
+  const offers = useViewOffers(chatting ? (!builder && chatInfo?.views ? session : undefined) : session, (next) => { setSource(next); setSourceShown(true) })
   useEffect(() => {
     if (!me) return
     fetch('/api/chat').then(async (response) => { if (response.ok) setChatInfo(await response.json()) }).catch(() => {})

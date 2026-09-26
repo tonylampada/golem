@@ -5,6 +5,7 @@ import { extname, join, normalize, resolve } from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { buildBrowser, rebuild } from './browser-build.ts';
 import { createAppBackend, type AppBackend } from './backend/http.ts';
+import { anonymous } from './operations.ts';
 import { ordinaryChat, type OrdinaryChat } from './chat.ts';
 import { openBrain } from './brain.ts';
 import { chatPermissions, serverUrl } from './config.ts';
@@ -46,7 +47,7 @@ export async function startDevServer(
   createBackend ??= async (backend, ref, buildMode = true) => {
     if (!ref && !(await discoverAgents()).some((found) => found.agent === backend && found.runnable)) throw new Error(`${backend} is not runnable here`);
     const model = buildMode ? app.config.agents?.builderModel : app.config.chat?.provider === 'tmux' ? app.config.chat.model : undefined;
-    return new TmuxBackend(appRoot, backend, ref, { stateDir: join(stateDirectory, 'harness'), api: serverUrl(host, port), window: buildMode ? 'builder' : 'chat', ...(model ? { model } : {}), ...(buildMode ? {} : { instructions: chatInstructions(appRoot), permissions: chatPermissions(app.config.chat) }) });
+    return new TmuxBackend(appRoot, backend, ref, { stateDir: join(stateDirectory, 'harness'), api: serverUrl(host, port), window: buildMode ? 'builder' : 'chat', ...(model ? { model } : {}), ...(buildMode ? {} : { instructions: chatInstructions(appRoot, app.app.views.actions()), permissions: chatPermissions(app.config.chat) }) });
   };
   const builder = await builderFlag(stateDirectory);
   const state = new ConversationState(stateDirectory);
@@ -56,10 +57,16 @@ export async function startDevServer(
   const app = await createAppBackend(appRoot, join(stateDirectory, 'data'));
   const chat = ordinaryChat(app);
   const brain = app.config.brain ? openBrain(join(appRoot, 'brain')) : undefined;
-  // Source views of a chat belong to whoever owns that chat.
+  // Views of a conversation belong to whoever owns that conversation. A terminal-agent conversation has
+  // no browser cookie of its own: without accounts the single local person owns it, and with accounts its
+  // owner is the account that started it.
   app.app.views.useConversations({
-    owner: (request, principal) => chat.owner(request, principal),
-    owns: (conversation, owner) => { const session = sessions.get(conversation); return session?.backend === 'anthropic' && session.owner === owner; },
+    owner: (request, principal) => chat.owner(request, principal) ?? (app.accounts ? null : 'local'),
+    owns: (conversation, owner) => {
+      const session = sessions.get(conversation);
+      if (!session) return false;
+      return session.backend === 'anthropic' ? session.owner === owner : (session.owner ?? 'local') === owner;
+    },
   });
   // Restored conversations wait for their next message; nothing is re-run.
   const saved = await state.load();
@@ -328,6 +335,25 @@ async function handleApi(
     await said.flush();
     return json(response, 202, { status: said.status });
   }
+  // `golem show` from the agent's own tmux session: an offer to point the app at one of its screens.
+  // Local-only and unauthenticated like `say`; the offer is applied only where the person accepts it.
+  if (request.method === 'POST' && sessionMatch && url.pathname === `/api/sessions/${sessionMatch[1]}/show`) {
+    const shown = sessions.get(sessionMatch[1]);
+    if (!shown || shown.backend === 'anthropic') return json(response, 404, { error: 'Unknown session' });
+    const input = await body(request) as { action?: unknown; input?: unknown };
+    if (typeof input.action !== 'string' || !input.action) return json(response, 400, { error: 'action must be a view action name' });
+    if (!shown.view) return json(response, 409, { error: 'Nobody has this conversation open in a browser, so there is no screen to point at.' });
+    const owner = shown.owner ?? (accounts ? null : 'local');
+    if (owner === null) return json(response, 409, { error: 'This conversation has no owner to act for.' });
+    try {
+      // The agent acts as the person whose conversation this is; their rules still decide what it may read.
+      const acting = shown.owner && accounts ? await accounts.resolveAccount(shown.owner) : anonymous;
+      const { offer } = await app.app.views.request({ principal: acting, owner, conversation: shown.id, view: shown.view }, input.action, input.input ?? {});
+      return json(response, 202, { offered: offer.action });
+    } catch (error) {
+      return json(response, 400, { error: error instanceof Error ? error.message : String(error) });
+    }
+  }
   const mayBuild = !accounts || accounts.canBuild(principal);
   // The Builder switch: whoever may build flips it; everyone else reads it as off.
   if (url.pathname === '/api/builder') {
@@ -442,8 +468,10 @@ async function handleApi(
     if (!Number.isInteger(after)) return json(response, 400, { error: 'after must be an integer sequence' });
     // A chat tab's source view rides on this stream (browsers allow few connections per host):
     // it opens with the tab's id as a `view` event, and closes with the stream.
-    const view = session.backend === 'anthropic' && url.searchParams.get('view') === '1' && chat.views()
-      ? await app.app.views.open(request, principal, session.id) : undefined;
+    // A terminal agent reaches this view through `./golem show`, the assistant through `view.request`.
+    const wantsView = url.searchParams.get('view') === '1'
+      && (session.backend === 'anthropic' ? chat.views() : app.app.views.actions().length > 0);
+    const view = wantsView ? await app.app.views.open(request, principal, session.id).catch(() => undefined) : undefined;
     const closeView = view && await app.app.views.connect(request, principal, view.id, (event) => response.write(`event: view\ndata: ${JSON.stringify(event)}\n\n`));
     response.writeHead(200, { 'Content-Type': 'text/event-stream; charset=utf-8', 'Cache-Control': 'no-cache', Connection: 'keep-alive' });
     response.flushHeaders();
@@ -473,10 +501,17 @@ async function handleApi(
       const attachments = Array.isArray(input.attachments) && input.attachments.every((item) => item && typeof item.id === 'string' && typeof item.name === 'string' && (item.size === undefined || typeof item.size === 'number')) ? input.attachments : undefined;
       if (input.attachments !== undefined && !attachments) return json(response, 400, { error: 'attachments must contain a name and id' });
       // A chat message carries its sender, fixed here from this request; the turn acts as them.
+      // Who owns this conversation, the way `views.useConversations` decides it.
+      const owns = session.backend === 'anthropic' ? chatOwner : session.owner ?? (accounts ? null : 'local');
       const context = session.backend === 'anthropic' ? { principal, owner: chatOwner!, conversation: session.id, ...(input.view === undefined ? {} : { view: input.view as string }) } : undefined;
-      // A view names the tab that sent this message; it must be that person's view of this chat.
-      if (input.view !== undefined && !(session.backend === 'anthropic' && typeof input.view === 'string' && await app.app.views.bound(input.view, context!))) {
-        return json(response, 400, { error: 'That view does not belong to this conversation.' });
+      // A view names the tab that sent this message; it must be that person's view of this conversation.
+      // A terminal agent has no turn context, so the conversation remembers the tab for `./golem show`.
+      if (input.view !== undefined) {
+        const binding = context ?? (owns === null ? null : { principal, owner: owns, conversation: session.id });
+        if (typeof input.view !== 'string' || !binding || !(await app.app.views.bound(input.view, binding))) {
+          return json(response, 400, { error: 'That view does not belong to this conversation.' });
+        }
+        session.view = input.view;
       }
       // A parked conversation takes the app's tmux session back before its agent resumes there.
       if (session.backend !== 'anthropic' && !session.live) await sessions.parkOthers(session.buildMode, session.id);

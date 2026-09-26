@@ -1,4 +1,4 @@
-import { refreshIdentity, type ViewEvent } from '../client.ts'
+import { refreshIdentity, viewHandlerRegistry, type ViewEvent } from '../client.ts'
 import type { ChatAdapter, ChatAttachment, ChatMessage, IdentityAdapter, NavigationAdapter, Route, User } from 'golem-ui'
 
 const unavailable = () => Promise.reject(new Error('No agent or identity service is connected.'))
@@ -106,12 +106,15 @@ type SlashCommand = { name: string; description: string; args?: Array<{ value: s
 function connect(): void {
   source?.close()
   const subscribedSession = sessionId!
-  const nextSource = new EventSource(`/api/sessions/${subscribedSession}/events?after=${cursor}${sessionBackend === 'anthropic' ? '&view=1' : ''}`)
+  // `view=1` asks for this tab's view of the conversation; the server opens one where the app has
+  // actions to offer (a terminal agent's `./golem show`, the assistant's `view.request`) and skips it otherwise.
+  const nextSource = new EventSource(`/api/sessions/${subscribedSession}/events?after=${cursor}&view=1`)
   source = nextSource
   nextSource.onmessage = (event) => applyEvent(JSON.parse(event.data))
-  if (sessionBackend === 'anthropic') nextSource.addEventListener('view', (event) => {
+  // Optional call: a test's EventSource stand-in has onmessage and nothing else.
+  nextSource.addEventListener?.('view', (event) => {
     const data = JSON.parse((event as MessageEvent).data) as ViewStreamEvent
-    if (data.type === 'view') chatView = data.id
+    if (data.type === 'view') { chatView = data.id; void publishHandlers() }
     viewListeners.forEach((listener) => listener(data))
   })
   nextSource.onopen = () => {
@@ -144,6 +147,16 @@ export function subscribeChatView(listener: (event: ViewStreamEvent) => void): (
   viewListeners.add(listener)
   return () => viewListeners.delete(listener)
 }
+/** Tells the server which app actions this tab can apply, so an agent asking for another one is refused. */
+async function publishHandlers(): Promise<void> {
+  if (!chatView) return
+  try {
+    await fetch(`/api/app/views/${chatView}/handlers`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ actions: viewHandlerRegistry.names() }) })
+  } catch { /* The next registration or reconnect publishes again. */ }
+}
+// An app registering a handler after the view opened (a screen mounting) publishes the new list.
+viewHandlerRegistry.watch(() => { void publishHandlers() })
+
 export async function answerOffer(offer: string, accept: boolean): Promise<void> {
   if (!chatView) throw new Error('This tab is not connected to the chat.')
   const response = await fetch(`/api/app/views/${chatView}/answer`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ offer, accept }) })

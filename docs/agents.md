@@ -51,6 +51,20 @@ With knowledge roots (see `knowledge.md`) and `view.actions` and `view.request` 
 - **Marking the passage needs a newer golem-ui.** The shell hands the Editor the passage through its `focus` prop: the lines, the file version they were counted in, and their text. The Editor waits until it has that version or a later one and no conflict is open. It then marks the passage where that exact text appears once in what it shows, so unsaved edits above it are allowed for. It marks nothing when the text is missing or appears twice, and it never changes the draft. The released golem-ui 0.1.1 has no `focus`: the file opens at the top, and the header's saved line numbers are the only pointer. To get the mark before a release, run against a golem-ui checkout that has it, with `GOLEM_UI_SOURCE` (see `source-development.md`).
 - **Edits are kept.** Opened sources share one Editor for the life of the page. Opening another source parks the current one's unsaved draft or open conflict in the Editor without writing it, and opening it again restores it. **Back to app** hides the Editor, and **Show** under the chat brings it back as it was. A header note names any other source with unsaved edits. Leaving or reloading the page while a source has unsaved edits, a save in flight or an open conflict asks the browser to confirm first.
 
+## Opening a screen of the app
+
+With `views` in the server module (see `app-backend.md`), both agents can point the app at one of its own
+screens. The offer appears under the chat in the tab the message came from, with **Open** and **Dismiss**,
+and the handler the app registered with `views.on` runs when the person taps **Open**.
+
+- **Ordinary chat** asks through `view.request` (list them with `view.actions`), so `operations` must include
+  both, as for source offers.
+- **A terminal chat agent** runs `./golem show <action> key=value…` from the app root, or
+  `./golem show <action> --json '<input>'` for an input that is not all strings. Its launch brief lists the
+  app's actions, one line each with the exact command. The offer goes to the tab the person's last message
+  came from; with nobody looking, or with no handler for that action, the command fails and says why.
+- An input the action's schema refuses comes back as the zod message, for the agent to correct.
+
 ## Conversations
 
 - An ordinary chat belongs to the account that started it, or, for a signed-out visitor where the app allows guests, to that browser (an opaque `HttpOnly` cookie). Nobody else can read or continue it, managers included.

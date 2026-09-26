@@ -2,16 +2,30 @@ import { randomBytes, randomUUID } from 'node:crypto'
 import type { IncomingMessage } from 'node:http'
 import { ForbiddenError, InvalidError, NotFoundError, UnauthorizedError, VersionConflictError, z, type Principal, type Via } from '../operations.ts'
 
-/** Something an agent offered to show; the person accepts it in one browser view, where alone it is applied. */
-export type ViewOffer = { id: string; conversation: string; action: 'source.open'; input: { root: string; path: string; line: number; endLine: number } }
 /**
- * `apply` carries the file `version` its lines were counted in and the `text` of those lines: show them
- * once the editor has that version, and look for `text` instead when the editor shows an unsaved draft.
+ * Something an agent offered to show; the person accepts it in one browser view, where alone it is
+ * applied. `source.open` carries `{ root, path, line, endLine }`; an app action carries whatever its
+ * own schema parsed, and `label` is the one line the offer shows the person.
  */
-export type ViewEvent = { type: 'offer'; offer: ViewOffer } | { type: 'apply'; offer: ViewOffer; version: number; text: string } | { type: 'withdrawn'; id: string }
+export type ViewOffer = { id: string; conversation: string; action: string; input: unknown; label?: string }
+/** A `source.open` offer, the one action Golem itself owns. */
+export type SourceOffer = ViewOffer & { action: 'source.open'; input: { root: string; path: string; line: number; endLine: number } }
+/**
+ * `apply` of a `source.open` carries the file `version` its lines were counted in and the `text` of those
+ * lines: show them once the editor has that version, and look for `text` instead when the editor shows an
+ * unsaved draft. An app action's `apply` carries neither; the app's own handler takes the input.
+ */
+export type ViewEvent = { type: 'offer'; offer: ViewOffer } | { type: 'apply'; offer: ViewOffer; version?: number; text?: string } | { type: 'withdrawn'; id: string }
 
 /** What an agent can discover: names, when to use them and their input, never data. */
 export type ViewActionDoc = { name: string; description: string; inputSchema: unknown }
+
+/**
+ * A UI action the app declares in its server module: the browser registers a handler for it with
+ * `views.on(name, handler)`, and an agent offers it by name. Names are namespaced like operations
+ * (`questao.open`); `source.` is Golem's own.
+ */
+export type ViewDefinition = { name: string; description: string; input: z.ZodType }
 
 /**
  * The agent runtime owns conversations and the browser identity of anonymous visitors, so it supplies
@@ -28,7 +42,7 @@ export type Conversations = {
 export type ViewBinding = { principal: Principal; owner: string; conversation: string }
 
 export type Views = {
-  /** The actions an agent may request in this app. Empty until the app configures knowledge roots. */
+  /** The actions an agent may request in this app: `source.open` with knowledge roots, plus the app's own. */
   actions(): ViewActionDoc[]
   /** Installs the runtime's checks. Until then no view opens and no offer is made. */
   useConversations(conversations: Conversations): void
@@ -38,6 +52,8 @@ export type Views = {
   bound(view: string, binding: ViewBinding): Promise<boolean>
   /** Delivers this view's events until the returned function is called. */
   connect(request: IncomingMessage, principal: Principal, id: string, send: (event: ViewEvent) => void): Promise<() => void>
+  /** The app actions this tab has a handler for. An action no tab handles is refused when an agent asks for it. */
+  handlers(request: IncomingMessage, principal: Principal, id: string, actions: string[]): Promise<void>
   /**
    * An agent acting in `binding` offers an action. The source is authorized as the principal first.
    * With `view` (the tab the message came from) the offer is sent to that view; without one it is only
@@ -48,9 +64,9 @@ export type Views = {
   answer(request: IncomingMessage, principal: Principal, id: string, offer: string, accept: boolean): Promise<void>
 }
 
-type Channel = { holder: Principal; owner: string; conversation: string; send?: (event: ViewEvent) => void }
-/** `sha256` and `passage` are what the offer pointed at, so acceptance can find the same text in a changed file. */
-type Pending = { offer: ViewOffer; holder: Principal; owner: string; view?: string; sha256: string; passage: string }
+type Channel = { holder: Principal; owner: string; conversation: string; send?: (event: ViewEvent) => void; handlers?: Set<string> }
+/** `sha256` and `passage` are what a `source.open` offer pointed at, so acceptance can find the same text in a changed file. */
+type Pending = { offer: ViewOffer; holder: Principal; owner: string; view?: string; sha256?: string; passage?: string }
 
 const offerLifetime = 10 * 60_000
 const connectWithin = 60_000
@@ -78,6 +94,8 @@ export function createViews(app: {
   invoke(name: string, input: unknown, principal: Principal, via: Via): Promise<unknown>
   refresh(principal: Principal): Promise<Principal>
   has(operation: string): boolean
+  /** The app's declared UI actions, re-read on every call so a server reload takes effect. */
+  definitions(): ViewDefinition[]
 }): Views {
   const channels = new Map<string, Channel>()
   const offers = new Map<string, Pending>()
@@ -124,8 +142,32 @@ export function createViews(app: {
     }
   }
 
+  /**
+   * An app-declared action: its own schema parses the input, and the offer goes to the tab the message
+   * came from — but only if that tab registered a handler for it. No handler is a refusal the agent can
+   * repeat to the person, not a silent offer nobody can accept.
+   */
+  async function appAction(binding: ViewBinding & { view?: string }, declared: ViewDefinition, raw: unknown): Promise<{ offer: ViewOffer; delivered: boolean }> {
+    const parsed = declared.input.safeParse(raw)
+    if (!parsed.success) throw new InvalidError(`${declared.name}: ${z.prettifyError(parsed.error as z.ZodError)}`)
+    const { owner, conversation, view } = binding
+    const holder = await check(binding)
+    const channel = view === undefined ? undefined : channels.get(view)
+    if (!channel?.send || channel.conversation !== conversation || channel.owner !== owner || !same(channel.holder, holder) || !channel.handlers?.has(declared.name)) {
+      throw new NotFoundError(`Nothing in the person's open app handles ${declared.name} right now. Tell them that instead of trying again.`)
+    }
+    const offer: ViewOffer = { id: randomUUID(), conversation, action: declared.name, input: parsed.data, label: firstSentence(declared.description) }
+    offers.set(offer.id, { offer, holder, owner, view })
+    setTimeout(() => { if (offers.has(offer.id)) withdraw(offer.id) }, offerLifetime).unref()
+    channel.send({ type: 'offer', offer })
+    return { offer, delivered: true }
+  }
+
   return {
-    actions: () => app.has('knowledge.read') ? catalog : [],
+    actions: () => [
+      ...(app.has('knowledge.read') ? catalog : []),
+      ...app.definitions().map(({ name, description, input }) => ({ name, description, inputSchema: z.toJSONSchema(input, { unrepresentable: 'any' }) })),
+    ],
     useConversations(next) { conversations = next },
     async open(request, principal, conversation) {
       const owner = await ownerOf(request, principal)
@@ -146,7 +188,13 @@ export function createViews(app: {
       channel.send = send
       return () => { channels.delete(id) }
     },
+    async handlers(request, principal, id, actions) {
+      const channel = await owned(request, principal, id)
+      channel.handlers = new Set(actions)
+    },
     async request(binding, action, raw) {
+      const declared = app.definitions().find((one) => one.name === action)
+      if (declared) return appAction(binding, declared, raw)
       if (action !== 'source.open' || !app.has('knowledge.read')) throw new NotFoundError(`Unknown view action: ${action}`)
       const parsed = sourceOpen.safeParse(raw)
       if (!parsed.success) throw new InvalidError(`${action}: ${z.prettifyError(parsed.error)}`)
@@ -181,14 +229,16 @@ export function createViews(app: {
       }
       withdraw(offerId)
       if (!accept) return
+      // An app action carries no file: the tab's own handler takes the input it was offered with.
+      if (pending.offer.action !== 'source.open') return void channel.send?.({ type: 'apply', offer: pending.offer })
       // Access may have changed since the offer: check again as the person now is.
       const now = await app.refresh(principal).catch(() => { throw new UnauthorizedError('Sign in again to open this source.') })
-      const source = await readable(now, pending.offer.input.root, pending.offer.input.path)
+      let offer = pending.offer as SourceOffer
+      const source = await readable(now, offer.input.root, offer.input.path)
       const lines = source.body.split('\n')
-      let offer = pending.offer
       if (source.sha256 !== pending.sha256) {
         // The file changed since the offer: highlight the same passage where it now is, or say it is gone.
-        const at = pending.passage.trim() ? locate(lines, pending.passage) : null
+        const at = pending.passage!.trim() ? locate(lines, pending.passage!) : null
         if (!at) throw new VersionConflictError('That passage changed since it was offered; ask for it again', null)
         offer = { ...offer, input: { ...offer.input, line: at[0], endLine: at[1] } }
       }
@@ -213,4 +263,10 @@ function locate(lines: string[], quote: string): [number, number] | null {
   const needle = quote.replace(/\s+/g, ' ').trim().toLowerCase()
   const at = needle ? flat.indexOf(needle) : -1
   return at < 0 ? null : [lineOf[at], lineOf[at + needle.length - 1]]
+}
+
+/** The line an offer shows the person: the declared description up to its first full stop. */
+function firstSentence(description: string): string {
+  const end = description.indexOf('. ')
+  return (end < 0 ? description : description.slice(0, end + 1)).trim()
 }

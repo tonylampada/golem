@@ -73,6 +73,8 @@ export class Session {
   private activeReject: ((error: Error) => void) | undefined
   /** The sender of the turn now running; revocation checks it. */
   activeContext: TurnContext | undefined
+  /** The browser view the last message came from, so a terminal agent's offers reach that tab. Not saved. */
+  view: string | undefined
   private workerStarted = false
   private persistence = Promise.resolve()
   private persistenceError: Error | undefined

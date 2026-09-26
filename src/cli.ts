@@ -21,14 +21,16 @@ Usage: ./golem <command>
   doctor  Report local shell and backend readiness.
   say     <text> | --file <f>  Post a reply into the chat session that launched this agent
           (GOLEM_SESSION and GOLEM_API are set in its tmux session).
+  show    <action> [key=value… | --json '<input>']  Offer to open one of the app's own screens
+          in the person's browser. They see an Open button; the screen changes when they tap it.
 
-Requires Node.js >=22.18.0. Only \`say\` takes arguments.
+Requires Node.js >=22.18.0. Only \`say\` and \`show\` take arguments.
 Exit codes: 0 success/clean shutdown, 1 unavailable or failed, 2 invalid usage.
 `;
 
 const [command = 'help', ...args] = process.argv.slice(2);
 
-if ((args.length && command !== 'say') || !['help', 'init', 'dev', 'build', 'lint', 'doctor', 'say'].includes(command)) {
+if ((args.length && !['say', 'show'].includes(command)) || !['help', 'init', 'dev', 'build', 'lint', 'doctor', 'say', 'show'].includes(command)) {
   console.error('Invalid command or arguments. Run ./golem help.');
   process.exitCode = 2;
 } else {
@@ -61,6 +63,25 @@ The dev server defaults to 127.0.0.1:3000 and uses optional host/port from golem
         if (!response.ok) throw new Error(`${response.status} ${((await response.json().catch(() => ({}))) as { error?: string }).error ?? ''}`.trim());
       } catch (error) {
         console.error(`Cannot say: ${error instanceof Error ? error.message : String(error)}${error instanceof Error && error.cause ? ` (${String(error.cause)})` : ""}`);
+        process.exitCode = 1;
+      }
+      break;
+    case 'show':
+      try {
+        const [action, ...rest] = args;
+        const { GOLEM_SESSION: session, GOLEM_API: api } = process.env;
+        if (!action || !session || !api) throw new Error("usage: golem show <action> [key=value… | --json '<input>'], inside a Golem agent session (GOLEM_SESSION, GOLEM_API)");
+        // key=value for the plain string inputs an agent types; --json for anything else.
+        const input = rest[0] === '--json' ? JSON.parse(rest[1] ?? '{}') : Object.fromEntries(rest.map((pair) => {
+          const at = pair.indexOf('=');
+          if (at < 1) throw new Error(`not a key=value argument: ${pair}`);
+          return [pair.slice(0, at), pair.slice(at + 1)];
+        }));
+        const response = await fetch(`${api.replace(/\/$/, '')}/api/sessions/${session}/show`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ action, input }) });
+        if (!response.ok) throw new Error(`${((await response.json().catch(() => ({}))) as { error?: string }).error ?? response.status}`);
+        console.log(`Offered ${action}. The person sees an Open button; the screen changes when they tap it.`);
+      } catch (error) {
+        console.error(`Cannot show: ${error instanceof Error ? error.message : String(error)}`);
         process.exitCode = 1;
       }
       break;

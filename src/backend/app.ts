@@ -6,7 +6,7 @@ import {
 } from '../operations.ts'
 import { FILES_COLLECTION } from './files.ts'
 import { knowledgeOperations, type KnowledgeRoots } from './knowledge.ts'
-import { createViews, type Views } from './views.ts'
+import { createViews, type ViewDefinition, type Views } from './views.ts'
 import { createJobs, JOBS_CHANGE, type JobDefinition } from './jobs.ts'
 import type { ModelConfig } from '../config.ts'
 import { openModel } from './model.ts'
@@ -22,6 +22,8 @@ export type AppServerModule = {
   knowledge?: KnowledgeRoots
   /** Server-side runs of these operations, started or scheduled through the `jobs.*` operations. */
   jobs?: JobDefinition[]
+  /** UI actions an agent may ask the person's open app to do; the browser registers a handler per name. */
+  views?: ViewDefinition[]
 }
 
 export type AgentTool = { name: string; description: string; inputSchema: unknown; call(input: unknown): Promise<unknown> }
@@ -102,6 +104,7 @@ export function createApp(stores: { records: RecordStore; files: (records: Recor
     invoke,
     refresh: async (principal) => identity ? identity.refresh(principal) : principal,
     has: (name) => current.byName.has(name),
+    definitions: () => current.module.views ?? [],
   })
 
   return {
@@ -151,7 +154,7 @@ function compile(module: AppServerModule, jobOperations: Operation[], root?: str
   for (const hook of ['authorize', 'resolvePrincipal'] as const) {
     if (module[hook] !== undefined && typeof module[hook] !== 'function') throw new Error(`${hook} must be a function`)
   }
-  for (const list of ['operations', 'jobs'] as const) {
+  for (const list of ['operations', 'jobs', 'views'] as const) {
     if (module[list] !== undefined && !Array.isArray(module[list])) throw new Error(`${list} must be an array`)
   }
   const byName = new Map<string, Operation>()
@@ -162,6 +165,15 @@ function compile(module: AppServerModule, jobOperations: Operation[], root?: str
     }
     if (byName.has(operation.name)) throw new Error(`Operation ${operation.name} is defined twice`)
     byName.set(operation.name, operation)
+  }
+  const viewNames = new Set<string>()
+  for (const view of module.views ?? []) {
+    if (typeof view?.name !== 'string' || !/^[a-z][a-z\d-]*(\.[a-z][a-z\d-]*)+$/i.test(view.name)) throw new Error(`View action ${view?.name ?? '(unnamed)'} needs a namespaced name, like questao.open`)
+    if (typeof view.description !== 'string' || !view.description) throw new Error(`View action ${view.name} needs a description saying when to use it`)
+    if (typeof (view.input as { safeParse?: unknown })?.safeParse !== 'function') throw new Error(`View action ${view.name} needs an input schema`)
+    if (view.name.startsWith('source.')) throw new Error(`View action ${view.name}: the source.* names are Golem's own`)
+    if (viewNames.has(view.name)) throw new Error(`View action ${view.name} is defined twice`)
+    viewNames.add(view.name)
   }
   const jobNames = new Set<string>()
   for (const job of module.jobs ?? []) {

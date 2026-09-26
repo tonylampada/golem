@@ -2,6 +2,7 @@ import { existsSync, readFileSync } from 'node:fs'
 import { createRequire } from 'node:module'
 import { basename, dirname, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
+import type { ViewActionDoc } from '../backend/views.ts'
 import type { AgentName } from './discovery.ts'
 import type { BackendEvent, PaneAccess, SessionBackend, SlashCommand } from './session.ts'
 
@@ -41,10 +42,27 @@ export function builderInstructions(cwd: string): string {
 }
 
 /** The `chat` window's brief: the app's `docs/chat.md` when present, else a plain assistant; never a builder. */
-export function chatInstructions(cwd: string): string {
+export function chatInstructions(cwd: string, actions: ViewActionDoc[] = []): string {
   const brief = resolve(cwd, 'docs/chat.md')
   const own = existsSync(brief) ? readFileSync(brief, 'utf8').trim() : `You are the assistant of the application in ${cwd}. People chat with you beside the running app; help them use it and answer questions about it.`
-  return `${own} You are not this app's builder: do not edit its files, run builds, or change its configuration; if asked to, say the Builder switch is for that. The user only sees what you send with \`./golem say <text>\` (or \`./golem say --file <f>\`) from the app root; answer every message that way, nothing printed in this terminal reaches them.${existsSync(resolve(cwd, 'brain/index.md')) ? ` ${brainInstructions}` : ''}`
+  return `${own} You are not this app's builder: do not edit its files, run builds, or change its configuration; if asked to, say the Builder switch is for that. The user only sees what you send with \`./golem say <text>\` (or \`./golem say --file <f>\`) from the app root; answer every message that way, nothing printed in this terminal reaches them.${uiActions(actions)}${existsSync(resolve(cwd, 'brain/index.md')) ? ` ${brainInstructions}` : ''}`
+}
+
+/**
+ * The app's own UI actions as commands the agent can run: one line each, and the shape a small model
+ * needs — the exact command first, then when to use it.
+ */
+function uiActions(actions: ViewActionDoc[]): string {
+  const lines = actions.filter((action) => action.name !== 'source.open').map(({ name, description, inputSchema }) => {
+    const properties = (inputSchema as { properties?: Record<string, { type?: string }> }).properties ?? {}
+    const keys = Object.keys(properties)
+    const args = !keys.length ? ''
+      : keys.every((key) => properties[key]?.type === 'string') ? ` ${keys.map((key) => `${key}=<${key}>`).join(' ')}`
+      : ` --json '${JSON.stringify(Object.fromEntries(keys.map((key) => [key, `<${key}>`])))}'`
+    return `- \`./golem show ${name}${args}\` — ${description}`
+  })
+  if (!lines.length) return ''
+  return `\n\nScreens of the app you can open for the person, from the app root:\n${lines.join('\n')}\nRun one and the person gets an Open button; the screen changes when they tap it. When a command prints an error, tell them what it says.`
 }
 
 /** Added when the app has a `brain/` folder: read the root index first, cite what you used. */

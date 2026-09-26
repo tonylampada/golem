@@ -29,8 +29,10 @@ boundary so a hot-source workflow can select the CLI without changing HTTP start
 | `./golem build` | Build the browser shell into `dist/` | 0 |
 | `./golem lint` | Check the app's architecture rules with ESLint and `eslint.config.mjs` ([architecture guide](architecture.md)) | 0 clean; 1 violations or missing config |
 | `./golem doctor` | Report local shell and backend readiness | 0 |
+| `./golem say <text>` (or `--file <f>`) | From inside an agent session, post a reply into the chat that launched it | 0; 1 outside a session or when the server refuses |
+| `./golem show <action> [key=value… \| --json '<input>']` | From inside an agent session, offer to open one of the app's declared screens in the person's browser | 0; 1 when nobody is looking, the action has no handler, or the input is refused |
 
-Unknown commands and extra arguments exit 2. Built assets are served directly; extensionless browser
+Unknown commands exit 2, as do arguments to any command but `say` and `show`. Built assets are served directly; extensionless browser
 routes fall back to `index.html`, while missing assets return 404. Malformed URLs return 400. The
 default server binds to loopback on port 3000. To use another local port or a
 specific tailnet address, export optional root settings from `golem.config.ts`:

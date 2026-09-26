@@ -1,16 +1,17 @@
 import { useEffect, useMemo, useRef, useState, type ComponentProps } from 'react'
 import { Editor } from 'golem-ui'
-import { knowledge, type ViewOffer } from '../client'
+import { knowledge, viewHandlerRegistry, type SourceOffer, type ViewOffer } from '../client'
 import { answerOffer, subscribeChatView } from './adapters'
 
 /** An accepted passage: `line`–`endLine` hold `text` in file `version`. */
-export type OpenSource = ViewOffer['input'] & { key: string; version: number; text: string }
+export type OpenSource = SourceOffer['input'] & { key: string; version: number; text: string }
 
 /**
- * This tab's view of the open chat: the assistant's offers to open a source, answered here. Only an
- * offer the person accepts in this tab opens, and only here.
+ * This tab's view of the open chat: the agent's offers, answered here. A `source.open` opens the file in
+ * the Editor; an app action runs the handler the app registered with `views.on`. Only an offer the person
+ * accepts in this tab is applied, and only here.
  */
-export function useSourceView(conversation: string | undefined, onOpen: (source: OpenSource) => void) {
+export function useViewOffers(conversation: string | undefined, onOpen: (source: OpenSource) => void) {
   const [offers, setOffers] = useState<ViewOffer[]>([])
   const [error, setError] = useState<string>()
   const open = useRef(onOpen)
@@ -21,7 +22,12 @@ export function useSourceView(conversation: string | undefined, onOpen: (source:
     return subscribeChatView((event) => {
       if (event.type === 'offer' && event.offer.conversation === conversation) setOffers((list) => [...list.filter((one) => one.id !== event.offer.id), event.offer])
       if (event.type === 'withdrawn') setOffers((list) => list.filter((one) => one.id !== event.id))
-      if (event.type === 'apply') open.current({ ...event.offer.input, key: event.offer.id, version: event.version, text: event.text })
+      if (event.type !== 'apply') return
+      if (event.offer.action === 'source.open') {
+        open.current({ ...(event.offer as SourceOffer).input, key: event.offer.id, version: event.version!, text: event.text! })
+      } else if (!viewHandlerRegistry.run(event.offer.action, event.offer.input)) {
+        setError(`This screen can no longer ${event.offer.action}.`)
+      }
     })
   }, [conversation])
   const answer = async (offer: ViewOffer, accept: boolean) => {
@@ -33,7 +39,7 @@ export function useSourceView(conversation: string | undefined, onOpen: (source:
     <div className="golem-browser-offers golem-browser-header border-t border-neutral-200 px-4 py-2 text-sm">
       {offers.map((offer) => (
         <div key={offer.id} className="golem-browser-offer flex flex-wrap items-center gap-2 py-1">
-          <span className="golem-browser-runtime min-w-0 flex-1 break-words">Open {offer.input.path}, lines {offer.input.line}–{offer.input.endLine}?</span>
+          <span className="golem-browser-runtime min-w-0 flex-1 break-words">{label(offer)}</span>
           <button className="golem-browser-enter rounded bg-neutral-900 px-2 py-1 text-white" onClick={() => void answer(offer, true)}>Open</button>
           <button className="golem-browser-new rounded border border-neutral-300 px-2 py-1" onClick={() => void answer(offer, false)}>Dismiss</button>
         </div>
@@ -42,6 +48,13 @@ export function useSourceView(conversation: string | undefined, onOpen: (source:
     </div>
   )
   return panel || null
+}
+
+/** The one line an offer shows: the file and lines for a source, else the app's own description of the action. */
+function label(offer: ViewOffer): string {
+  if (offer.action !== 'source.open') return offer.label ?? offer.action
+  const { path, line, endLine } = (offer as SourceOffer).input
+  return `Open ${path}, lines ${line}\u2013${endLine}?`
 }
 
 const clock = { now: () => new Date(), timeZone: () => Intl.DateTimeFormat().resolvedOptions().timeZone }

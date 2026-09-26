@@ -72,6 +72,7 @@ Exact signatures (source: `src/operations.ts`, `src/backend/app.ts`):
 type AppServerModule = {
   operations?: Operation[]
   jobs?: JobDefinition[]   // see Jobs
+  views?: ViewDefinition[] // see UI actions
   authorize?: (request: AuthorizeRequest) => boolean | Promise<boolean>
   resolvePrincipal?: (request: IncomingMessage) => Principal | Promise<Principal>
 }
@@ -148,6 +149,45 @@ An agent can offer to open a knowledge file with a passage highlighted. The pers
 - **Message**: before accepting a chat message that names a view, the runtime calls `app.views.bound(view, { principal, owner, conversation })` and refuses the message when it is `false`.
 - **Offer**: the runtime builds the agent's tools with `app.agentTools(principal, { owner, conversation, view })`, `view` being the one the message came from. With knowledge configured, this adds `view.actions` (the catalog, no data) and `view.request { action: 'source.open', input: { root, path, quote? | line?, endLine? } }`; the same call is `app.views.request({ principal, owner, conversation, view }, action, input)`. The server reads the file as the principal first; a denied or missing file refuses with the same `Cannot open that source`. The offer `{ id, conversation, input: { root, path, line, endLine } }` goes to that one view. Without `view` it is only returned (`delivered: false`) for the chat to show.
 - **Answer**: `answer(offer, true)` from the view checks the person and the file again, then sends `apply` to that view only. If the file changed since the offer, the offered lines are found again where they now are; if they are gone, the answer fails with `VersionConflictError` and the agent has to offer again. Consent is per offer; an unanswered offer expires after ten minutes, and a closed tab's view is dropped. Render the file with `Editor` and move to `line`–`endLine`. `apply` carries the file `version` those lines were counted in and their `text`. Accepting may be what notices a change on disk, so give `Editor` the `focus` once the file it shows has that version, or the passage is marked in the text it is about to replace. When the person has unsaved edits the lines on screen differ from the file's: find `text` in the draft and focus there, or open without a mark when it is not there.
+
+## UI actions: pointing the app at one of its own screens
+
+An app declares the screens an agent may open, and the browser registers a handler for each. The agent
+offers one; the person taps **Open** and the screen changes. Nothing moves until they accept, and only in
+the tab the message came from.
+
+```ts
+// src/server/index.ts
+import { z, type AppServerModule } from 'golem-kit/server'
+
+export default {
+  operations: [archive],
+  views: [{
+    name: 'note.open',
+    description: 'Open one note full-screen. Use when the person asks to see, open or go to a note you named.',
+    input: z.object({ id: z.string() }),
+  }],
+} satisfies AppServerModule
+```
+
+```tsx
+// src/app.tsx
+import { views } from 'golem-kit/client'
+
+useEffect(() => views.on('note.open', ({ id }) => setRoute({ screen: 'note', id })), [])
+```
+
+- **Names** are namespaced like operations (`note.open`). `source.*` is Golem's own. `views` is validated with
+  the rest of the module on reload: a bad declaration keeps the old module serving.
+- **`description`** is what the agent reads to decide when to use the action, and its first sentence is the
+  line the offer shows the person. Write it as the app's own words.
+- **`input`** is a zod schema. An agent's input is parsed against it, and a refusal goes back as the zod
+  message, so the agent can correct itself.
+- **`views.on(name, handler)`** returns a function that unregisters the handler. Each tab publishes the names
+  it handles. An action no open tab handles is refused when an agent asks for it, with a message the agent
+  can repeat to the person.
+- **Asking** is the same `view.request` the `source.open` offer uses: `view.actions` lists the app's actions
+  beside it, and a terminal agent runs `./golem show <action> key=value…` (see `agents.md`).
 
 ## Accounts
 

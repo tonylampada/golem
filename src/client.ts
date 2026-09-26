@@ -155,13 +155,51 @@ export const knowledge: RecordsAdapter = {
   subscribe: (_root, listener) => watch('_knowledge', listener),
 }
 
-/** A knowledge passage an agent offered to show; `line` and `endLine` are 1-based and inclusive. */
-export type ViewOffer = { id: string; conversation: string; action: 'source.open'; input: { root: string; path: string; line: number; endLine: number } }
 /**
- * `apply` carries the file `version` its lines were counted in and the `text` of those lines: show them
- * once the editor has that version, and look for `text` instead when the editor shows an unsaved draft.
+ * Something an agent offered to show in this tab: a knowledge passage (`source.open`) or one of the app's
+ * own UI actions. `label` is the line the offer shows the person.
  */
-export type ViewEvent = { type: 'offer'; offer: ViewOffer } | { type: 'apply'; offer: ViewOffer; version: number; text: string } | { type: 'withdrawn'; id: string }
+export type ViewOffer = { id: string; conversation: string; action: string; input: unknown; label?: string }
+/** A `source.open` offer; `line` and `endLine` are 1-based and inclusive. */
+export type SourceOffer = ViewOffer & { action: 'source.open'; input: { root: string; path: string; line: number; endLine: number } }
+/**
+ * A `source.open` `apply` carries the file `version` its lines were counted in and the `text` of those
+ * lines: show them once the editor has that version, and look for `text` instead when the editor shows an
+ * unsaved draft. An app action's `apply` carries neither; its registered handler takes `offer.input`.
+ */
+export type ViewEvent = { type: 'offer'; offer: ViewOffer } | { type: 'apply'; offer: ViewOffer; version?: number; text?: string } | { type: 'withdrawn'; id: string }
+
+// eslint-disable-next-line @typescript-eslint/no-explicit-any -- the app's own schema decides each action's input
+type ViewHandler = (input: any) => void
+const viewHandlers = new Map<string, ViewHandler>()
+let publishHandlers: (() => void) | undefined
+
+/**
+ * This tab's handlers for the UI actions the app declares in `views` (src/server/index.ts). An agent can
+ * only offer an action some open tab handles; the handler runs when the person taps Open.
+ *
+ * ```ts
+ * useEffect(() => views.on('questao.open', ({ id }) => setRoute({ screen: 'questao', id })), [])
+ * ```
+ */
+export const views = {
+  on<T = any>(name: string, handler: (input: T) => void): () => void { // eslint-disable-line @typescript-eslint/no-explicit-any
+    viewHandlers.set(name, handler as ViewHandler)
+    publishHandlers?.()
+    return () => { if (viewHandlers.get(name) === handler) { viewHandlers.delete(name); publishHandlers?.() } }
+  },
+}
+
+/** The shell's side of `views.on`: what this tab handles, when that changes, and running an accepted offer. */
+export const viewHandlerRegistry = {
+  names: (): string[] => [...viewHandlers.keys()],
+  watch(listener: () => void): () => void { publishHandlers = listener; return () => { if (publishHandlers === listener) publishHandlers = undefined } },
+  run(name: string, input: unknown): boolean {
+    const handler = viewHandlers.get(name)
+    handler?.(input)
+    return Boolean(handler)
+  },
+}
 
 /**
  * Opens this tab's view of one conversation. `id` is the view to send with this tab's chat messages,

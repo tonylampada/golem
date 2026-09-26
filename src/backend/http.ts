@@ -138,8 +138,14 @@ async function handle({ app, accounts, config, cookie }: Server, request: Incomi
       const { conversation } = await readJson(request) as { conversation?: unknown }
       return send(response, 201, { result: await app.views.open(request, principal, conversation as string) })
     }
-    const view = url.pathname.match(/^\/api\/app\/views\/([A-Za-z0-9_-]+)(\/answer)?$/)
-    if (view && request.method === 'POST' && view[2]) {
+    const view = url.pathname.match(/^\/api\/app\/views\/([A-Za-z0-9_-]+)(\/answer|\/handlers)?$/)
+    if (view && request.method === 'POST' && view[2] === '/handlers') {
+      const { actions } = await readJson(request) as { actions?: unknown }
+      if (!Array.isArray(actions) || actions.some((one) => typeof one !== 'string')) throw new InvalidError('Handlers need { actions: string[] }')
+      await app.views.handlers(request, principal, view[1], actions as string[])
+      return send(response, 200, { result: null })
+    }
+    if (view && request.method === 'POST' && view[2] === '/answer') {
       const { offer, accept } = await readJson(request) as { offer?: unknown; accept?: unknown }
       if (typeof offer !== 'string' || typeof accept !== 'boolean') throw new InvalidError('An answer needs { offer, accept }')
       await app.views.answer(request, principal, view[1], offer, accept)
