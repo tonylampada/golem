@@ -4,7 +4,7 @@ import { Auth, Chat, Shell } from 'golem-ui'
 import * as AppModule from '@golem/app'
 import projectConfig from '@golem/config'
 import { currentSession, identity, type Me } from '../client'
-import { anonymousIdentity, brain, chat, currentBrowserBackend, leaveBrowserSession, forgetBrowserSession, navigation, restoreBrowserSession, startBrowserSession, subscribeBrowserSession, subscribeBrowserStatus, type SessionKind } from './adapters'
+import { anonymousIdentity, brain, chat, currentBrowserBackend, transcribeAudio, leaveBrowserSession, forgetBrowserSession, navigation, restoreBrowserSession, startBrowserSession, subscribeBrowserSession, subscribeBrowserStatus, type SessionKind } from './adapters'
 import { Groups } from './groups'
 import { SourcePanel, SourceReturn, useViewOffers, type OpenSource } from './sources'
 import { Terminal } from './terminal'
@@ -17,6 +17,8 @@ const Brain = (GolemUI as unknown as { Brain?: (props: { config: { title: string
 type ShellSetting = (props: { icon: ReactNode; label: string; on?: boolean; onClick: () => void }) => ReactNode
 type ShellIcon = (props: { name: 'user' | 'wrench' }) => ReactNode
 const { Setting: ShellSetting, Icon: ShellIcon } = Shell as unknown as { Setting?: ShellSetting; Icon?: ShellIcon }
+// `transcribe` is golem-ui's microphone slot, after 0.2.1: with an older one installed the prop is ignored.
+const ChatPanel = Chat as unknown as (props: ComponentProps<typeof Chat> & { transcribe?: (audio: Blob) => Promise<string> }) => ReactNode
 const ShellFrame = Shell as unknown as (props: Omit<ComponentProps<typeof Shell>, 'config'> & {
   config: ComponentProps<typeof Shell>['config'] & { menu?: { id: string; label: string; icon?: string }[]; activeId?: string; chatOpen?: boolean }
   settings?: ReactNode
@@ -48,7 +50,7 @@ export function App() {
   const [sessionStatus, setSessionStatus] = useState('starting')
   const [sessionBackend, setSessionBackend] = useState<string>()
   const [error, setError] = useState<string>()
-  const [chatInfo, setChatInfo] = useState<{ provider: 'tmux' | 'anthropic' | null; agent?: string; available: boolean; detail?: string; views?: boolean }>()
+  const [chatInfo, setChatInfo] = useState<{ provider: 'tmux' | 'anthropic' | null; agent?: string; available: boolean; detail?: string; views?: boolean; speech?: boolean }>()
   const [source, setSource] = useState<OpenSource>()
   const [sourceShown, setSourceShown] = useState(false)
   const [me, setMe] = useState<Me>()
@@ -78,6 +80,8 @@ export function App() {
     }))
   }, [])
   const canBuild = me?.canBuild === true
+  // The app configured a speech service, so the composer gets a microphone; without it, nothing changes.
+  const speaking = chatInfo?.speech === true ? { transcribe: transcribeAudio } : {}
   const chatting = sessionBackend === 'anthropic'
   // Offers ride on the shown conversation's stream: the API assistant's (when the app lists `view.request`)
   // and a terminal agent's `./golem show` alike.
@@ -160,9 +164,9 @@ export function App() {
           {terminal && session && !chatting && <Terminal session={session} onClose={() => setTerminal(false)} />}
           {error && <p className="golem-browser-error px-4 pt-3 text-sm text-red-700">{error}</p>}
           {session && (chatting
-            ? <><div className="min-h-0 flex-1"><Chat key={session} config={{ agentName: 'Assistant', emptyState: 'Ask about or update what you can see in this app.' }} adapters={chatAdapters} /></div>{offers}{source && !sourceShown && <SourceReturn source={source} onShow={() => setSourceShown(true)} />}</>
+            ? <><div className="min-h-0 flex-1"><ChatPanel key={session} config={{ agentName: 'Assistant', emptyState: 'Ask about or update what you can see in this app.' }} adapters={chatAdapters} {...speaking} /></div>{offers}{source && !sourceShown && <SourceReturn source={source} onShow={() => setSourceShown(true)} />}</>
             // A terminal agent's offers (`./golem show`) land in the same panel under its chat.
-            : <><div className="min-h-0 flex-1"><Chat key={kind} config={{ agentName: `Golem ${agentNames[sessionBackend ?? 'codex'] ?? sessionBackend}`, emptyState: kind === 'builder' ? `Ask ${agentNames[sessionBackend ?? 'codex'] ?? sessionBackend} to build or change this app.` : 'Ask about this app.' }} adapters={chatAdapters} /></div>{offers}</>)}
+            : <><div className="min-h-0 flex-1"><ChatPanel key={kind} config={{ agentName: `Golem ${agentNames[sessionBackend ?? 'codex'] ?? sessionBackend}`, emptyState: kind === 'builder' ? `Ask ${agentNames[sessionBackend ?? 'codex'] ?? sessionBackend} to build or change this app.` : 'Ask about this app.' }} adapters={chatAdapters} {...speaking} /></div>{offers}</>)}
         </div>
       )}
       canvas={

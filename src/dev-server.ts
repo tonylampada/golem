@@ -9,6 +9,7 @@ import { anonymous } from './operations.ts';
 import { ordinaryChat, type OrdinaryChat } from './chat.ts';
 import { openBrain } from './brain.ts';
 import { chatPermissions, serverUrl } from './config.ts';
+import { probeSpeech, transcribe } from './backend/speech.ts';
 import { discoverAgents, runtimeState, type AgentName } from './runtime/discovery.ts';
 import { SessionManager, type Session, type SessionBackend, type SessionSnapshot } from './runtime/session.ts';
 import { TmuxBackend, chatInstructions, type HarnessRef } from './runtime/tmux.ts';
@@ -57,6 +58,8 @@ export async function startDevServer(
   const app = await createAppBackend(appRoot, join(stateDirectory, 'data'));
   const chat = ordinaryChat(app);
   const brain = app.config.brain ? openBrain(join(appRoot, 'brain')) : undefined;
+  // Said once at startup and never blocking: a speech service that is down is a failing microphone, not a dead app.
+  if (app.config.speech) void probeSpeech(app.config.speech).then((line) => console.log(line));
   // Views of a conversation belong to whoever owns that conversation. A terminal-agent conversation has
   // no browser cookie of its own: without accounts the single local person owns it, and with accounts its
   // owner is the account that started it.
@@ -208,6 +211,19 @@ async function body(request: import('node:http').IncomingMessage): Promise<unkno
   try { return JSON.parse(text || '{}'); } catch { throw new Error('Request body must be valid JSON'); }
 }
 
+// 15 MB is minutes of opus; a recording past it is a mistake, not a dictation.
+const MAX_AUDIO = 15_000_000;
+async function audioBody(request: import('node:http').IncomingMessage): Promise<Buffer> {
+  const chunks: Buffer[] = [];
+  let size = 0;
+  for await (const chunk of request) {
+    size += chunk.length;
+    if (size > MAX_AUDIO) throw new Error(`The recording is larger than ${MAX_AUDIO} bytes`);
+    chunks.push(chunk);
+  }
+  return Buffer.concat(chunks);
+}
+
 /**
  * Fires once after a successful build-mode turn; never blocks the turn's own response.
  * The app's server module reloads before the refresh, so the new UI never talks to old operations.
@@ -304,6 +320,18 @@ async function handleApi(
   const mayChat = (Boolean(app.config.chat) || !accounts) && chats(principal);
   const denied = (what: 'build' | 'chat') => json(response, principal.kind === 'anonymous' ? 401 : 403,
     { error: principal.kind === 'anonymous' ? `Sign in to ${what}.` : `Your account may not ${what === 'build' ? 'build this app' : 'chat in this app'}.` });
+  // Recorded audio to text, for the microphone golem-ui puts on a text input. Absent `speech` in
+  // golem.config.ts the route is not there at all, and the browser shows no microphone.
+  if (url.pathname === '/api/speech/transcribe') {
+    const speech = app.config.speech;
+    if (request.method !== 'POST' || !speech) return json(response, 404, { error: 'This app has no speech to text' });
+    if (!mutationAllowed(request)) return json(response, 403, { error: 'Cross-origin mutations are not allowed' });
+    if (accounts && !accounts.config.guests && principal.kind === 'anonymous') return json(response, 401, { error: 'Sign in to use speech to text.' });
+    let audio;
+    try { audio = await audioBody(request); } catch (error) { return json(response, 413, { error: error instanceof Error ? error.message : 'The recording is too large' }); }
+    try { return json(response, 200, { text: await transcribe(speech, audio, String(request.headers['content-type'] ?? '')) }); }
+    catch (error) { return json(response, 502, { error: error instanceof Error ? error.message : 'Speech to text failed' }); }
+  }
   if (url.pathname === '/api/chat') {
     if (request.method === 'GET') {
       // Signed out with guests off, or a role the app does not let chat: this app offers you no
@@ -312,7 +340,7 @@ async function handleApi(
       const latest = chatOwner ? sessions.latest((session) => session.backend === 'anthropic' && session.owner === chatOwner) : undefined;
       // `provider` is the app's rule for normal mode: null means no chat column outside builder mode.
       const provider = app.config.chat?.provider ?? null;
-      return json(response, 200, { provider, agent: app.config.chat?.provider === 'tmux' ? app.config.chat.agent : undefined, available: provider === 'tmux' || chat.available, detail: provider === 'tmux' ? undefined : chat.detail, views: chat.views(), latest: latest && { id: latest.id, status: latest.status } });
+      return json(response, 200, { provider, agent: app.config.chat?.provider === 'tmux' ? app.config.chat.agent : undefined, available: provider === 'tmux' || chat.available, detail: provider === 'tmux' ? undefined : chat.detail, views: chat.views(), ...(app.config.speech ? { speech: true } : {}), latest: latest && { id: latest.id, status: latest.status } });
     }
     if (request.method !== 'POST') return json(response, 404, { error: 'Unknown API route' });
     if (!mayChat) return denied('chat');

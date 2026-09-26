@@ -108,6 +108,25 @@ Photos go in next to the text as `images: string[]` — absolute paths on the se
 10, read by the runtime itself and never copied. A runtime that reads no images throws
 `ModelUnavailableError`; a path that is missing, unreadable or not absolute is `InvalidError`.
 
+## Speech to text
+
+A microphone on the chat composer, turning speech into text through whatever service the app names:
+
+```ts
+export default { speech: { provider: 'whisper', url: 'http://127.0.0.1:8878', language: 'pt' } }
+// or the hosted API, whose key the server reads from the environment by name:
+export default { speech: { provider: 'openai', apiKeyEnv: 'OPENAI_API_KEY', model: 'whisper-1' } }
+```
+
+`whisper` is any server with the faster-whisper HTTP shape (`POST <url>/transcribe`, multipart `file`
+and optional `language`, answering `{ text }`); Golem probes its `/health` once at startup and logs one
+line, but a service that is down never stops the app from booting. `openai` posts the same multipart to
+`<url ?? https://api.openai.com/v1>/audio/transcriptions`.
+
+The recording goes to `POST /api/speech/transcribe` as raw bytes with its own `Content-Type`, capped at
+15 MB and answering `{ text }` or `{ error }`; it takes the same origin and session checks as a record
+write. Without `speech` in `golem.config.ts` the route answers 404 and the composer shows no microphone.
+
 ## Knowledge files
 
 Markdown the app keeps in its own folders, committed to Git with the code. Opt in from `src/server/index.ts`; only trusted server code names the folders:

@@ -351,3 +351,11 @@ export const brain = {
     return () => events.close()
   },
 }
+
+/** golem-ui's `Transcriber`: the recording goes to the app's own speech route, whatever is behind it. */
+export const transcribeAudio = async (audio: Blob): Promise<string> => {
+  const response = await fetch('/api/speech/transcribe', { method: 'POST', body: audio, headers: { 'Content-Type': audio.type || 'audio/webm' } })
+  const body = await response.json().catch(() => ({})) as { text?: string; error?: string }
+  if (!response.ok) throw new Error(body.error ?? `Speech to text failed (${response.status})`)
+  return body.text ?? ''
+}
