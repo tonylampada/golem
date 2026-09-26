@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.2.6
+
+- An agent can point the app at one of its own screens. The app declares them (`views: [{ name, description, input }]` in `src/server/index.ts`) and registers a handler per tab (`views.on('nota.open', ({ id }) => …)` from `golem-kit/client`); a terminal chat agent asks with `./golem show <action> key=value…`, the API assistant through `view.request`, and its launch brief lists the app's actions with the exact command. The person sees **Open** / **Dismiss** under the chat in the tab the message came from, and only their tap changes the screen. An action no open tab handles is refused when the agent asks, so it can say so.
+
 ## 0.2.5
 
 - A manager resets a member's password from the member list instead of removing and re-inviting them. **Reset password** mints a one-use link, good for 24 hours, that opens the sign-in card in choose-a-new-password mode; the account keeps its id, email, roles and groups, and every session it had is revoked. New: `accounts.reset`, `POST /api/auth/members/<id>/reset` and `POST /api/auth/password`, on golem-ui 0.2.1.
