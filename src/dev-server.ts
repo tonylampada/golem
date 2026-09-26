@@ -144,7 +144,10 @@ function homeScreenHead(html: string, config: AppConfig, icon: HomeIcon | undefi
   const tags = [
     '<link rel="icon" type="image/png" href="/icon.png">',
     '<link rel="apple-touch-icon" href="/icon.png">',
-    '<link rel="manifest" href="/manifest.webmanifest">',
+    // `use-credentials`: a browser fetches the manifest and its icons without cookies unless told
+    // otherwise, so behind a login gate (Cloudflare Access, the app's own session) Android saw the
+    // login page instead and fell back to a letter. iOS reads apple-touch-icon with cookies anyway.
+    '<link rel="manifest" href="/manifest.webmanifest" crossorigin="use-credentials">',
     '<meta name="apple-mobile-web-app-capable" content="yes">',
     `<meta name="apple-mobile-web-app-title" content="${title}">`,
     '<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">',

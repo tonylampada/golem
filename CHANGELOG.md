@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.2.11
+
+- The manifest link carries `crossorigin="use-credentials"`: behind a login gate (Cloudflare Access, the app's own session) Android Chrome fetched the manifest and icon without cookies, got the login page and fell back to a letter; with the cookie sent, the home-screen icon works there too. iOS never needed it.
+
 ## 0.2.10
 
 - An app added to an iPhone home screen shows its own icon and name and opens standalone. Drop one square PNG (1024 recommended) in the app directory — `icon.png` to commit it, `.golem/icon.png` to keep it out of git — or point `icon` at another path; the dev server serves it at `/icon.png` as it is and builds `/manifest.webmanifest` from the app's `title` and the PNG's own size, then writes the icon, manifest and Apple meta tags into the page head. With no PNG found, only the `<title>` changes. In standalone the page runs under the status bar and the home indicator: the Shell already pads both edges, and `.golem-shell` now takes `100vh` there, because `100dvh` reports the pre-chrome viewport in a home-screen app.
