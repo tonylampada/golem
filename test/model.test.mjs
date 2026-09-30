@@ -4,6 +4,7 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { test } from 'node:test'
 import { openModel, z } from '../src/backend/index.ts'
+import { strict } from '../src/backend/model.ts'
 
 const schema = z.object({ title: z.string(), people: z.array(z.string()) })
 
@@ -130,7 +131,7 @@ test('no images leaves the codex argv and the prompt exactly as they were', asyn
     { type: 'turn.completed', usage: {} },
   ])
   await withCli(dir, () => openModel({ runtime: 'codex', name: 'gpt-5.6-sol' }).extract({ schema, text: 'x' }))
-  assert.equal(readFileSync(join(dir, 'argv.txt'), 'utf8'), 'exec -m gpt-5.6-sol --skip-git-repo-check --ephemeral -s read-only --json -')
+  assert.match(readFileSync(join(dir, 'argv.txt'), 'utf8'), /^exec -m gpt-5\.6-sol --skip-git-repo-check --ephemeral -s read-only --json --output-schema \S+ -$/)
   assert.doesNotMatch(readFileSync(join(dir, 'prompt.txt'), 'utf8'), /Images:/)
 })
 
@@ -173,4 +174,66 @@ test('a path that is missing, relative or past the cap is bad input, on either r
   })
   assert.equal(existsSync(join(codex, 'argv.txt')), false)
   assert.equal(existsSync(join(claude, 'spawned')), false)
+})
+
+test('strict makes every property required, the optional ones nullable, and closes nested objects', () => {
+  const jsonSchema = z.toJSONSchema(z.object({
+    kind: z.enum(['a', 'b']),
+    count: z.number().int().optional(),
+    items: z.array(z.object({ text: z.string(), at: z.string().optional() })).max(2),
+  }))
+  const out = strict(jsonSchema)
+  assert.deepEqual(out.required, ['kind', 'count', 'items'])
+  assert.equal(out.additionalProperties, false)
+  assert.deepEqual(out.properties.kind, { type: 'string', enum: ['a', 'b'] })
+  assert.equal(out.properties.count.anyOf[0].type, 'integer')
+  assert.deepEqual(out.properties.count.anyOf[1], { type: 'null' })
+  const item = out.properties.items.items
+  assert.equal(item.additionalProperties, false)
+  assert.deepEqual(item.required, ['text', 'at'])
+  assert.deepEqual(item.properties.at, { anyOf: [{ type: 'string' }, { type: 'null' }] })
+  assert.equal(strict(z.toJSONSchema(z.object({ tally: z.record(z.string(), z.number()) }))), undefined)
+})
+
+test('the codex runtime is handed the strict schema as a file, gone once the call is over', async () => {
+  const dir = mkdtempSync(join(tmpdir(), 'golem-model-codex-'))
+  const path = join(dir, 'codex')
+  const answer = JSON.stringify({ type: 'item.completed', item: { id: 'i', type: 'agent_message', text: '{"title":"t","people":[]}' } })
+  // The file is read while the call runs; golem removes it afterwards.
+  writeFileSync(path, `#!/bin/sh
+cat > /dev/null
+while [ "$1" != "--output-schema" ]; do shift; done
+printf '%s' "$2" > ${dir}/file.txt
+cat "$2" > ${dir}/schema.json
+cat <<'JSONL'
+${answer}
+JSONL
+`)
+  chmodSync(path, 0o755)
+  const optional = z.object({ title: z.string(), note: z.string().optional() })
+  await withCli(dir, () => openModel({ runtime: 'codex' }).extract({ schema: optional, text: 'x' }).catch(() => {}))
+  assert.deepEqual(JSON.parse(readFileSync(join(dir, 'schema.json'), 'utf8')), strict(z.toJSONSchema(optional)))
+  assert.equal(existsSync(readFileSync(join(dir, 'file.txt'), 'utf8')), false)
+})
+
+test('a null for an optional field reads as absent; a nullable one keeps its null', async () => {
+  const s = z.object({ title: z.string(), note: z.string().optional(), who: z.string().nullable(), rows: z.array(z.object({ at: z.string().optional() })) })
+  const value = await withCli(fakeCli(answer('{"title":"t","note":null,"who":null,"rows":[{"at":null}]}')), () =>
+    openModel().extract({ schema: s, text: 'x' }))
+  assert.deepEqual(value, { title: 't', who: null, rows: [{}] })
+})
+
+test('the claude runtime is handed the strict schema and answers from structured_output', async () => {
+  const dir = mkdtempSync(join(tmpdir(), 'golem-model-seen-'))
+  const path = join(dir, 'claude')
+  const out = JSON.stringify({ is_error: false, result: 'Here it is.', structured_output: { title: 't', people: ['Ada'] } })
+  writeFileSync(path, `#!/bin/sh
+cat > /dev/null
+printf '%s' "$*" > ${dir}/argv.txt
+printf '%s' '${out}'
+`)
+  chmodSync(path, 0o755)
+  const value = await withCli(dir, () => openModel().extract({ schema, text: 'x' }))
+  assert.deepEqual(value, { title: 't', people: ['Ada'] })
+  assert.ok(readFileSync(join(dir, 'argv.txt'), 'utf8').includes(`--json-schema ${JSON.stringify(strict(z.toJSONSchema(schema)))}`))
 })

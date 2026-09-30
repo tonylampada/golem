@@ -1,7 +1,7 @@
 import { spawn } from 'node:child_process'
-import { access, constants } from 'node:fs/promises'
+import { access, constants, mkdtemp, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
-import { basename, isAbsolute } from 'node:path'
+import { basename, dirname, isAbsolute, join } from 'node:path'
 import type { ModelConfig } from '../config.ts'
 import { InvalidError, ModelUnavailableError, z, type Model } from '../operations.ts'
 
@@ -19,7 +19,8 @@ const maxImages = 10
 
 type Runtime = {
   executable: string
-  args(images: string[]): string[]
+  /** `schema` is the strict JSON Schema the answer must meet, when the call's schema has one. */
+  args(images: string[], schema?: Schema): string[] | Promise<string[]>
   /** Whether the CLI can be handed image files at all. */
   images: 'flag' | 'none'
   /** The answer text out of the CLI's own stdout format, or a reason there is none. */
@@ -29,19 +30,27 @@ type Runtime = {
 const runtimes: Record<ModelConfig['runtime'], (name?: string) => Runtime> = {
   claude: (name = 'haiku') => ({
     executable: 'claude',
-    args: () => ['-p', '--output-format', 'json', '--model', name, '--allowed-tools', '', '--strict-mcp-config'],
+    args: (_, schema) => ['-p', '--output-format', 'json', '--model', name, '--allowed-tools', '', '--strict-mcp-config', ...(schema ? ['--json-schema', JSON.stringify(schema)] : [])],
     images: 'none',
     answer(out) {
-      const { is_error: failed, result } = JSON.parse(out) as { is_error?: boolean; result?: unknown }
+      const { is_error: failed, result, structured_output: structured } = JSON.parse(out) as { is_error?: boolean; result?: unknown; structured_output?: unknown }
       if (failed || typeof result !== 'string') return { error: typeof result === 'string' ? result : 'The model runtime reported an error.' }
-      return { text: result }
+      // Under `--json-schema` the validated value comes apart from the free text in `result`.
+      return { text: structured === undefined ? result : JSON.stringify(structured) }
     },
   }),
   // `--ephemeral` keeps the call out of ~/.codex/sessions; `-` reads the prompt from stdin.
   codex: (name) => ({
     executable: 'codex',
     // `-i <file>` attaches an image to the initial prompt; the CLI reads it, nothing is copied.
-    args: (images) => ['exec', ...(name ? ['-m', name] : []), ...images.flatMap((path) => ['-i', path]), '--skip-git-repo-check', '--ephemeral', '-s', 'read-only', '--json', '-'],
+    async args(images, schema) {
+      const flags = ['exec', ...(name ? ['-m', name] : []), ...images.flatMap((path) => ['-i', path]), '--skip-git-repo-check', '--ephemeral', '-s', 'read-only', '--json']
+      if (!schema) return [...flags, '-']
+      // `--output-schema` reads a file; `ask` removes the directory once the call is over.
+      const file = join(await mkdtemp(join(tmpdir(), 'golem-schema-')), 'schema.json')
+      await writeFile(file, JSON.stringify(schema))
+      return [...flags, '--output-schema', file, '-']
+    },
     images: 'flag',
     answer(out) {
       // JSONL events; the answer is the last agent message, a failed turn carries its reason.
@@ -73,21 +82,22 @@ export function openModel(config: ModelConfig = { runtime: 'claude' }): Model {
         }
       }
       if (images.length && runtime.images === 'none') throw new ModelUnavailableError('This model runtime reads no images.')
+      const jsonSchema = z.toJSONSchema(schema, { unrepresentable: 'any' }) as Schema
       const prompt = [
         instructions ?? 'Fill the schema from what the text actually says. Leave a field empty rather than guessing.',
         'Answer with one JSON value this JSON Schema accepts, and nothing else:',
-        JSON.stringify(z.toJSONSchema(schema, { unrepresentable: 'any' })),
+        JSON.stringify(jsonSchema),
         `Text:\n${text}`,
         ...(images.length ? [`Images: ${images.length} attached, in the order given.`] : []),
       ].join('\n\n')
-      const answer = await ask(runtime, prompt, images)
+      const answer = await ask(runtime, prompt, images, strict(jsonSchema))
       let value: unknown
       try {
         value = JSON.parse(unfence(answer))
       } catch {
         throw new ModelUnavailableError('The model did not answer with JSON.')
       }
-      const parsed = schema.safeParse(value)
+      const parsed = schema.safeParse(absent(value, jsonSchema))
       if (!parsed.success) throw new ModelUnavailableError(`The model's answer does not fit the schema: ${z.prettifyError(parsed.error)}`)
       return parsed.data
     },
@@ -95,9 +105,19 @@ export function openModel(config: ModelConfig = { runtime: 'claude' }): Model {
 }
 
 /** The answer text, or `ModelUnavailableError` for every way the runtime can fail to give one. */
-function ask({ executable, args, answer }: Runtime, prompt: string, images: string[]): Promise<string> {
+async function ask({ executable, args, answer }: Runtime, prompt: string, images: string[], schema?: Schema): Promise<string> {
+  const argv = await args(images, schema)
+  try {
+    return await spawnAsk(executable, argv, answer, prompt)
+  } finally {
+    const at = argv.indexOf('--output-schema')
+    if (at >= 0) await rm(dirname(argv[at + 1]), { recursive: true, force: true })
+  }
+}
+
+function spawnAsk(executable: string, argv: string[], answer: Runtime['answer'], prompt: string): Promise<string> {
   return new Promise((resolve, reject) => {
-    const child = spawn(executable, args(images), { cwd: tmpdir(), stdio: ['pipe', 'pipe', 'pipe'] })
+    const child = spawn(executable, argv, { cwd: tmpdir(), stdio: ['pipe', 'pipe', 'pipe'] })
     let out = ''
     let error = ''
     const timer = setTimeout(() => { timedOut = true; child.kill('SIGKILL') }, timeoutMs)
@@ -127,3 +147,51 @@ function ask({ executable, args, answer }: Runtime, prompt: string, images: stri
 
 /** Models like to wrap JSON in a ``` fence whatever the instruction says. */
 const unfence = (text: string) => text.trim().replace(/^```(?:json)?\s*/i, '').replace(/\s*```$/, '')
+
+type Schema = { [key: string]: unknown }
+
+/**
+ * The call's JSON Schema in the form strict structured output accepts (OpenAI's rules, which the
+ * codex runtime enforces and claude takes as well): every object closed and every property
+ * required, an optional one widened to allow null. A schema with a part it cannot state — a record,
+ * a tuple, an unrepresentable type — gives undefined, and the call runs unconstrained as before.
+ * Bounds, patterns and formats pass through; zod checks them again either way.
+ */
+export function strict(node: Schema): Schema | undefined {
+  const { $schema, oneOf, ...rest } = node
+  const anyOf = (node.anyOf ?? oneOf) as Schema[] | undefined
+  if (anyOf) {
+    const branches = anyOf.map(strict)
+    return branches.every(Boolean) ? { ...rest, anyOf: branches } : undefined
+  }
+  if (!node.type || node.prefixItems) return undefined
+  if (node.items) {
+    const items = strict(node.items as Schema)
+    return items && { ...rest, items }
+  }
+  if (node.type !== 'object') return rest
+  if (node.additionalProperties !== false) return undefined
+  const required = new Set((node.required ?? []) as string[])
+  const properties: Record<string, Schema> = {}
+  for (const [key, value] of Object.entries((node.properties ?? {}) as Record<string, Schema>)) {
+    const property = strict(value)
+    if (!property) return undefined
+    properties[key] = required.has(key) ? property : { anyOf: [property, { type: 'null' }] }
+  }
+  return { ...rest, properties, required: Object.keys(properties), additionalProperties: false }
+}
+
+/**
+ * Strict output answers an absent optional property with null; that null goes back to absent. A
+ * property the schema requires keeps its null, so a genuinely nullable field still reads as one.
+ */
+function absent(value: unknown, node: Schema): unknown {
+  for (const branch of ((node.anyOf ?? node.oneOf ?? []) as Schema[])) value = absent(value, branch)
+  if (Array.isArray(value) && node.items) return value.map((item) => absent(item, node.items as Schema))
+  if (!value || typeof value !== 'object' || !node.properties) return value
+  const properties = node.properties as Record<string, Schema>
+  const required = (node.required ?? []) as string[]
+  return Object.fromEntries(Object.entries(value)
+    .filter(([key, v]) => !(v === null && key in properties && !required.includes(key)))
+    .map(([key, v]) => [key, key in properties ? absent(v, properties[key]) : v]))
+}
