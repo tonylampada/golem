@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.2.12
+
+- `context.model.extract` hands the CLI the call's schema in the strict form structured output takes (codex `--output-schema`, claude `--json-schema`), so the answer is valid JSON of that shape by construction instead of by request. Optional properties travel as nullable and come back absent; zod still checks the result. A schema strict output cannot state runs as before.
+- Turning Builder off only hides the builder: a turn in flight finishes instead of being killed. A conversation parked mid-turn (another one took the window, `/reset`) records why, shown like an interrupted turn.
+
 ## 0.2.11
 
 - The manifest link carries `crossorigin="use-credentials"`: behind a login gate (Cloudflare Access, the app's own session) Android Chrome fetched the manifest and icon without cookies, got the login page and fell back to a letter; with the cookie sent, the home-screen icon works there too. iOS never needed it.
