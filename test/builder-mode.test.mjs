@@ -41,13 +41,45 @@ test('builder mode: one tmux session with builder and chat windows, the Builder 
     assert.equal((await get(`/sessions/${chat.id}/history`)).status, 'ready', 'a builder /reset leaves the chat window alone')
     assert.equal((await get('/sessions/latest')).id, reset.session)
 
-    // The Builder switch persists in .golem and, turned off, parks the builder agent only.
+    // The Builder switch persists in .golem; turned off, it hides the builder and leaves its agent running.
     assert.deepEqual(await get('/builder'), { builder: false })
     assert.equal((await post('/builder', { builder: true })).status, 200)
     assert.deepEqual(JSON.parse(readFileSync(join(state, 'builder.json'), 'utf8')), { builder: true })
     await post('/builder', { builder: false })
-    assert.equal((await get(`/sessions/${reset.session}/history`)).status, 'stopped')
+    assert.equal((await get(`/sessions/${reset.session}/history`)).status, 'ready')
     assert.equal((await get(`/sessions/${chat.id}/history`)).status, 'ready')
+  } finally {
+    await new Promise((resolve) => server.close(resolve))
+  }
+})
+
+test('builder mode off mid-turn leaves the builder running; a conversation taking the window mid-turn parks it and says why', { timeout: 30000 }, async () => {
+  const workers = []
+  const worker = () => {
+    const w = { stopped: 0, sent: 0, async start() {}, send() { w.sent++; return new Promise(() => {}) }, async shutdown() { w.stopped++ } }
+    workers.push(w)
+    return w
+  }
+  const state = mkdtempSync(join(tmpdir(), 'golem-state-'))
+  const server = await startDevServer(3242, () => worker(), state)
+  try {
+    const base = 'http://127.0.0.1:3242/api'
+    const post = (path, body) => fetch(`${base}${path}`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(body) })
+    const get = async (path) => (await fetch(`${base}${path}`)).json()
+
+    await post('/builder', { builder: true })
+    const first = await (await post('/sessions', { backend: 'claude', intent: 'build' })).json()
+    assert.equal((await post(`/sessions/${first.id}`, { text: 'edit slowly', clientMessageId: 'm1' })).status, 202)
+    while (!workers[0].sent) await new Promise((resolve) => setTimeout(resolve, 10))
+    assert.equal((await post('/builder', { builder: false })).status, 200)
+    assert.equal(workers[0].stopped, 0, 'the switch does not kill the agent mid-turn')
+    assert.equal((await get(`/sessions/${first.id}/history`)).status, 'ready')
+
+    await post('/sessions', { backend: 'claude', intent: 'build' })
+    assert.equal(workers[0].stopped, 1)
+    const parked = await get(`/sessions/${first.id}/history`)
+    assert.equal(parked.status, 'stopped')
+    assert.deepEqual(parked.events.filter((event) => event.type === 'interrupted').map((event) => event.reason), ['parked: another conversation took the window'])
   } finally {
     await new Promise((resolve) => server.close(resolve))
   }

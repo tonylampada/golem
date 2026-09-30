@@ -195,12 +195,14 @@ export class Session {
   /**
    * Kills the worker but keeps the conversation: history and the harness ref (with its resume id) stay
    * in the snapshot, and the next message resumes the agent the way a server restart does.
+   * A turn cut short says why, the way an interrupted one does.
    */
-  async park(): Promise<void> {
+  async park(reason = 'parked'): Promise<void> {
     if (!this.live) return
     this.requestGeneration++
     this.workerStarted = false
     this.setStatus('stopped')
+    if (this.active) this.record({ type: 'interrupted', reason })
     this.activeReject?.(new Error('Session parked'))
     this.rejectPending(new Error('Session parked'))
     await this.worker.shutdown()
@@ -445,7 +447,7 @@ export class SessionManager {
    * conversation of that window before another starts or resumes there.
    */
   async parkOthers(buildMode: boolean, id?: string): Promise<void> {
-    await Promise.all(this.all().filter((session) => session.id !== id && session.backend !== 'anthropic' && session.buildMode === buildMode).map((session) => session.park()))
+    await Promise.all(this.all().filter((session) => session.id !== id && session.backend !== 'anthropic' && session.buildMode === buildMode).map((session) => session.park('parked: another conversation took the window')))
   }
 
   async shutdownAll(): Promise<void> {

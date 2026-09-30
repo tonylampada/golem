@@ -442,7 +442,8 @@ async function handleApi(
     const input = await body(request) as { builder?: unknown };
     if (typeof input.builder !== 'boolean') return json(response, 400, { error: 'builder must be a boolean' });
     await builder.set(input.builder);
-    if (!input.builder) await sessions.parkOthers(true); // leaving builder mode parks the builder agent
+    // Leaving builder mode only hides the builder: a turn in flight finishes. The window's next
+    // builder conversation parks it (one agent per window), not this switch.
     return json(response, 200, { builder: input.builder });
   }
   // The session routes below serve build mode and normal-mode chat alike, so each needs the rights
@@ -525,7 +526,7 @@ async function handleApi(
     try {
       if (line.split(/\s+/)[0] === '/reset') {
         // Same backend, same owner, same window: the old conversation is parked (resumable), the new agent takes the window.
-        await session.park();
+        await session.park('parked: /reset started a new conversation');
         const fresh = session.backend === 'anthropic'
           ? await sessions.start('anthropic', chat.backend(), false, session.owner)
           : (await sessions.parkOthers(session.buildMode), await sessions.start(session.backend, await createBackend(session.backend, undefined, session.buildMode), session.buildMode, session.owner));
