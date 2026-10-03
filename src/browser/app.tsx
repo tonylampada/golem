@@ -6,6 +6,7 @@ import projectConfig from '@golem/config'
 import { currentSession, identity, type Me } from '../client'
 import { anonymousIdentity, brain, chat, currentBrowserBackend, transcribeAudio, leaveBrowserSession, forgetBrowserSession, navigation, restoreBrowserSession, startBrowserSession, subscribeBrowserSession, subscribeBrowserStatus, type SessionKind } from './adapters'
 import { Groups } from './groups'
+import { SystemJobs } from './system-jobs'
 import { SourcePanel, SourceReturn, useViewOffers, type OpenSource } from './sources'
 import { Terminal } from './terminal'
 
@@ -183,7 +184,7 @@ export function App() {
           : view === 'account' || (invited && !me.user)
             ? <div className="golem-browser-admin flex h-full flex-col overflow-auto">
                 <Auth config={authConfig} adapters={authAdapters} />
-                {manages && <Groups />}
+                {manages && <><Groups /><SystemJobs /></>}
               </div>
           : accounts.guests ? <UserApp screen={screen} />
           : <Auth.Guard config={authConfig} adapters={authAdapters}><UserApp screen={screen} /></Auth.Guard>

@@ -87,7 +87,7 @@ type AppServerModule = {
   resolvePrincipal?: (request: IncomingMessage) => Principal | Promise<Principal>
 }
 type AuthorizeRequest = { operation: string; input: unknown; principal: Principal; via: 'http' | 'agent' | 'server'; record: Row | null }
-type Principal = { kind: 'anonymous' } | { kind: 'user'; id: string; name: string; roles: string[]; groups: string[]; session?: string }
+type Principal = { kind: 'anonymous' } | { kind: 'user'; id: string; name: string; roles: string[]; groups: string[]; session?: string } | { kind: 'system'; id: 'system'; name: 'System' }
 type OperationContext = { principal; via; records: RecordStore; files: FileStore; model: Model; permits(record: Row): Promise<boolean>; job?: JobContext }
 type Model = { extract<S extends z.ZodType>(request: { schema: S; text: string; instructions?: string; images?: string[] }): Promise<z.output<S>> }
 ```
@@ -265,6 +265,7 @@ When the store has no account yet, `./golem dev` prints a one-use admin invite l
 
 - `app.agentTools(principal)` refreshes the principal before every call. A principal with a `session` works only while that browser session is live; after sign-out its calls fail with `UnauthorizedError` and never fall back to anonymous.
 - Server-owned work that acts for a person (a job; see [Jobs](#jobs)) stores the account id and calls `app.resolveAccount(id)` on every run. It gets the current roles and groups, no session, and `ForbiddenError` once the account is removed. Nothing a browser sends becomes a principal.
+- Work the app declares for itself (a system schedule; see [System schedules](#system-schedules)) runs as `{ kind: 'system', id: 'system', name: 'System' }`. No request, agent or account ever becomes it.
 
 ### Security boundary
 
@@ -279,6 +280,11 @@ When the store has no account yet, `./golem dev` prints a one-use admin invite l
 ## Jobs
 
 Optional server-side work that keeps running when the browser closes: one run now, or on a schedule. The app owns each job; a caller picks a job and its input, never the operation or who it acts for.
+
+Schedules come in two kinds:
+
+- **User schedules**, made at runtime through `jobs.schedule` by a signed-in person (or a guest, for `anonymous` jobs). Each belongs to that account and runs as it.
+- **System schedules**, declared in code on the job (`schedule: { cron, timezone }`). They belong to no account, run as the `system` principal, and admins manage them. See [System schedules](#system-schedules).
 
 ```ts
 // src/server/index.ts
@@ -295,6 +301,7 @@ type JobDefinition = {
   operation: string          // a registered app operation
   anonymous?: boolean        // guests may start it when the app has accounts; runs act as anonymous
   missed?: 'skip' | 'once'   // default 'skip'
+  schedule?: { cron: string; timezone: string; input?: unknown } // a system schedule; see below
 }
 ```
 
@@ -311,8 +318,42 @@ From the browser, `jobs` in `golem-kit/client` wraps the builtin operations: `jo
 - **Overlap** is skipped. A slot is skipped and recorded as `lastSkippedAt` while an earlier run of the schedule is still running (cancelling included) or is interrupted and not yet settled. An unsettled interrupted run pauses its schedule.
 - **Missed slots** are slots that passed while the server was down. With `skip`, the schedule waits for the next slot and records `lastMissedAt`. With `once`, it runs one catch-up at start.
 - **Reload** validates `jobs` with the rest of the module. A bad definition keeps the old module serving. A schedule or interrupted run remembers the operation it was made with. If its job is removed or now names another operation, it never runs. The schedule records the reason as `error` and skips each slot. To pick up the change, schedule the job again.
+- **Owner removed.** A user schedule whose account was removed no longer runs. Each slot is skipped, and the schedule's `error` says `Owner removed`. It appears in the admin list flagged `owner: 'removed'`, and an admin deletes it with `jobs.admin.remove`.
 - Finished runs are kept; there is no retention limit yet.
 - Jobs do not send notifications, export data or call external services unless the app's own operation does.
+
+### System schedules
+
+A periodic task of the app itself (a nightly digest, a daily rollup) is declared on its job, not created by a person:
+
+```ts
+jobs: [{
+  name: 'daily-digest', description: 'Summarise yesterday.', operation: 'digest.build',
+  schedule: { cron: '0 6 * * *', timezone: 'Europe/Lisbon', input: { days: 1 } },
+}],
+```
+
+- **Code is the source of truth.** At every start and reload, golem keeps exactly one schedule per declared job, stored with a fixed id and no `accountId`. Two boots leave one schedule. A changed `cron`, `timezone`, `operation` or `input` updates it and recomputes the next slot. A paused schedule stays paused. Removing `schedule` (or the job) removes the stored schedule. Nobody changes the cron at runtime.
+- **Runs act as `system`.** Each run calls the operation with `principal = { kind: 'system', id: 'system', name: 'System' }` and `via: 'server'`. Use `principal.name` when a record should say who wrote it. Overlap, missed slots, the `job` context and the run statuses work as for user schedules.
+- **Admit it in `authorize`.** Without an `authorize`, every operation admits it. A rule that checks roles has to name it, because `system` has no roles:
+
+  ```ts
+  authorize: ({ operation, principal }) =>
+    !adminOnly.has(operation) || principal.kind === 'system' || (principal.kind === 'user' && principal.roles.includes('admin')),
+  ```
+
+- **Admins manage them.** A member with a role that `manages` accounts sees them under **Admin › Scheduled jobs** in the shell. There they pause and resume a schedule, run its job now, retry its last failed run, read its recent runs and delete orphaned user schedules. In an app without accounts, the local person is the admin. The operations, each refused to anyone else with `ForbiddenError`:
+
+  | Operation | Input | Does |
+  | --- | --- | --- |
+  | `jobs.admin.list` | `{}` | System schedules (`owner: 'system'`) and user schedules whose owner was removed (`owner: 'removed'`), each with `cron`, `timezone`, `nextRunAt`, `paused` and `lastRun { id, status, error, startedAt, finishedAt }`. |
+  | `jobs.admin.pause` | `{ id, paused }` | Pauses, or resumes from the next slot after now. |
+  | `jobs.admin.run` | `{ id }` | Runs the job now as `system`, paused or not; refused while a run of it is running or unsettled. The run records `startedBy`. |
+  | `jobs.admin.retry` | `{ id }` (a run) | Retries a failed, cancelled or interrupted system run with the same input and `key`. |
+  | `jobs.admin.runs` | `{ job?, scheduleId?, limit? }` | Recent system runs, newest first. |
+  | `jobs.admin.remove` | `{ id }` | Deletes a user schedule whose owner was removed. |
+
+  From the browser: `jobs.admin.list()`, `.pause(id, paused)`, `.run(id)`, `.retry(runId)`, `.runs(query)` and `.remove(id)` in `golem-kit/client`. They go through `authorize` like every operation. System schedules and runs never appear in `jobs.list` or `jobs.runs`, and `jobs.unschedule`, `jobs.cancel` and `jobs.resolve` do not reach them.
 
 ## Errors
 
