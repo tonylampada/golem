@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 0.2.14
 
 - `brain: { roles: [...] }` in `golem.config.ts` keeps the brain to those account roles: every `/api/brain/*` route, events included, answers 403 to anyone else, and the shell leaves the Brain item out of their menu. `brain: true` is unchanged.
 - An app screen may carry `roles?: string[]`. The shell lists it, and routes `?screen=` to it, only for a member holding one, and re-checks when the signed-in member or their roles change. A screen without `roles` is everyone's.
