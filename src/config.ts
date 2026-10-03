@@ -3,7 +3,7 @@ import { pathToFileURL } from 'node:url'
 import { toolNameProblem } from './runtime/tool-names.ts'
 
 /** Browser-visible settings: never put secrets in golem.config.ts. */
-export type AppConfig = { title: string; host: string; port: number; storage: 'jsonl' | 'sqlite'; origin?: string; accounts?: AccountsConfig; agents?: AgentsConfig; brain?: boolean; chat?: ChatConfig; icon?: string; model?: ModelConfig; speech?: SpeechConfig }
+export type AppConfig = { title: string; host: string; port: number; storage: 'jsonl' | 'sqlite'; origin?: string; accounts?: AccountsConfig; agents?: AgentsConfig; brain?: BrainConfig; chat?: ChatConfig; icon?: string; model?: ModelConfig; speech?: SpeechConfig }
 /**
  * Speech to text for the app's text inputs. `whisper` is any server with the faster-whisper HTTP shape
  * (`POST <url>/transcribe`, multipart `file`); `openai` is the hosted API, whose key is read from the
@@ -28,7 +28,11 @@ export type ChatConfig = ({ provider: 'anthropic' } | { provider: 'tmux'; agent?
 export const chatPermissions = (chat: ChatConfig | undefined): 'bypass' | 'readonly' =>
   chat?.provider === 'tmux' && chat.sandbox === 'none' ? 'bypass' : 'readonly'
 
-/** `brain: true` serves the app's `brain/` folder read-only and mounts the Brain reader beside the app. */
+/**
+ * `brain: true` serves the app's `brain/` folder read-only and mounts the Brain reader beside the app.
+ * `{ roles }` keeps both to those account roles; everyone else gets 403 and no Brain menu item.
+ */
+export type BrainConfig = true | { roles: string[] }
 
 /**
  * `builder` is the agent build mode starts with. `ordinary` turns on everyday chat: an API agent
@@ -59,7 +63,9 @@ export async function loadAppConfig(root = process.cwd()): Promise<AppConfig> {
     throw new Error('golem.config.ts must default-export an object')
   }
   const configured = value as { title?: unknown; host?: unknown; port?: unknown; storage?: unknown; origin?: unknown; accounts?: unknown; agents?: unknown; brain?: unknown; chat?: unknown; icon?: unknown; model?: unknown; speech?: unknown }
-  if (configured.brain !== undefined && typeof configured.brain !== 'boolean') throw new Error('golem.config.ts brain must be a boolean')
+  const brainValue = configured.brain
+  if (brainValue !== undefined && typeof brainValue !== 'boolean' && (!brainValue || typeof brainValue !== 'object' || Array.isArray(brainValue))) throw new Error('golem.config.ts brain must be a boolean or { roles }')
+  if (brainValue && typeof brainValue === 'object' && Object.keys(brainValue).some((key) => key !== 'roles')) throw new Error(`golem.config.ts brain has unknown fields: ${Object.keys(brainValue).filter((key) => key !== 'roles').join(', ')}`)
   const title: unknown = configured.title === undefined ? 'Golem' : configured.title
   if (typeof title !== 'string' || !title.trim()) throw new Error('golem.config.ts title must be a nonempty string')
   // One square PNG (1024 recommended), relative to the app directory: the home-screen icon. Absent,
@@ -82,11 +88,13 @@ export async function loadAppConfig(root = process.cwd()): Promise<AppConfig> {
   if (origin !== undefined && (typeof origin !== 'string' || !/^https?:$/.test(safeUrl(origin)?.protocol ?? '') || safeUrl(origin)?.origin !== origin)) {
     throw new Error("golem.config.ts origin must be an exact origin like 'https://notes.example.com'")
   }
-  const config: AppConfig = { title, host, port, storage, ...(icon === undefined ? {} : { icon: icon as string }), ...(origin === undefined ? {} : { origin }), ...(configured.accounts === undefined ? {} : { accounts: accounts(configured.accounts) }), ...(configured.agents === undefined ? {} : { agents: agents(configured.agents) }), ...(configured.brain ? { brain: true } : {}), ...(configured.model === undefined ? {} : { model: modelConfig(configured.model) }), ...(configured.speech === undefined ? {} : { speech: speechConfig(configured.speech) }) }
+  const config: AppConfig = { title, host, port, storage, ...(icon === undefined ? {} : { icon: icon as string }), ...(origin === undefined ? {} : { origin }), ...(configured.accounts === undefined ? {} : { accounts: accounts(configured.accounts) }), ...(configured.agents === undefined ? {} : { agents: agents(configured.agents) }), ...(configured.model === undefined ? {} : { model: modelConfig(configured.model) }), ...(configured.speech === undefined ? {} : { speech: speechConfig(configured.speech) }) }
+  if (brainValue === true) config.brain = true
+  else if (brainValue) config.brain = { roles: rolesOf((brainValue as { roles?: unknown }).roles, config.accounts, 'brain.roles', 'the brain') }
   if (configured.chat !== undefined && configured.chat !== false) {
     if (!configured.chat || typeof configured.chat !== 'object' || Array.isArray(configured.chat)) throw new Error('golem.config.ts chat must be false or { provider, ... }')
     const { provider, roles, ...rest } = configured.chat as Record<string, unknown>
-    const chatRoles = roles === undefined ? {} : { roles: chatRolesOf(roles, config.accounts) }
+    const chatRoles = roles === undefined ? {} : { roles: rolesOf(roles, config.accounts, 'chat.roles', 'chat') }
     if (provider === 'anthropic') {
       config.agents = { ...config.agents, ordinary: ordinaryAgent({ backend: 'anthropic', ...rest }) }
       config.chat = { provider, ...chatRoles }
@@ -146,12 +154,12 @@ function accounts(value: unknown): AccountsConfig {
   return { guests, allowSignUp, roles: parsed }
 }
 
-/** A typo here would lock everyone out of chat, so every named role must be one the app declares. */
-function chatRolesOf(value: unknown, accounts: AccountsConfig | undefined): string[] {
-  if (!Array.isArray(value) || !value.length || !value.every((role) => typeof role === 'string' && role)) throw new Error('golem.config.ts chat.roles must be a nonempty list of role ids')
-  if (!accounts) throw new Error('golem.config.ts chat.roles needs accounts: without them nobody has a role')
+/** A typo here would lock everyone out of `what`, so every named role must be one the app declares. */
+function rolesOf(value: unknown, accounts: AccountsConfig | undefined, field: string, what: string): string[] {
+  if (!Array.isArray(value) || !value.length || !value.every((role) => typeof role === 'string' && role)) throw new Error(`golem.config.ts ${field} must be a nonempty list of role ids`)
+  if (!accounts) throw new Error(`golem.config.ts ${field} needs accounts: without them nobody has a role, so nobody could reach ${what}`)
   const unknown = (value as string[]).filter((role) => !accounts.roles.some((one) => one.id === role))
-  if (unknown.length) throw new Error(`golem.config.ts chat.roles names roles the app does not declare: ${unknown.join(', ')}`)
+  if (unknown.length) throw new Error(`golem.config.ts ${field} names roles the app does not declare: ${unknown.join(', ')}`)
   return value as string[]
 }
 
