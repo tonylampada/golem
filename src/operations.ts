@@ -15,11 +15,15 @@ export type Row = Record<string, unknown> & { id: string; version: number; creat
  * Who is asking. Resolved on the server from trusted request context, never from request input.
  * `session` is set when a signed-in browser session stands behind the call; it ends at sign-out.
  * A user principal without one comes from trusted server code acting for an account (a job).
+ * `system` is the app itself: a schedule the app declares in code runs as it, and no request ever does.
  */
 export type Principal =
   | { kind: 'anonymous' }
   | { kind: 'user'; id: string; name: string; roles: string[]; groups: string[]; session?: string }
+  | { kind: 'system'; id: 'system'; name: 'System' }
 export const anonymous: Principal = Object.freeze({ kind: 'anonymous' })
+/** The app's own principal; `authorize` admits it explicitly (`principal.kind === 'system'`). */
+export const system: Principal = Object.freeze({ kind: 'system', id: 'system', name: 'System' })
 
 /** Which caller path reached `invoke`. */
 export type Via = 'http' | 'agent' | 'server'

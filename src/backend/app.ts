@@ -7,7 +7,7 @@ import {
 import { FILES_COLLECTION } from './files.ts'
 import { knowledgeOperations, type KnowledgeRoots } from './knowledge.ts'
 import { createViews, type ViewDefinition, type Views } from './views.ts'
-import { createJobs, JOBS_CHANGE, type JobDefinition } from './jobs.ts'
+import { checkDeclared, createJobs, JOBS_CHANGE, type JobDefinition } from './jobs.ts'
 import type { ModelConfig } from '../config.ts'
 import { openModel } from './model.ts'
 
@@ -60,6 +60,8 @@ export type Identity = {
   resolve(request: IncomingMessage): Promise<Principal>
   refresh(principal: Principal): Promise<Principal>
   resolveAccount(id: string): Promise<Principal>
+  /** Holds a role that manages accounts; such members also manage system jobs. */
+  manages?(principal: Principal): boolean
 }
 
 export function createApp(stores: { records: RecordStore; files: (records: RecordStore) => FileStore; root?: string; model?: ModelConfig }, module: AppServerModule = {}, identity?: Identity): App {
@@ -72,6 +74,8 @@ export function createApp(stores: { records: RecordStore; files: (records: Recor
     definitions: () => current.module.jobs ?? [],
     hasAccounts: Boolean(identity),
     resolveAccount: (id) => resolveAccount(id),
+    // Without accounts the single local person runs everything, as with building.
+    manages: (principal) => identity ? Boolean(identity.manages?.(principal)) : principal.kind !== 'system',
     invoke: (name, input, principal, job) => invoke(name, input, principal, 'server', job),
     emit: () => changes.emit('change', JOBS_CHANGE),
   })
@@ -111,7 +115,7 @@ export function createApp(stores: { records: RecordStore; files: (records: Recor
     get operations() { return [...current.byName.values()] },
     invoke,
     changes,
-    use(next) { current = load(next) },
+    use(next) { current = load(next); void jobs.resync().catch((error) => console.error('Jobs failed to resync', error)) },
     close: () => jobs.close(),
     resolvePrincipal: async (request) => identity ? identity.resolve(request) : (await current.module.resolvePrincipal?.(request)) ?? anonymous,
     refresh: async (principal) => identity ? identity.refresh(principal) : principal,
@@ -182,6 +186,7 @@ function compile(module: AppServerModule, jobOperations: Operation[], root?: str
     if (jobNames.has(job.name)) throw new Error(`Job ${job.name} is defined twice`)
     if (!byName.has(job.operation) || job.operation.startsWith('jobs.')) throw new Error(`Job ${job.name} runs ${job.operation}, which is not an app operation`)
     if (job.missed !== undefined && job.missed !== 'skip' && job.missed !== 'once') throw new Error(`Job ${job.name}: missed must be 'skip' or 'once'`)
+    checkDeclared(job)
     jobNames.add(job.name)
   }
   return { module, byName, authorize: module.authorize ?? allowAll }
