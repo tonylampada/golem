@@ -90,7 +90,7 @@ const catalog: ViewActionDoc[] = [{
 }]
 
 /** Same person in the same signed-in session, or both anonymous (then the owner key tells visitors apart). */
-const same = (a: Principal, b: Principal) => a.kind === b.kind && (a.kind === 'anonymous' || (b.kind === 'user' && a.id === b.id && a.session === b.session))
+const same = (a: Principal, b: Principal) => a.kind === b.kind && (a.kind === 'anonymous' || (a.kind === 'user' && b.kind === 'user' && a.id === b.id && a.session === b.session))
 const refused = () => new ForbiddenError('Cannot open that source')
 const noView = () => new NotFoundError('No such view')
 

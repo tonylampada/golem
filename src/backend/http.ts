@@ -53,6 +53,7 @@ export async function createAppBackend(appRoot: string, dataDirectory: string): 
     resolve: (request: IncomingMessage) => accounts.fromToken(readCookie(request, cookie)),
     refresh: accounts.refresh,
     resolveAccount: accounts.resolveAccount,
+    manages: accounts.manages,
   }
   // FileStore writes metadata through the app's watched store, so file changes reach subscribers.
   const app = createApp({ records, files: (watched) => diskFiles(join(dataDirectory, 'files'), watched), root: appRoot, ...(config.model ? { model: config.model } : {}) }, await load(), identity)

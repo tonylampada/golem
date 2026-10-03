@@ -1,5 +1,11 @@
 # Changelog
 
+## Unreleased
+
+- System schedules: a job declares its own `schedule: { cron, timezone, input? }` in `src/server/index.ts`, and golem keeps exactly one stored schedule for it at every start and reload. It belongs to no account and runs as the new `system` principal (`{ kind: 'system', id: 'system', name: 'System' }`), so deleting a person no longer kills the app's periodic work. Apps whose `authorize` checks roles must admit `principal.kind === 'system'` for the operations those jobs call.
+- Admins (a role that `manages`) get **Admin › Scheduled jobs**: each system schedule with its cron, timezone, next run and last run (status and error), and pause/resume, run now, retry and recent runs. Backed by the `jobs.admin.*` operations and `jobs.admin` in `golem-kit/client`. Changing the cron stays a code change.
+- A user schedule whose owner account was removed stops failing a run every slot. It skips with `Owner removed`, shows in the admin list flagged as such, and an admin deletes it.
+
 ## 0.2.12
 
 - `context.model.extract` hands the CLI the call's schema in the strict form structured output takes (codex `--output-schema`, claude `--json-schema`), so the answer is valid JSON of that shape by construction instead of by request. Optional properties travel as nullable and come back absent; zod still checks the result. A schema strict output cannot state runs as before.

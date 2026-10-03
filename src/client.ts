@@ -232,8 +232,15 @@ export type JobRun = {
   id: string; job: string; status: 'running' | 'succeeded' | 'failed' | 'cancelled' | 'interrupted'
   progress: { done?: number; total?: number; message?: string } | null; result?: unknown; error?: string
   cancelRequested: boolean; resolution?: 'retried' | 'dismissed'; scheduleId: string | null; key: string; startedAt: string; finishedAt?: string
+  /** Set on runs of system schedules; `startedBy` names the admin who ran or retried one by hand. */
+  system?: boolean; startedBy?: string; retryOf?: string
 }
 export type JobSchedule = { id: string; job: string; every?: number; cron?: string; timezone?: string; nextRunAt: string; lastRunAt?: string; lastSkippedAt?: string; error?: string | null }
+/** A schedule in the admin list: `system` ones are declared in code; `removed` ones lost their owner account. */
+export type SystemSchedule = JobSchedule & {
+  owner: 'system' | 'removed'; accountId: string | null; paused?: boolean
+  lastRun: { id: string; status: JobRun['status']; error: string | null; startedAt: string; finishedAt: string | null } | null
+}
 
 /** The app's server-side jobs. Runs keep going when this page closes; `subscribe` fires whenever one of them changes. */
 export const jobs = {
@@ -245,4 +252,13 @@ export const jobs = {
   cancel: (id: string) => invoke<JobRun>('jobs.cancel', { id }),
   resolve: (id: string, action: 'retry' | 'dismiss') => invoke<JobRun>('jobs.resolve', { id, action }),
   subscribe: (listener: () => void) => watch('_jobs', listener),
+  /** Admins only: system schedules declared in code, and user schedules whose owner was removed. */
+  admin: {
+    list: () => invoke<{ schedules: SystemSchedule[] }>('jobs.admin.list'),
+    pause: (id: string, paused: boolean) => invoke<SystemSchedule>('jobs.admin.pause', { id, paused }),
+    run: (id: string) => invoke<JobRun>('jobs.admin.run', { id }),
+    retry: (runId: string) => invoke<JobRun>('jobs.admin.retry', { id: runId }),
+    runs: (query: { job?: string; scheduleId?: string; limit?: number } = {}) => invoke<JobRun[]>('jobs.admin.runs', query),
+    remove: async (id: string) => { await invoke('jobs.admin.remove', { id }) },
+  },
 }

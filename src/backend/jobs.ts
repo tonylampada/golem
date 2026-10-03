@@ -1,6 +1,7 @@
+import { createHash } from 'node:crypto'
 import { Cron } from 'croner'
 import {
-  anonymous, defineOperation, ForbiddenError, InvalidError, NotFoundError, RecordRefusedError, z,
+  anonymous, defineOperation, ForbiddenError, InvalidError, NotFoundError, RecordRefusedError, system, z,
   type JobContext, type Operation, type Principal, type RecordStore, type Row,
 } from '../operations.ts'
 
@@ -21,13 +22,36 @@ export type JobDefinition = {
   anonymous?: boolean
   /** A scheduled time that passed while the server was down: `skip` (default) waits for the next one, `once` runs one catch-up at start. */
   missed?: 'skip' | 'once'
+  /**
+   * A system schedule declared in code: golem keeps exactly one per job, owned by no account, and
+   * its runs act as the `system` principal. Changing it here changes the stored schedule at the next
+   * boot or reload; removing it removes the schedule. Admins pause, resume and run it; only code changes it.
+   */
+  schedule?: { cron: string; timezone: string; input?: unknown }
 }
+
+/** Throws when a declared schedule's cron or timezone cannot run. */
+export function checkDeclared(job: JobDefinition): void {
+  if (job.schedule === undefined) return
+  const { cron, timezone } = job.schedule ?? {}
+  if (typeof cron !== 'string' || typeof timezone !== 'string') throw new Error(`Job ${job.name}: schedule needs { cron, timezone }`)
+  try {
+    if (!new Cron(cron, { timezone, paused: true }).nextRun()) throw new Error('it never runs again')
+  } catch (error) {
+    throw new Error(`Job ${job.name}: invalid schedule: ${(error as Error).message}`)
+  }
+}
+
+/** One stable record id per declared job, so two boots — or two racing ones — keep one schedule. */
+export const systemScheduleId = (job: string) => `system-${createHash('sha256').update(job).digest('hex').slice(0, 32)}`
 
 type Deps = {
   store: RecordStore
   definitions(): JobDefinition[]
   hasAccounts: boolean
   resolveAccount(id: string): Promise<Principal>
+  /** Holds the role that manages accounts: may see and manage system schedules and orphans. */
+  manages(principal: Principal): boolean
   invoke(name: string, input: unknown, principal: Principal, job: JobContext): Promise<unknown>
   emit(): void
 }
@@ -55,7 +79,7 @@ export function createJobs(deps: Deps) {
     return result
   }
 
-  async function all(collection: string, filter?: Record<string, string | null>): Promise<Row[]> {
+  async function all(collection: string, filter?: Record<string, string | boolean | null>): Promise<Row[]> {
     const rows: Row[] = []
     let cursor: string | null = null
     do {
@@ -87,14 +111,15 @@ export function createJobs(deps: Deps) {
     return found
   }
 
-  /** Runs are owned by the account that started them; nobody reads or acts on someone else's. */
+  /** Runs are owned by the account that started them; nobody reads or acts on someone else's. System ones belong to admins. */
   function owned(row: Row | null, principal: Principal): Row {
     const owner = principal.kind === 'user' ? principal.id : null
-    if (!row || (row.accountId ?? null) !== owner) throw new NotFoundError('No such job run or schedule')
+    if (!row || row.system || (row.accountId ?? null) !== owner) throw new NotFoundError('No such job run or schedule')
     return row
   }
 
   function actor(definition: JobDefinition, principal: Principal): string | null {
+    if (principal.kind === 'system') throw new ForbiddenError('System runs come only from schedules declared in code')
     if (principal.kind === 'user') {
       if (!deps.hasAccounts) throw new ForbiddenError('Jobs that act for a person need local accounts')
       return principal.id
@@ -116,7 +141,7 @@ export function createJobs(deps: Deps) {
     try {
       const definition = unchanged(run)
       // Current roles and groups on every run: a removed account or a lost role stops its jobs.
-      const principal = run.accountId ? await deps.resolveAccount(String(run.accountId)) : anonymous
+      const principal = run.system ? system : run.accountId ? await deps.resolveAccount(String(run.accountId)) : anonymous
       const result = await deps.invoke(definition.operation, run.input, principal, context)
       patch = { status: 'succeeded', result: result ?? null }
     } catch (error) {
@@ -128,9 +153,10 @@ export function createJobs(deps: Deps) {
     if (!closed) await write(store.update(RUNS, run.id, { ...patch, finishedAt: now() })).catch((error) => console.error(error))
   }
 
-  async function begin(fields: { job: string; operation: string; input: unknown; accountId: string | null; scheduleId: string | null; key?: string; retryOf?: string }): Promise<Row> {
+  async function begin(fields: { job: string; operation: string; input: unknown; accountId: string | null; scheduleId: string | null; key?: string; retryOf?: string; system?: boolean; startedBy?: string }): Promise<Row> {
     const id = crypto.randomUUID()
-    const run = await write(store.create(RUNS, { id, ...fields, key: fields.key ?? id, status: 'running', progress: null, startedAt: now(), cancelRequested: false }))
+    const { system: isSystem, ...rest } = fields
+    const run = await write(store.create(RUNS, { id, ...rest, ...(isSystem ? { system: true } : {}), key: fields.key ?? id, status: 'running', progress: null, startedAt: now(), cancelRequested: false }))
     void execute(run)
     return run
   }
@@ -139,7 +165,7 @@ export function createJobs(deps: Deps) {
     timers.delete(scheduleId)
     if (closed) return
     const schedule = await store.get(SCHEDULES, scheduleId)
-    if (!schedule) return
+    if (!schedule || schedule.paused) return
     const slot = String(schedule.nextRunAt)
     if (Date.parse(slot) > Date.now()) return arm(schedule)
     await fire(schedule, slot, new Date())
@@ -151,29 +177,74 @@ export function createJobs(deps: Deps) {
    * or dismissed it, the slot is recorded as skipped instead. So is a slot whose job was removed or changed.
    */
   async function fire(schedule: Row, slot: string, from: Date): Promise<void> {
-    const pending = (await all(RUNS, { scheduleId: schedule.id })).some((run) => run.status === 'running' || (run.status === 'interrupted' && !run.resolution))
+    const pending = await busy(schedule.id)
     let problem: string | null = null
     try { unchanged(schedule) } catch (error) { problem = (error as Error).message }
+    // A schedule whose owner was removed skips with that reason instead of failing a run every slot; an admin deletes it.
+    if (!problem && schedule.accountId && !(await accountExists(String(schedule.accountId)))) problem = `Owner removed: account ${String(schedule.accountId)} no longer exists`
     const skip = pending || problem !== null
     const next = await store.update(SCHEDULES, schedule.id, { nextRunAt: nextAfter(schedule, from), error: problem, ...(skip ? { lastSkippedAt: slot } : { lastRunAt: slot }) })
     deps.emit()
-    if (!skip) await begin({ job: String(schedule.job), operation: String(schedule.operation), input: schedule.input, accountId: (schedule.accountId as string | null) ?? null, scheduleId: schedule.id, key: `${schedule.id}-${Date.parse(slot)}` })
+    if (!skip) await begin({ ...origin(schedule), scheduleId: schedule.id, key: `${schedule.id}-${Date.parse(slot)}` })
     arm(next)
+  }
+
+  /** What a run of this schedule (or a retry of this run) acts as and does. */
+  const origin = (row: Row) => ({ job: String(row.job), operation: String(row.operation), input: row.input, accountId: (row.accountId as string | null) ?? null, system: row.system === true })
+
+  /** A run of this schedule is still running, or was interrupted and nobody settled it. */
+  const busy = async (scheduleId: string) => (await all(RUNS, { scheduleId })).some((run) => run.status === 'running' || (run.status === 'interrupted' && !run.resolution))
+
+  async function accountExists(id: string): Promise<boolean> {
+    try { await deps.resolveAccount(id); return true } catch (error) {
+      if (error instanceof ForbiddenError) return false
+      throw error
+    }
   }
 
   function arm(schedule: Row): void {
     clearTimeout(timers.get(schedule.id))
-    if (closed) return
+    timers.delete(schedule.id)
+    if (closed || schedule.paused) return
     const delay = Math.min(Math.max(Date.parse(String(schedule.nextRunAt)) - Date.now(), 0), maxDelay)
     const timer = setTimeout(() => void tick(schedule.id).catch((error) => console.error(error)), delay)
     timers.set(schedule.id, timer.unref())
+  }
+
+  /**
+   * Makes the stored system schedules match the declared ones: creates a missing one, updates one
+   * whose cron, timezone, operation or input changed in code (keeping its paused state), and removes
+   * one whose job no longer declares a schedule. Returns the schedules it created or changed.
+   */
+  async function syncDeclared(from: Date): Promise<Row[]> {
+    const declared = new Map(deps.definitions().filter((one) => one.schedule).map((one) => [systemScheduleId(one.name), one]))
+    for (const stale of await all(SCHEDULES, { system: true })) {
+      if (declared.has(stale.id)) continue
+      clearTimeout(timers.get(stale.id))
+      timers.delete(stale.id)
+      await store.remove(SCHEDULES, stale.id)
+    }
+    const touched: Row[] = []
+    for (const [id, one] of declared) {
+      const { cron, timezone, input = {} } = one.schedule!
+      const wanted = { job: one.name, operation: one.operation, input, cron, timezone }
+      const stored = await store.get(SCHEDULES, id)
+      if (!stored) {
+        touched.push(await store.create(SCHEDULES, { id, system: true, accountId: null, ...wanted, paused: false, nextRunAt: nextAfter(wanted, from) }))
+      } else if ((Object.keys(wanted) as Array<keyof typeof wanted>).some((key) => JSON.stringify(stored[key] ?? null) !== JSON.stringify(wanted[key] ?? null))) {
+        touched.push(await store.update(SCHEDULES, id, { ...wanted, nextRunAt: nextAfter(wanted, from), error: null }))
+      }
+    }
+    return touched
   }
 
   async function start(): Promise<void> {
     for (const run of await all(RUNS, { status: 'running' })) {
       await store.update(RUNS, run.id, { status: 'interrupted', finishedAt: now(), error: 'The server stopped while this run was in progress. Its effects may be partial; retry or dismiss it.' })
     }
+    await syncDeclared(new Date())
     for (const schedule of await all(SCHEDULES)) {
+      if (schedule.paused) continue
       const slot = String(schedule.nextRunAt)
       if (Date.parse(slot) > Date.now()) { arm(schedule); continue }
       if (definition(String(schedule.job))?.missed === 'once') { await serial(() => fire(schedule, slot, new Date())); continue }
@@ -183,6 +254,16 @@ export function createJobs(deps: Deps) {
   }
 
   const ready = start().catch((error) => { console.error('Jobs failed to start', error) })
+
+  function admin(principal: Principal): void {
+    if (!deps.manages(principal)) throw new ForbiddenError('Only an admin can manage system jobs')
+  }
+  async function systemSchedule(scheduleId: string): Promise<Row> {
+    const found = await store.get(SCHEDULES, scheduleId)
+    if (!found?.system) throw new NotFoundError('No such system schedule')
+    return found
+  }
+  const actorName = (principal: Principal) => principal.kind === 'anonymous' ? 'anonymous' : principal.name
 
   const runRecord = (input: { id: string }) => ({ collection: RUNS, id: input.id })
   const scheduleRecord = (input: { id: string }) => ({ collection: SCHEDULES, id: input.id })
@@ -198,7 +279,7 @@ export function createJobs(deps: Deps) {
       async run(_, { principal, permits }) {
         await ready
         const owner = principal.kind === 'user' ? principal.id : null
-        const mine = (await all(SCHEDULES, { accountId: owner }))
+        const mine = (await all(SCHEDULES, { accountId: owner, system: null }))
         const visible = await Promise.all(mine.map(permits))
         return { jobs: deps.definitions().map(({ name, description }) => ({ name, description })), schedules: mine.filter((_, index) => visible[index]) }
       },
@@ -247,7 +328,7 @@ export function createJobs(deps: Deps) {
       output: z.array(row),
       async run(request, { principal, permits }) {
         await ready
-        const filter: Record<string, string | null> = { accountId: principal.kind === 'user' ? principal.id : null }
+        const filter: Record<string, string | null> = { accountId: principal.kind === 'user' ? principal.id : null, system: null }
         if (request.job) filter.job = request.job
         if (request.scheduleId) filter.scheduleId = request.scheduleId
         const page = await store.list(RUNS, { filter, sort: { field: 'startedAt', direction: 'desc' }, limit: request.limit ?? 50 })
@@ -277,9 +358,92 @@ export function createJobs(deps: Deps) {
         // Re-checks who may start the job now: the retry acts as the same account with its current roles.
         actor(unchanged(run), principal)
         // The retry exists before the old run is marked settled: a stop in between leaves both visible, never neither.
-        const retry = await begin({ job: String(run.job), operation: String(run.operation), input: run.input, accountId: (run.accountId as string | null) ?? null, scheduleId: (run.scheduleId as string | null) ?? null, key: String(run.key), retryOf: run.id })
+        const retry = await begin({ ...origin(run), scheduleId: (run.scheduleId as string | null) ?? null, key: String(run.key), retryOf: run.id })
         await write(store.update(RUNS, run.id, { resolution: 'retried', retryId: retry.id }))
         return retry
+      }),
+    }),
+
+    // Admin: system schedules (declared in code, owned by no account) and user schedules whose owner was removed.
+    defineOperation({
+      name: 'jobs.admin.list', description: 'Admins: the system schedules declared in code, and user schedules whose owner was removed, each with its last run.',
+      input: z.object({}), output: z.object({ schedules: z.array(row) }),
+      async run(_, { principal }) {
+        admin(principal)
+        await ready
+        const systems = await all(SCHEDULES, { system: true })
+        const owned = (await all(SCHEDULES, { system: null })).filter((one) => one.accountId)
+        const orphans = (await Promise.all(owned.map(async (one) => await accountExists(String(one.accountId)) ? null : one))).filter((one) => one !== null)
+        const withLast = async (schedule: Row, owner: 'system' | 'removed') => {
+          const [last] = (await store.list(RUNS, { filter: { scheduleId: schedule.id }, sort: { field: 'startedAt', direction: 'desc' }, limit: 1 })).rows
+          const lastRun = last ? { id: last.id, status: last.status, error: last.error ?? null, startedAt: last.startedAt, finishedAt: last.finishedAt ?? null } : null
+          return { ...schedule, owner, lastRun }
+        }
+        return { schedules: await Promise.all([...systems.map((one) => withLast(one, 'system')), ...orphans.map((one) => withLast(one, 'removed'))]) }
+      },
+    }),
+    defineOperation({
+      name: 'jobs.admin.pause', description: 'Admins: pause a system schedule (paused: true) or resume it (paused: false). Resuming waits for the next slot from now.',
+      input: z.object({ id, paused: z.boolean() }), output: row, record: scheduleRecord,
+      run: (request, { principal }) => serial(async () => {
+        admin(principal)
+        const schedule = await systemSchedule(request.id)
+        const patch = request.paused ? { paused: true } : { paused: false, nextRunAt: nextAfter(schedule, new Date()) }
+        const updated = await write(store.update(SCHEDULES, request.id, patch))
+        arm(updated)
+        return updated
+      }),
+    }),
+    defineOperation({
+      name: 'jobs.admin.run', description: 'Admins: run a system schedule\'s job now, as the system, outside its slots. Paused schedules run too.',
+      input: z.object({ id }), output: row, record: scheduleRecord,
+      run: (request, { principal }) => serial(async () => {
+        admin(principal)
+        const schedule = await systemSchedule(request.id)
+        unchanged(schedule)
+        if (await busy(schedule.id)) throw new RecordRefusedError('A run of this schedule is still running or waits to be settled')
+        return begin({ ...origin(schedule), scheduleId: schedule.id, startedBy: actorName(principal) })
+      }),
+    }),
+    defineOperation({
+      name: 'jobs.admin.retry', description: 'Admins: retry a failed, cancelled or interrupted system run with the same input and idempotency key.',
+      input: z.object({ id }), output: row, record: runRecord,
+      run: (request, { principal }) => serial(async () => {
+        admin(principal)
+        const run = await store.get(RUNS, request.id)
+        if (!run?.system) throw new NotFoundError('No such system run')
+        if (!['failed', 'cancelled', 'interrupted'].includes(String(run.status)) || run.resolution) throw new RecordRefusedError('Only an unsettled failed, cancelled or interrupted run can be retried')
+        unchanged(run)
+        if (run.scheduleId && (await all(RUNS, { scheduleId: String(run.scheduleId), status: 'running' })).length) throw new RecordRefusedError('A run of this schedule is still running')
+        const retry = await begin({ ...origin(run), scheduleId: (run.scheduleId as string | null) ?? null, key: String(run.key), retryOf: run.id, startedBy: actorName(principal) })
+        await write(store.update(RUNS, run.id, { resolution: 'retried', retryId: retry.id }))
+        return retry
+      }),
+    }),
+    defineOperation({
+      name: 'jobs.admin.runs', description: 'Admins: recent system runs, newest first, optionally for one job or schedule.',
+      input: z.object({ job: z.string().optional(), scheduleId: z.string().optional(), limit: z.number().int().min(1).max(200).optional() }),
+      output: z.array(row),
+      async run(request, { principal }) {
+        admin(principal)
+        await ready
+        const filter: Record<string, string | boolean> = { system: true }
+        if (request.job) filter.job = request.job
+        if (request.scheduleId) filter.scheduleId = request.scheduleId
+        return (await store.list(RUNS, { filter, sort: { field: 'startedAt', direction: 'desc' }, limit: request.limit ?? 20 })).rows
+      },
+    }),
+    defineOperation({
+      name: 'jobs.admin.remove', description: 'Admins: delete a user schedule whose owner account was removed. System schedules change only in code.',
+      input: z.object({ id }), output: z.null(), record: scheduleRecord,
+      run: (request, { principal }) => serial(async () => {
+        admin(principal)
+        const schedule = await store.get(SCHEDULES, request.id)
+        if (!schedule || schedule.system || !schedule.accountId || await accountExists(String(schedule.accountId))) throw new NotFoundError('No schedule here whose owner was removed')
+        clearTimeout(timers.get(schedule.id))
+        timers.delete(schedule.id)
+        await write(store.remove(SCHEDULES, schedule.id))
+        return null
       }),
     }),
   ]
@@ -288,6 +452,12 @@ export function createJobs(deps: Deps) {
     operations,
     /** Resolves once interrupted runs are marked and schedules armed. */
     ready,
+    /** After a reload: brings the declared system schedules in line with the new module and arms what changed. */
+    resync: () => serial(async () => {
+      await ready
+      for (const schedule of await syncDeclared(new Date())) arm(schedule)
+      deps.emit()
+    }),
     /**
      * Stops the timers and aborts every running operation's signal. Nothing more is recorded: those
      * runs stay `running` and become `interrupted` at the next start, whatever their operations did meanwhile.
