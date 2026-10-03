@@ -9,6 +9,7 @@ import { Groups } from './groups'
 import { SystemJobs } from './system-jobs'
 import { SourcePanel, SourceReturn, useViewOffers, type OpenSource } from './sources'
 import { Terminal } from './terminal'
+import { brainVisible, visibleScreens, type AppScreen, type BrainSetting } from './roles'
 
 const chatAdapters = { chat }
 // `Brain` is in golem-ui after 0.1.1; with 0.1.1 installed the panel says so instead of rendering it.
@@ -28,9 +29,9 @@ const ShellFrame = Shell as unknown as (props: Omit<ComponentProps<typeof Shell>
 // An app with more than one screen lists them (`export const screens`); each becomes an item in the
 // menu row, and the chosen one's id goes to the app as `screen`. Read through a cast, like the other
 // optional things here, because an app that lists none is the single-screen app it always was.
+// A screen with `roles` is only listed, and only routed to, for someone holding one of them.
 const UserApp = AppModule.default as ComponentType<{ screen?: string }>
-type AppScreen = { id: string; label: string; icon?: string }
-const appScreens = (AppModule as { screens?: AppScreen[] }).screens ?? []
+const allScreens = (AppModule as { screens?: AppScreen[] }).screens ?? []
 /** The `?screen=` route param: which of the app's own screens is showing. */
 const screenParam = () => new URLSearchParams(window.location.search).get('screen') ?? undefined
 const screenUrl = (id?: string) => (id ? `${window.location.pathname}?screen=${encodeURIComponent(id)}` : window.location.pathname)
@@ -60,11 +61,14 @@ export function App() {
   const [brainAt, setBrainAt] = useState(brainParam)
   const [screenAt, setScreenAt] = useState(screenParam)
   useEffect(() => navigation.subscribe(() => { setBrainAt(brainParam()); setScreenAt(screenParam()); setView('app') }), [])
-  const showBrain = (projectConfig as { brain?: boolean }).brain === true && brainAt !== undefined
-  // An unknown `?screen=` is the app's first screen, not an error.
-  const screen = appScreens.some((one) => one.id === screenAt) ? screenAt : undefined
   const [terminal, setTerminal] = useState(false)
   const signedInAs = useRef<string | null>(null)
+  // Re-read on every `me`: a role change without a reload changes the menu and the routes with it.
+  const appScreens = visibleScreens(allScreens, me)
+  const hasBrain = brainVisible((projectConfig as { brain?: BrainSetting }).brain, me)
+  const showBrain = hasBrain && brainAt !== undefined
+  // An unknown `?screen=`, or one this person may not open, is the app's first screen, not an error.
+  const screen = appScreens.some((one) => one.id === screenAt) ? screenAt : undefined
   useEffect(() => {
     currentSession().then((next) => { signedInAs.current = next.user?.id ?? null; setMe(next) }, () => setError('Account service unavailable.'))
     // Another person on this browser starts clean: their own build conversation, their own view.
@@ -126,7 +130,6 @@ export function App() {
   // spending the link — which takes its token out of the URL — does not swap the card mid-flow.
   const [invited] = useState(() => ['invite', 'reset'].some((param) => new URLSearchParams(window.location.search).has(param)))
   const shellAdapters = { identity: accounts ? identity : anonymousIdentity, navigation }
-  const hasBrain = (projectConfig as { brain?: boolean }).brain === true
   // The bottom menu bar: the app's own screens first, then Brain, then Admin for managers.
   const menu = [
     { id: 'app', label: projectConfig.title, icon: '🏠' },

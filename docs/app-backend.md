@@ -49,7 +49,7 @@ import { files, invoke, records } from 'golem-kit/client'
 const result = await invoke<{ message: string }>('notes.archive', { id })
 ```
 
-`records` and `files` implement the golem-ui `RecordsAdapter` and `FilesAdapter`. A stale `update` (one with `expectedVersion`) rejects with golem-ui's `VersionConflictError`, which carries the current row. The released golem-ui 0.1.1 `RecordForm` sends only the changed fields and no `expectedVersion`, so the last save wins; call `records.update` with `expectedVersion` yourself where that matters. The next golem-ui `RecordForm` sends the loaded record's `version` as `expectedVersion` and lets the person choose between their values and the saved ones; until it is released, use it through `GOLEM_UI_SOURCE` (see `source-development.md`). `subscribe` listens to the server's change stream, so writes from any caller, the agent included, refresh open lists.
+`records` and `files` implement the golem-ui `RecordsAdapter` and `FilesAdapter`. A stale `update` (one with `expectedVersion`) rejects with golem-ui's `VersionConflictError`, which carries the current row. The released golem-ui 0.1.1 `RecordForm` sends only the changed fields and no `expectedVersion`, so the last save wins; call `records.update` with `expectedVersion` yourself where that matters. The next golem-ui `RecordForm` sends the loaded record's `version` as `expectedVersion` and lets the person choose between their values and the saved ones; until it is released, use it through `GOLEM_UI_SOURCE` (see `source-development.md`). `subscribe` listens to the server's change stream, so writes from any caller, the agent included, refresh open lists. Each event passes `authorize` as `changes.watch` first (see [What each role sees](#what-each-role-sees)).
 
 ## Server module: `src/server/index.ts`
 
@@ -256,6 +256,31 @@ The roles above are the default. A role with `manages: true` may invite, change 
 - **Build mode** needs a signed-in member who may build; `/api/runtime` and every `/api/sessions` route answer 401 or 403 to anyone else. A build conversation belongs to the member who started it. Conversations saved before accounts were enabled are visible to managers only. Losing build access, or signing out everywhere, interrupts a running build turn.
 - **Managing**: managers get a Admin item in the shell menu row: golem-ui's member list for invites, roles, password resets and removal, plus a groups editor. Apps can use `identity` and `setGroups` from `golem-kit/client`.
 - **Identity in the UI**: `identity` from `golem-kit/client` is golem-ui's `IdentityAdapter`. Pass it to `Auth.Guard` or `Timeline`. It exposes nothing a server rule trusts.
+
+### What each role sees
+
+`authorize` guards every operation. Three things outside operations take a role list or ask `authorize` too:
+
+```ts
+// golem.config.ts
+export default {
+  title: 'Clinic',
+  accounts: { roles: [{ id: 'family', label: 'Family' }, { id: 'therapist', label: 'Therapist' }, { id: 'admin', label: 'Admin', manages: true }] },
+  brain: { roles: ['family', 'admin'] }, // `brain: true` is everyone signed in
+  chat: { provider: 'tmux', roles: ['family', 'admin'] },
+}
+
+// src/app.tsx
+export const screens = [
+  { id: 'timeline', label: 'Timeline' },                                // everyone signed in
+  { id: 'billing', label: 'Billing', roles: ['family', 'admin'] },
+]
+```
+
+- **`brain.roles`**: every `/api/brain/*` route, the events stream included, answers 403 to a member without one of them (401 signed out), and the shell leaves the Brain item out of their menu. The roles must be ones `accounts.roles` declares; a typo fails at load.
+- **`chat.roles`**: the same rule for normal-mode chat. Builder mode keeps its own permission.
+- **A screen's `roles`**: the shell lists the screen, and routes `?screen=` to it, only for a member holding one. Otherwise the app gets its first screen. The list is re-read whenever the signed-in member changes, a role change included. This is presentation: the data behind the screen is still `authorize`'s to refuse.
+- **The change stream** (`/api/app/changes`) asks `authorize` before each event: operation `changes.watch`, input `{ collection }`, `record: null`, `via: 'http'`. A refused event is not sent, so the reader never learns that collection changed. Golem's own collections arrive the same way (`_files` for files, `_jobs` for jobs), so a rule that refuses unknown operations has to admit `changes.watch` for those it wants live.
 
 ### First admin and recovery
 

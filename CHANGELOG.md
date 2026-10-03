@@ -1,5 +1,11 @@
 # Changelog
 
+## Unreleased
+
+- `brain: { roles: [...] }` in `golem.config.ts` keeps the brain to those account roles: every `/api/brain/*` route, events included, answers 403 to anyone else, and the shell leaves the Brain item out of their menu. `brain: true` is unchanged.
+- An app screen may carry `roles?: string[]`. The shell lists it, and routes `?screen=` to it, only for a member holding one, and re-checks when the signed-in member or their roles change. A screen without `roles` is everyone's.
+- `/api/app/changes` asks the app's `authorize` before each event (operation `changes.watch`, input `{ collection }`) and drops the refused ones. An `authorize` that refuses unknown operations must now admit `changes.watch` for the collections it wants live, `_files` and `_jobs` included.
+
 ## 0.2.13
 
 - System schedules: a job declares its own `schedule: { cron, timezone, input? }` in `src/server/index.ts`, and golem keeps exactly one stored schedule for it at every start and reload. It belongs to no account and runs as the new `system` principal (`{ kind: 'system', id: 'system', name: 'System' }`), so deleting a person no longer kills the app's periodic work. Apps whose `authorize` checks roles must admit `principal.kind === 'system'` for the operations those jobs call.

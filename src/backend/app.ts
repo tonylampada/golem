@@ -33,6 +33,8 @@ export type App = {
   /** Swaps in a new server module's operations and hooks; stores, change stream and callers stay. */
   use(module: AppServerModule): void
   invoke(name: string, input: unknown, principal: Principal, via: Via): Promise<unknown>
+  /** Asks the app's `authorize` alone, for a check that is not an operation (`changes.watch`); a throw is a no. */
+  allows(operation: string, input: unknown, principal: Principal, via: Via): Promise<boolean>
   /** Stops job timers; call before closing the store. */
   close(): void
   /**
@@ -114,6 +116,9 @@ export function createApp(stores: { records: RecordStore; files: (records: Recor
   return {
     get operations() { return [...current.byName.values()] },
     invoke,
+    allows: async (operation, input, principal, via) => {
+      try { return Boolean(await current.authorize({ operation, input, principal, via, record: null })) } catch { return false }
+    },
     changes,
     use(next) { current = load(next); void jobs.resync().catch((error) => console.error('Jobs failed to resync', error)) },
     close: () => jobs.close(),

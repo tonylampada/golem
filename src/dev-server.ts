@@ -229,11 +229,15 @@ function json(response: import('node:http').ServerResponse, status: number, body
   response.end(JSON.stringify(body));
 }
 
-/** The app's brain, read-only: whoever may see the app may read it. */
+/** The app's brain, read-only: whoever may see the app may read it, unless `brain.roles` names who may. */
 async function handleBrain(request: import('node:http').IncomingMessage, response: import('node:http').ServerResponse, app: AppBackend, brain: ReturnType<typeof openBrain> | undefined): Promise<void> {
   if (!brain || request.method !== 'GET') return json(response, 404, { error: 'This app has no brain' });
   const principal = await app.app.resolvePrincipal(request);
   if (app.accounts && !app.accounts.config.guests && principal.kind === 'anonymous') return json(response, 401, { error: 'Sign in to read the brain.' });
+  const roles = typeof app.config.brain === 'object' ? app.config.brain.roles : undefined;
+  if (roles && !(principal.kind === 'user' && principal.roles.some((role) => roles.includes(role)))) {
+    return json(response, principal.kind === 'anonymous' ? 401 : 403, { error: principal.kind === 'anonymous' ? 'Sign in to read the brain.' : 'Your account may not read the brain.' });
+  }
   const url = new URL(request.url ?? '/', 'http://127.0.0.1');
   const param = (name: string) => url.searchParams.get(name) ?? '';
   switch (url.pathname) {

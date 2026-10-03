@@ -168,12 +168,21 @@ async function handle({ app, accounts, config, cookie }: Server, request: Incomi
     if (request.method === 'GET' && url.pathname === '/api/app/changes') {
       response.writeHead(200, { 'Content-Type': 'text/event-stream; charset=utf-8', 'Cache-Control': 'no-cache', Connection: 'keep-alive' })
       response.flushHeaders()
-      const write = (collection: string) => response.write(`data: ${JSON.stringify({ collection })}\n\n`)
+      // Each change is the app's `authorize` call `changes.watch` with `{ collection }`; a refused one is
+      // not sent. The chain keeps events in order while the answers are awaited.
+      let reader = principal
+      let sending = Promise.resolve()
+      const write = (collection: string) => {
+        sending = sending.then(async () => {
+          if (await app.allows('changes.watch', { collection }, reader, 'http')) response.write(`data: ${JSON.stringify({ collection })}\n\n`)
+        })
+      }
       // When this reader's account changes, re-resolve the same request: a signed-out reader
       // loses the stream, everyone else is told to re-read who they are and what they may see.
       const recheck = (accountId: string) => {
         if (principal.kind !== 'user' || accountId !== principal.id) return
         void app.resolvePrincipal(request).then((now) => {
+          reader = now
           // Tell the page first, so a signed-out tab drops what it shows instead of waiting for a reload.
           response.write(`data: ${JSON.stringify({ identity: true })}\n\n`)
           if (now.kind === 'anonymous' && !accounts?.config.guests) response.end()
