@@ -125,7 +125,7 @@ export function App() {
   }
   const accounts = me?.accounts
   // Link lifetimes match src/backend/accounts.ts: member invites 7 days, reset links 24 hours. Older golem-ui ignores both.
-  const authConfig = accounts && { workspaceName: projectConfig.title, mode: 'password' as const, allowSignUp: accounts.allowSignUp, roles: accounts.roles, inviteExpiry: 'One use. Expires in 7 days.', resetExpiry: 'One use. Expires in 24 hours.' }
+  const authConfig = accounts && { workspaceName: projectConfig.title, mode: 'password' as const, allowSignUp: accounts.allowSignUp, roles: accounts.roles, copy: { inviteExpiry: 'One use. Expires in 7 days.', resetExpiry: 'One use. Expires in 24 hours.' } }
   const manages = Boolean(me?.user?.roles.some((role) => accounts?.roles.some((one) => one.id === role && one.manages)))
   // An invite or a reset link opens the Auth card even before anyone is signed in. Read once, so
   // spending the link — which takes its token out of the URL — does not swap the card mid-flow.

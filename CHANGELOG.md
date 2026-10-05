@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.2.16
+
+- Fix: 0.2.15 passed the invite and reset expiry lines at the root of the `Auth` config, where golem-ui's strict schema rejects them, so every app with accounts showed a config error instead of the app. They now go under `copy`, and golem depends on golem-ui 0.2.3, the first that knows them.
+
 ## 0.2.15
 
 - The Admin view's Groups editor is opt-in: `accounts: { groups: true }` in `golem.config.ts` shows it, and it is off by default. Group data, `principal.groups` and `setGroups` are unchanged; only the editor is hidden. `/api/auth/me` reports the flag as `accounts.groups`.
