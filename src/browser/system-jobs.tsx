@@ -42,7 +42,7 @@ export function SystemJobs() {
             </div>
             <p className="mt-0.5">
               {words ?? schedule.cron}{schedule.timezone ? `, ${schedule.timezone}` : ''}
-              {words && schedule.cron && <code className="golem-browser-muted ml-2 text-xs">{schedule.cron}</code>}
+              {words && schedule.cron && <code className="golem-browser-muted ml-2 whitespace-nowrap text-xs">{schedule.cron}</code>}
             </p>
             <p className="mt-2 flex flex-wrap items-center gap-x-2"><span className="golem-browser-muted w-9">Next</span>{idle ? '—' : when(schedule.nextRunAt)}</p>
             <p className="mt-1 flex flex-wrap items-center gap-x-2"><span className="golem-browser-muted w-9">Last</span>{schedule.lastRun ? <>{when(schedule.lastRun.startedAt)} <Pill status={schedule.lastRun.status} /></> : 'never'}</p>
