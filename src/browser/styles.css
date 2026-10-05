@@ -40,3 +40,20 @@
 @media (display-mode: standalone) {
   .golem-shell { height: 100vh; }
 }
+/* Admin › Scheduled jobs: compact cards, status as a coloured pill, in both themes. */
+.golem-browser-muted { color: oklch(55.6% 0 0); }
+.golem-browser-system-job { border-color: oklch(92.2% 0 0); }
+.golem-browser-job-action { border-color: oklch(87% 0 0); }
+.golem-browser-pill { display: inline-block; border-radius: 9999px; padding: 0 .5rem; font-size: .75rem; line-height: 1.25rem; background-color: oklch(97% 0 0); color: oklch(43.9% 0 0); }
+.golem-browser-pill[data-status='succeeded'] { background-color: oklch(96.2% .044 156.743); color: oklch(44.8% .119 151.328); }
+.golem-browser-pill[data-status='failed'], .golem-browser-pill[data-status='interrupted'] { background-color: oklch(93.6% .032 17.717); color: oklch(44.4% .177 26.899); }
+.golem-browser-pill[data-status='running'] { background-color: oklch(93.2% .032 255.585); color: oklch(42.4% .199 265.638); }
+.golem-browser-pill[data-status='owner removed'] { background-color: oklch(96.2% .059 95.617); color: oklch(47.3% .137 46.201); }
+[data-golem-theme='dark'] .golem-browser-muted { color: oklch(70.8% 0 0); }
+[data-golem-theme='dark'] .golem-browser-system-job { border-color: oklch(26.9% 0 0); }
+[data-golem-theme='dark'] .golem-browser-job-action { border-color: oklch(37.1% 0 0); }
+[data-golem-theme='dark'] .golem-browser-pill { background-color: oklch(26.9% 0 0); color: oklch(87% 0 0); }
+[data-golem-theme='dark'] .golem-browser-pill[data-status='succeeded'] { background-color: oklch(26.6% .065 152.934); color: oklch(87.1% .15 154.449); }
+[data-golem-theme='dark'] .golem-browser-pill[data-status='failed'], [data-golem-theme='dark'] .golem-browser-pill[data-status='interrupted'] { background-color: oklch(25.8% .092 26.042); color: oklch(80.8% .114 19.571); }
+[data-golem-theme='dark'] .golem-browser-pill[data-status='running'] { background-color: oklch(28.2% .091 267.935); color: oklch(80.9% .105 251.813); }
+[data-golem-theme='dark'] .golem-browser-pill[data-status='owner removed'] { background-color: oklch(27.9% .077 45.635); color: oklch(87.9% .169 91.605); }
