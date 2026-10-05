@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 0.2.15
 
 - The Admin view's Groups editor is opt-in: `accounts: { groups: true }` in `golem.config.ts` shows it, and it is off by default. Group data, `principal.groups` and `setGroups` are unchanged; only the editor is hidden. `/api/auth/me` reports the flag as `accounts.groups`.
 - **Admin › Scheduled jobs** reads on a phone: one compact card per schedule with the job name, the cron in words when it is a common shape ("every day at 06:00, America/Sao_Paulo") beside the raw cron, next and last run on a line each with the run status as a coloured pill, the error if any, and a small row of actions. Light and dark.
