@@ -1,5 +1,10 @@
 # Changelog
 
+## Unreleased
+
+- The Admin view's Groups editor is opt-in: `accounts: { groups: true }` in `golem.config.ts` shows it, and it is off by default. Group data, `principal.groups` and `setGroups` are unchanged; only the editor is hidden. `/api/auth/me` reports the flag as `accounts.groups`.
+- **Admin › Scheduled jobs** reads on a phone: one compact card per schedule with the job name, the cron in words when it is a common shape ("every day at 06:00, America/Sao_Paulo") beside the raw cron, next and last run on a line each with the run status as a coloured pill, the error if any, and a small row of actions. Light and dark.
+
 ## 0.2.14
 
 - `brain: { roles: [...] }` in `golem.config.ts` keeps the brain to those account roles: every `/api/brain/*` route, events included, answers 403 to anyone else, and the shell leaves the Brain item out of their menu. `brain: true` is unchanged.

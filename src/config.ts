@@ -43,7 +43,7 @@ export type OrdinaryAgentConfig = { backend: 'anthropic'; model: string; operati
 
 /** golem-ui's Auth role shape: `manages` roles run accounts and may build; `builder` may build. */
 export type AccountRole = { id: string; label: string; manages: boolean }
-export type AccountsConfig = { guests: boolean; allowSignUp: boolean; roles: AccountRole[] }
+export type AccountsConfig = { guests: boolean; allowSignUp: boolean; groups: boolean; roles: AccountRole[] }
 
 const defaultRoles: AccountRole[] = [
   { id: 'member', label: 'Member', manages: false },
@@ -138,9 +138,9 @@ function speechConfig(value: unknown): SpeechConfig {
 
 function accounts(value: unknown): AccountsConfig {
   if (!value || typeof value !== 'object' || Array.isArray(value)) throw new Error('golem.config.ts accounts must be an object')
-  const { guests = false, allowSignUp = false, roles = defaultRoles, ...unknown } = value as Record<string, unknown>
+  const { guests = false, allowSignUp = false, groups = false, roles = defaultRoles, ...unknown } = value as Record<string, unknown>
   if (Object.keys(unknown).length) throw new Error(`golem.config.ts accounts has unknown fields: ${Object.keys(unknown).join(', ')}`)
-  if (typeof guests !== 'boolean' || typeof allowSignUp !== 'boolean') throw new Error('golem.config.ts accounts guests and allowSignUp must be booleans')
+  if (typeof guests !== 'boolean' || typeof allowSignUp !== 'boolean' || typeof groups !== 'boolean') throw new Error('golem.config.ts accounts guests, allowSignUp and groups must be booleans')
   if (!Array.isArray(roles) || !roles.length) throw new Error('golem.config.ts accounts roles must be a nonempty list')
   const parsed = roles.map((role: { id?: unknown; label?: unknown; manages?: unknown }) => {
     if (typeof role?.id !== 'string' || !/^[A-Za-z0-9_-]{1,64}$/.test(role.id) || typeof role.label !== 'string' || (role.manages !== undefined && typeof role.manages !== 'boolean')) {
@@ -151,7 +151,7 @@ function accounts(value: unknown): AccountsConfig {
   if (new Set(parsed.map((role) => role.id)).size !== parsed.length) throw new Error('golem.config.ts accounts role ids must be unique')
   if (!parsed.some((role) => role.manages)) throw new Error('golem.config.ts accounts roles need one role with manages: true')
   if (allowSignUp && !parsed.some(isPlain)) throw new Error("golem.config.ts accounts allowSignUp needs a role that neither manages nor is 'builder'")
-  return { guests, allowSignUp, roles: parsed }
+  return { guests, allowSignUp, groups, roles: parsed }
 }
 
 /** A typo here would lock everyone out of `what`, so every named role must be one the app declares. */

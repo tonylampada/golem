@@ -75,7 +75,7 @@ export const files: FilesAdapter = {
 
 /** A signed-in person as the server sees them: golem-ui's `User` plus the groups app rules may check. */
 export type Member = User & { email: string; groups: string[] }
-export type AccountsSettings = { guests: boolean; allowSignUp: boolean; roles: Array<{ id: string; label: string; manages: boolean }> }
+export type AccountsSettings = { guests: boolean; allowSignUp: boolean; groups: boolean; roles: Array<{ id: string; label: string; manages: boolean }> }
 /** `accounts` is null when the app has no accounts; then everyone is anonymous and may build. */
 export type Me = { user: Member | null; canBuild: boolean; accounts: AccountsSettings | null }
 

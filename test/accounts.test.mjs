@@ -66,7 +66,7 @@ test('local accounts: sign-in, groups, roles, build access and revocation over H
 
     // Signed out, with guests off: no app data, no change stream, no build routes.
     const guest = client(base)
-    assert.deepEqual((await guest.get('/api/auth/me')).body.result, { user: null, canBuild: false, accounts: { guests: false, allowSignUp: false, roles: [{ id: 'member', label: 'Member', manages: false }, { id: 'builder', label: 'Builder', manages: false }, { id: 'admin', label: 'Admin', manages: true }] } })
+    assert.deepEqual((await guest.get('/api/auth/me')).body.result, { user: null, canBuild: false, accounts: { guests: false, allowSignUp: false, groups: false, roles: [{ id: 'member', label: 'Member', manages: false }, { id: 'builder', label: 'Builder', manages: false }, { id: 'admin', label: 'Admin', manages: true }] } })
     assert.equal((await guest.op('records.list', { collection: 'notes' })).status, 401)
     assert.equal((await guest.get('/api/app/changes')).status, 401)
     assert.equal((await guest.get('/api/runtime')).status, 401)
@@ -197,9 +197,12 @@ test('accounts and origin config are validated, and absent accounts keep the ano
     return loadAppConfig(root)
   }
   assert.equal((await load(`export default { title: 'A' }`)).accounts, undefined)
+  assert.equal((await load(`export default { accounts: {} }`)).accounts.groups, false)
+  assert.equal((await load(`export default { accounts: { groups: true } }`)).accounts.groups, true)
   for (const [source, message] of [
     [`export default { accounts: { roles: [{ id: 'member', label: 'Member' }] } }`, /manages: true/],
     [`export default { accounts: { guest: true } }`, /unknown fields: guest/],
+    [`export default { accounts: { groups: 'yes' } }`, /groups must be booleans/],
     [`export default { origin: 'https://notes.example.test/' }`, /exact origin/],
     [`export default { accounts: { roles: [{ id: 'admin', label: 'A', manages: true }, { id: 'admin', label: 'B' }] } }`, /unique/],
     [`export default { accounts: { allowSignUp: true, roles: [{ id: 'admin', label: 'A', manages: true }, { id: 'builder', label: 'B' }] } }`, /allowSignUp needs a role/],

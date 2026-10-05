@@ -238,6 +238,7 @@ export default {
   accounts: {
     guests: false,       // default: signed-out visitors see only the sign-in screen
     allowSignUp: false,  // default: people join through invite links
+    groups: false,       // default: no Groups editor in Admin; true shows one
     roles: [             // golem-ui Auth roles; ids are unique
       { id: 'member', label: 'Member' },
       { id: 'builder', label: 'Builder' },
@@ -254,7 +255,7 @@ The roles above are the default. A role with `manages: true` may invite, change 
 - **guests: true**: signed-out callers run as `anonymous` through `authorize`. The default `authorize` allows everything, so write one that refuses what guests may not do.
 - **Policy** stays in `authorize`: check `principal.roles`, `principal.groups` and `record`. Without an `authorize`, every signed-in member may do everything.
 - **Build mode** needs a signed-in member who may build; `/api/runtime` and every `/api/sessions` route answer 401 or 403 to anyone else. A build conversation belongs to the member who started it. Conversations saved before accounts were enabled are visible to managers only. Losing build access, or signing out everywhere, interrupts a running build turn.
-- **Managing**: managers get a Admin item in the shell menu row: golem-ui's member list for invites, roles, password resets and removal, plus a groups editor. Apps can use `identity` and `setGroups` from `golem-kit/client`.
+- **Managing**: managers get a Admin item in the shell menu row: golem-ui's member list for invites, roles, password resets and removal, and **Scheduled jobs**. With `groups: true` it also shows a Groups editor (comma-separated groups per member). The flag only gates that editor: `principal.groups` and the members' groups work either way. Apps can use `identity` and `setGroups` from `golem-kit/client`.
 - **Identity in the UI**: `identity` from `golem-kit/client` is golem-ui's `IdentityAdapter`. Pass it to `Auth.Guard` or `Timeline`. It exposes nothing a server rule trusts.
 
 ### What each role sees

@@ -187,7 +187,7 @@ export function App() {
           : view === 'account' || (invited && !me.user)
             ? <div className="golem-browser-admin flex h-full flex-col overflow-auto">
                 <Auth config={authConfig} adapters={authAdapters} />
-                {manages && <><Groups /><SystemJobs /></>}
+                {manages && <>{accounts.groups && <Groups />}<SystemJobs /></>}
               </div>
           : accounts.guests ? <UserApp screen={screen} />
           : <Auth.Guard config={authConfig} adapters={authAdapters}><UserApp screen={screen} /></Auth.Guard>

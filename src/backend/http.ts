@@ -207,7 +207,7 @@ async function handle({ app, accounts, config, cookie }: Server, request: Incomi
 
 async function handleAuth({ accounts, config, cookie }: Server, principal: Principal, request: IncomingMessage, response: ServerResponse, route: string): Promise<void> {
   if (request.method === 'GET' && route === 'me') {
-    const settings = accounts && { guests: accounts.config.guests, allowSignUp: accounts.config.allowSignUp, roles: accounts.config.roles }
+    const settings = accounts && { guests: accounts.config.guests, allowSignUp: accounts.config.allowSignUp, groups: accounts.config.groups, roles: accounts.config.roles }
     return send(response, 200, { result: { user: accounts ? await accounts.me(principal) : null, canBuild: accounts ? accounts.canBuild(principal) : true, accounts: settings ?? null } })
   }
   if (!accounts) return send(response, 404, { error: 'This app has no accounts' })
