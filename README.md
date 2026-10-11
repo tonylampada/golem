@@ -4,7 +4,7 @@
 
 ## What is Golem?
 
-Golem is an early local application shell for building applications with AI. **Your app is its own IDE:** enter build mode, ask a locally authenticated Claude Code or Codex to edit the app, and keep using it in the same browser shell.
+Golem is an early local application shell for building applications with AI. **Your app is its own IDE:** enter build mode, ask the in-app agent to edit the app, wait and refresh.
 
 ## Getting Started
 
