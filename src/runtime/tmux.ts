@@ -17,6 +17,9 @@ export type Harness = {
   spawn(cwd: string, prompt: string, opts: object): Promise<HarnessRef>
   send(ref: HarnessRef, text: string): Promise<void>
   resume(ref: HarnessRef, opts: object): Promise<HarnessRef>
+  alive?(ref: HarnessRef): Promise<boolean>
+  /** Would resume(ref) restore memory? False when the agent CLI no longer holds the transcript. */
+  resumable?(ref: HarnessRef, opts: object): Promise<boolean>
   kill(ref: HarnessRef): Promise<void> | void
   onTurnEnd(ref: HarnessRef, hook: (event: { session_id?: string | null }) => void, opts: object): () => void
   paneInput?(ref: HarnessRef, input: { key?: string; text?: string }): Promise<void>
@@ -129,6 +132,9 @@ export class TmuxBackend implements SessionBackend {
       }
       // A conversation saved before windows existed owned the whole session: pin it to its window first.
       if (this.ref && !this.ref.window && opts.window) this.ref = (await this.harness.adoptWindow?.(this.ref, opts.window)) ?? this.ref
+      // A dead agent whose transcript is gone (claude deletes old ones) cannot be resumed: start a fresh
+      // conversation with the charter, under a new resume id, instead of failing on the stale one.
+      if (this.ref && this.harness.resumable && !(await this.harness.alive?.(this.ref)) && !(await this.harness.resumable(this.ref, opts))) this.ref = undefined
       // Whoever starts in a window owns it. A previous occupant without a live Session (parked before the
       // last restart, never resumed since) still holds `session:window` in tmux; it resumes through its own
       // ref later, so clearing the window here loses nothing and spares spawn the "already exists" error.
