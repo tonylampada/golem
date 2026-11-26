@@ -210,3 +210,36 @@ test('the turn-end hook keys its file by the window it actually ran in, not the 
   assert.ok(fs.existsSync(path.join(dir, 'plain-session.turnend.jsonl')), 'session-granular keys are left alone')
   fs.rmSync(dir, { recursive: true, force: true })
 })
+
+test('a dead agent whose transcript is gone starts a fresh conversation with the charter, under a new resume id (MNC-315)', async () => {
+  fake.reset()
+  const cwd = '/tmp/my.app'
+  const backend = (ref) => new TmuxBackend(cwd, 'claude', ref, { harness: fake, api: 'http://127.0.0.1:1', window: 'builder' })
+  const first = new Session('claude', backend(), 'abc', true)
+  await first.start()
+  await first.send('remember this')
+  const stale = first.snapshot().harness
+  await first.shutdown() // agent dead, ref kept
+  fake.dropTranscript(stale.resumeId) // claude's 30-day cleanup
+
+  const restored = Session.restore(first.snapshot(), backend(stale))
+  await restored.send('hello again')
+  const ref = restored.snapshot().harness
+  assert.notEqual(ref.resumeId, stale.resumeId, 'the new id is stored')
+  assert.equal(ref.window, 'builder')
+  assert.deepEqual(fake.transcript(ref), [builderInstructions(cwd), 'hello again'], 'fresh launch with the charter')
+})
+
+test('claude: resumable needs the transcript on disk; resuming a deleted one fails fast (MNC-315)', async () => {
+  const claude = createRequire(import.meta.url)('../src/runtime/harness/claude-tmux.js')
+  const projectsDir = fs.mkdtempSync(path.join(os.tmpdir(), 'golem-projects-'))
+  const stateDir = fs.mkdtempSync(path.join(os.tmpdir(), 'golem-state-'))
+  const ref = { harness: 'claude', session: 'golem-x', window: 'builder', cwd: '/home/ai/my.app', resumeId: 'de7656cc' }
+  assert.equal(await claude.resumable(ref, { projectsDir, stateDir }), false)
+  fs.mkdirSync(path.join(projectsDir, '-home-ai-my-app'))
+  fs.writeFileSync(path.join(projectsDir, '-home-ai-my-app', 'de7656cc.jsonl'), '{}\n')
+  assert.equal(await claude.resumable(ref, { projectsDir, stateDir }), true)
+  assert.match('No conversation found with session ID: de7656cc', claude.SETTLE.fatalRe)
+  fs.rmSync(projectsDir, { recursive: true, force: true })
+  fs.rmSync(stateDir, { recursive: true, force: true })
+})

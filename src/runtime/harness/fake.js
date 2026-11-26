@@ -23,7 +23,7 @@
 //   onTurnEnd — hooks fire once per emitted turn, in registration order,
 //             only for events after registration. Returns unsubscribe().
 //
-// Test helpers (not part of the port contract): transcript(ref), reset().
+// Test helpers (not part of the port contract): transcript(ref), reset(), dropTranscript(resumeId) (golem).
 //
 // File-backed mode (cross-process observability): when BC_FAKE_STATE names a
 // directory, spawn/send also persist there —
@@ -238,9 +238,14 @@ async function alive(ref) {
 
 // resumable — introspection only: memory survives a resume iff this process
 // still holds the session's transcript under the same resumeId.
+// golem: modelled on claude, whose resume needs only the transcript on disk: any ref with a resume id
+// is resumable until dropTranscript(resumeId) plays the CLI deleting it.
+const dropped = new Set();
 async function resumable(ref) {
-  const s = sessions.get(refKey(ref));
-  return !!(s && ref.resumeId && ref.resumeId === s.resumeId);
+  return !!ref.resumeId && !dropped.has(ref.resumeId);
+}
+function dropTranscript(resumeId) {
+  dropped.add(resumeId);
 }
 
 async function resume(ref) {
@@ -410,9 +415,10 @@ function transcript(ref) {
 
 function reset() {
   sessions.clear();
+  dropped.clear();
 }
 
-const impl = { spawn, send, alive, resumable, resume, onTurnEnd, kill, adoptWindow, transcript, reset };
+const impl = { spawn, send, alive, resumable, resume, onTurnEnd, kill, adoptWindow, transcript, reset, dropTranscript };
 // Pane verbs are OPTIONAL by contract; BC_FAKE_NO_PANE simulates a harness
 // that never implemented them (capability-absent degradation under test).
 if (!process.env.BC_FAKE_NO_PANE) {

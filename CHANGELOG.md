@@ -1,5 +1,9 @@
 # Changelog
 
+## Unreleased
+
+- Fix: a claude agent whose transcript Claude Code deleted (it keeps 30 days by default) came back as "[pane gone]" for good: `--resume` printed "No conversation found", golem waited 45s, killed the window and kept the dead id. A dead agent whose transcript is gone now starts a fresh conversation with the charter and stores the new id; the conversation's earlier memory is lost, its chat history is kept. A resume that hits "No conversation found" fails at once instead of after 45s.
+
 ## 0.2.16
 
 - Fix: 0.2.15 passed the invite and reset expiry lines at the root of the `Auth` config, where golem-ui's strict schema rejects them, so every app with accounts showed a config error instead of the app. They now go under `copy`, and golem depends on golem-ui 0.2.3, the first that knows them.
