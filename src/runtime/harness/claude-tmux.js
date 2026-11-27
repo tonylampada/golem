@@ -42,13 +42,12 @@
 // (and optionally POSTs to a callback URL). onTurnEnd() tails that file.
 
 const fs = require('node:fs');
-const os = require('node:os');
 const path = require('node:path');
 const crypto = require('node:crypto');
 const { execFile } = require('node:child_process');
 const t = require('./tmux.js');
 const s = require('./tmux-session.js');
-const { claudeStatus, claudeProjectSlug, SLASH_COMMANDS, helpText, formatStatus } = require('./agent-status.js');
+const { claudeHome, claudeStatus, claudeProjectSlug, SLASH_COMMANDS, helpText, formatStatus } = require('./agent-status.js');
 
 const HOOK_SCRIPT = path.join(__dirname, 'turnend-hook.js');
 const TRUST_RE = /Yes, I trust this folder|Quick safety check/;
@@ -216,6 +215,14 @@ function sandboxPrefix(allowRoot) {
 // installHooks: false skips the per-spawn Stop-hook install — for sessions born
 // into a cwd that already carries a workspace-level hook (installing another
 // would clobber it: installHooks keeps ONE bc entry per settings file).
+// golem: launchEnv — the launch prefix's env. The pane's shell belongs to a shared
+// tmux server, so the golem process's own CLAUDE_CONFIG_DIR never reaches it:
+// it is passed on the launch line, and claude bills the account signed in there.
+function launchEnv(opts = {}) {
+  const env = process.env.CLAUDE_CONFIG_DIR ? { CLAUDE_CONFIG_DIR: process.env.CLAUDE_CONFIG_DIR } : {};
+  return s.envPrefix({ env: { ...env, ...opts.env } });
+}
+
 async function spawn(cwd, prompt, opts = {}) {
   const cwdAbs = path.resolve(cwd);
   if (!fs.existsSync(cwdAbs)) throw new Error(`spawn cwd does not exist: ${cwdAbs}`);
@@ -238,7 +245,7 @@ async function spawn(cwd, prompt, opts = {}) {
   try {
     const extra = (opts.extraArgs || []).map(s.shellQuote).join(' ');
     const launchCmd = sandboxPrefix(opts.allowRoot)
-      + s.envPrefix(opts) /* golem */ + 'CLAUDE_CODE_ENABLE_PROMPT_SUGGESTION=false '
+      + launchEnv(opts) /* golem */ + 'CLAUDE_CODE_ENABLE_PROMPT_SUGGESTION=false '
       + `claude ${permissionFlags(opts.permissions)} --session-id ${resumeId}`
       + (extra ? ' ' + extra : '');
     await s.launchAndSettle(s.paneTarget(session, window), launchCmd, SETTLE);
@@ -319,7 +326,7 @@ async function alive(ref) {
 // cleanupPeriodDays, and resuming a deleted one exits "No conversation found".
 function hasTranscript(cwd, id, opts = {}) {
   const projectsDir = opts.projectsDir || process.env.BC_CLAUDE_PROJECTS_DIR
-    || path.join(os.homedir(), '.claude', 'projects');
+    || path.join(claudeHome(), 'projects');
   return fs.existsSync(path.join(projectsDir, claudeProjectSlug(cwd), `${id}.jsonl`));
 }
 
@@ -378,7 +385,7 @@ async function resume(ref, opts = {}) {
     if (resumeId) parts.push('--resume', resumeId);
     for (const a of extra) parts.push(s.shellQuote(a));
     const launchCmd = sandboxPrefix(opts.allowRoot || rec.allowRoot)
-      + s.envPrefix(opts) /* golem */ + 'CLAUDE_CODE_ENABLE_PROMPT_SUGGESTION=false ' + parts.join(' ');
+      + launchEnv(opts) /* golem */ + 'CLAUDE_CODE_ENABLE_PROMPT_SUGGESTION=false ' + parts.join(' ');
     await s.launchAndSettle(s.paneTarget(ref.session, ref.window), launchCmd, SETTLE);
   } catch (err) {
     await s.killPane(ref.session, ref.window);
@@ -485,7 +492,7 @@ function frontMatter(text) {
 function outputStyles(opts = {}) {
   const out = BUILTIN_OUTPUT_STYLES.map((st) => ({ ...st }));
   const userDir = opts.stylesDir || process.env.BC_CLAUDE_OUTPUT_STYLES_DIR
-    || path.join(os.homedir(), '.claude', 'output-styles');
+    || path.join(claudeHome(), 'output-styles');
   const dirs = [];
   if (opts.cwd) dirs.push(path.join(opts.cwd, '.claude', 'output-styles'));
   dirs.push(userDir);
@@ -582,7 +589,7 @@ const { onTurnEnd, openPane, paneSnapshot, paneInput, adoptWindow } = s;
 // install the workspace-level Stop hook (session-agnostic; the server dedupes
 // turn-end POSTs by session_id). openPane/paneSnapshot/paneInput and
 // commands/runCommand/status are OPTIONAL capability verbs (port.js).
-module.exports = { spawn, send, alive, resumable, resume, kill, onTurnEnd, installHooks, permissionFlags,
+module.exports = { launchEnv, spawn, send, alive, resumable, resume, kill, onTurnEnd, installHooks, permissionFlags,
   openPane, paneSnapshot, paneInput, commands, runCommand, status, adoptWindow,
   // Exported for the tests that pin the style list against a temp directory and
   // the built-ins against the binary.

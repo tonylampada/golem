@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.2.18
+
+- `claude: { configDir }` in `golem.config.ts` puts an app's Claude Code sessions on their own Claude account: every `claude` it starts gets `CLAUDE_CONFIG_DIR` (on the tmux launch line too, which the server's own env never reached), and transcripts and output styles are read from that directory. Absent, `~/.claude` as before.
+
 ## 0.2.17
 
 - Fix: a claude agent whose transcript Claude Code deleted (it keeps 30 days by default) came back as "[pane gone]" for good: `--resume` printed "No conversation found", golem waited 45s, killed the window and kept the dead id. A dead agent whose transcript is gone now starts a fresh conversation with the charter and stores the new id; the conversation's earlier memory is lost, its chat history is kept. A resume that hits "No conversation found" fails at once instead of after 45s.

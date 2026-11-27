@@ -56,6 +56,9 @@ export async function startDevServer(
   let retired: SessionSnapshot[] = [];
   const sessions = new SessionManager((snapshots) => state.save([...retired, ...snapshots]));
   const app = await createAppBackend(appRoot, join(stateDirectory, 'data'));
+  // Every `claude` this server starts (agent panes, `context.model`, the sign-in probe) reads its account
+  // from here; the tmux harness passes it on the launch line, since panes do not inherit this env.
+  if (app.config.claude?.configDir) process.env.CLAUDE_CONFIG_DIR = app.config.claude.configDir;
   const chat = ordinaryChat(app);
   const brain = app.config.brain ? openBrain(join(appRoot, 'brain')) : undefined;
   const icon = await findIcon(app.config);

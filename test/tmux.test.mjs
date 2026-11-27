@@ -243,3 +243,27 @@ test('claude: resumable needs the transcript on disk; resuming a deleted one fai
   fs.rmSync(projectsDir, { recursive: true, force: true })
   fs.rmSync(stateDir, { recursive: true, force: true })
 })
+
+test('claude: CLAUDE_CONFIG_DIR rides the launch line and moves transcripts and styles with it (MNC-320)', async (t) => {
+  const claude = createRequire(import.meta.url)('../src/runtime/harness/claude-tmux.js')
+  const saved = process.env.CLAUDE_CONFIG_DIR
+  const home = fs.mkdtempSync(path.join(os.tmpdir(), 'golem-claude-home-'))
+  const stateDir = fs.mkdtempSync(path.join(os.tmpdir(), 'golem-state-'))
+  t.after(() => {
+    if (saved === undefined) delete process.env.CLAUDE_CONFIG_DIR; else process.env.CLAUDE_CONFIG_DIR = saved
+    fs.rmSync(home, { recursive: true, force: true })
+    fs.rmSync(stateDir, { recursive: true, force: true })
+  })
+  delete process.env.CLAUDE_CONFIG_DIR
+  assert.equal(claude.launchEnv({ env: { GOLEM_SESSION: 's1' } }), "GOLEM_SESSION='s1' ", 'unset: the launch line is as before')
+  process.env.CLAUDE_CONFIG_DIR = home
+  assert.equal(claude.launchEnv({ env: { GOLEM_SESSION: 's1' } }), `CLAUDE_CONFIG_DIR='${home}' GOLEM_SESSION='s1' `)
+  const ref = { harness: 'claude', session: 'golem-x', window: 'builder', cwd: '/home/ai/my.app', resumeId: 'de7656cc' }
+  assert.equal(await claude.resumable(ref, { stateDir }), false)
+  fs.mkdirSync(path.join(home, 'projects', '-home-ai-my-app'), { recursive: true })
+  fs.writeFileSync(path.join(home, 'projects', '-home-ai-my-app', 'de7656cc.jsonl'), '{}\n')
+  assert.equal(await claude.resumable(ref, { stateDir }), true, 'the transcript is read from the config dir')
+  fs.mkdirSync(path.join(home, 'output-styles'))
+  fs.writeFileSync(path.join(home, 'output-styles', 'terse.md'), '---\nname: Terse\n---\nBe brief.\n')
+  assert.ok(claude.outputStyles({}).some((style) => style.value === 'Terse'), 'user output styles come from the config dir')
+})
