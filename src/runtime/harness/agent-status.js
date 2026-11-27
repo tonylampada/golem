@@ -27,6 +27,13 @@ const path = require('node:path');
 
 const TAIL_BYTES = 256 * 1024;
 
+// golem: claudeHome — the Claude config dir claude itself uses: CLAUDE_CONFIG_DIR
+// when set (an app on its own Claude account), else ~/.claude. Transcripts and
+// user output styles live under it, so every default path below follows it.
+function claudeHome() {
+  return process.env.CLAUDE_CONFIG_DIR || path.join(os.homedir(), '.claude');
+}
+
 // tailRead — the last maxBytes of a file, decoded; null when missing/unreadable.
 // When the file is smaller than maxBytes the whole file comes back.
 function tailRead(file, maxBytes) {
@@ -171,7 +178,7 @@ function claudeStatus(ref, opts = {}) {
   const sidecar = claudeSidecarStatus(ref, opts);
   if (sidecar) return sidecar;
   const projectsDir = opts.projectsDir || process.env.BC_CLAUDE_PROJECTS_DIR
-    || path.join(os.homedir(), '.claude', 'projects');
+    || path.join(claudeHome(), 'projects');
   const file = path.join(projectsDir, claudeProjectSlug(ref.cwd), ref.resumeId + '.jsonl');
   let size = 0;
   try {
@@ -373,6 +380,7 @@ function formatStatus(st) {
 }
 
 module.exports = {
+  claudeHome,
   tailRead,
   claudeProjectSlug,
   claudeContextWindow,

@@ -68,3 +68,19 @@ test('invalid configuration fails before localhost fallback', () => {
     rmSync(root, { recursive: true, force: true })
   }
 })
+
+test('claude.configDir: absolute or ~/ paths, anything else refused (MNC-320)', async () => {
+  const { loadAppConfig } = await import('../src/config.ts')
+  const { homedir } = await import('node:os')
+  const load = (claude) => {
+    const root = mkdtempSync(join(tmpdir(), 'golem-claude-config-'))
+    writeFileSync(join(root, 'golem.config.ts'), `export default { claude: ${JSON.stringify(claude)} }\n`)
+    return loadAppConfig(root).finally(() => rmSync(root, { recursive: true, force: true }))
+  }
+  assert.deepEqual((await load({ configDir: '/srv/claude-b' })).claude, { configDir: '/srv/claude-b' })
+  assert.deepEqual((await load({ configDir: '~/.claude-b' })).claude, { configDir: join(homedir(), '.claude-b') })
+  assert.deepEqual((await load({})).claude, {})
+  await assert.rejects(load({ configDir: '.claude-b' }), /claude\.configDir must be an absolute path/)
+  await assert.rejects(load({ configDir: 3 }), /claude\.configDir must be an absolute path/)
+  await assert.rejects(load({ dir: '/x' }), /claude has unknown fields: dir/)
+})

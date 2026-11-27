@@ -1,9 +1,10 @@
-import { resolve } from 'node:path'
+import { homedir } from 'node:os'
+import { isAbsolute, resolve } from 'node:path'
 import { pathToFileURL } from 'node:url'
 import { toolNameProblem } from './runtime/tool-names.ts'
 
 /** Browser-visible settings: never put secrets in golem.config.ts. */
-export type AppConfig = { title: string; host: string; port: number; storage: 'jsonl' | 'sqlite'; origin?: string; accounts?: AccountsConfig; agents?: AgentsConfig; brain?: BrainConfig; chat?: ChatConfig; icon?: string; model?: ModelConfig; speech?: SpeechConfig }
+export type AppConfig = { title: string; host: string; port: number; storage: 'jsonl' | 'sqlite'; origin?: string; accounts?: AccountsConfig; agents?: AgentsConfig; brain?: BrainConfig; chat?: ChatConfig; claude?: ClaudeConfig; icon?: string; model?: ModelConfig; speech?: SpeechConfig }
 /**
  * Speech to text for the app's text inputs. `whisper` is any server with the faster-whisper HTTP shape
  * (`POST <url>/transcribe`, multipart `file`); `openai` is the hosted API, whose key is read from the
@@ -12,6 +13,12 @@ export type AppConfig = { title: string; host: string; port: number; storage: 'j
 export type SpeechConfig =
   | { provider: 'whisper'; url: string; language?: string }
   | { provider: 'openai'; url?: string; apiKeyEnv: string; model?: string; language?: string }
+/**
+ * Claude Code as this app runs it: `configDir` is the Claude config directory (`CLAUDE_CONFIG_DIR`) every
+ * `claude` the app starts uses, so the app can run on its own Claude account. Absent, `~/.claude`.
+ */
+export type ClaudeConfig = { configDir?: string }
+
 /** Which local agent CLI answers `context.model`; absent, Claude Code as before. `name` is that runtime's model id. */
 export type ModelConfig = { runtime: 'claude' | 'codex'; name?: string }
 /**
@@ -62,7 +69,7 @@ export async function loadAppConfig(root = process.cwd()): Promise<AppConfig> {
   if (!value || typeof value !== 'object' || Array.isArray(value)) {
     throw new Error('golem.config.ts must default-export an object')
   }
-  const configured = value as { title?: unknown; host?: unknown; port?: unknown; storage?: unknown; origin?: unknown; accounts?: unknown; agents?: unknown; brain?: unknown; chat?: unknown; icon?: unknown; model?: unknown; speech?: unknown }
+  const configured = value as { title?: unknown; host?: unknown; port?: unknown; storage?: unknown; origin?: unknown; accounts?: unknown; agents?: unknown; brain?: unknown; chat?: unknown; claude?: unknown; icon?: unknown; model?: unknown; speech?: unknown }
   const brainValue = configured.brain
   if (brainValue !== undefined && typeof brainValue !== 'boolean' && (!brainValue || typeof brainValue !== 'object' || Array.isArray(brainValue))) throw new Error('golem.config.ts brain must be a boolean or { roles }')
   if (brainValue && typeof brainValue === 'object' && Object.keys(brainValue).some((key) => key !== 'roles')) throw new Error(`golem.config.ts brain has unknown fields: ${Object.keys(brainValue).filter((key) => key !== 'roles').join(', ')}`)
@@ -88,7 +95,7 @@ export async function loadAppConfig(root = process.cwd()): Promise<AppConfig> {
   if (origin !== undefined && (typeof origin !== 'string' || !/^https?:$/.test(safeUrl(origin)?.protocol ?? '') || safeUrl(origin)?.origin !== origin)) {
     throw new Error("golem.config.ts origin must be an exact origin like 'https://notes.example.com'")
   }
-  const config: AppConfig = { title, host, port, storage, ...(icon === undefined ? {} : { icon: icon as string }), ...(origin === undefined ? {} : { origin }), ...(configured.accounts === undefined ? {} : { accounts: accounts(configured.accounts) }), ...(configured.agents === undefined ? {} : { agents: agents(configured.agents) }), ...(configured.model === undefined ? {} : { model: modelConfig(configured.model) }), ...(configured.speech === undefined ? {} : { speech: speechConfig(configured.speech) }) }
+  const config: AppConfig = { title, host, port, storage, ...(icon === undefined ? {} : { icon: icon as string }), ...(origin === undefined ? {} : { origin }), ...(configured.accounts === undefined ? {} : { accounts: accounts(configured.accounts) }), ...(configured.agents === undefined ? {} : { agents: agents(configured.agents) }), ...(configured.claude === undefined ? {} : { claude: claudeConfig(configured.claude) }), ...(configured.model === undefined ? {} : { model: modelConfig(configured.model) }), ...(configured.speech === undefined ? {} : { speech: speechConfig(configured.speech) }) }
   if (brainValue === true) config.brain = true
   else if (brainValue) config.brain = { roles: rolesOf((brainValue as { roles?: unknown }).roles, config.accounts, 'brain.roles', 'the brain') }
   if (configured.chat !== undefined && configured.chat !== false) {
@@ -108,6 +115,16 @@ export async function loadAppConfig(root = process.cwd()): Promise<AppConfig> {
     } else throw new Error("golem.config.ts chat.provider must be 'anthropic' or 'tmux'")
   } else if (config.agents?.ordinary) config.chat = { provider: 'anthropic' }
   return config
+}
+
+function claudeConfig(value: unknown): ClaudeConfig {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) throw new Error('golem.config.ts claude must be an object')
+  const { configDir, ...unknown } = value as Record<string, unknown>
+  if (Object.keys(unknown).length) throw new Error(`golem.config.ts claude has unknown fields: ${Object.keys(unknown).join(', ')}`)
+  if (configDir === undefined) return {}
+  const dir = typeof configDir === 'string' ? configDir.replace(/^~(?=$|\/)/, homedir()) : ''
+  if (!isAbsolute(dir)) throw new Error("golem.config.ts claude.configDir must be an absolute path (or start with '~/')")
+  return { configDir: dir }
 }
 
 function modelConfig(value: unknown): ModelConfig {
